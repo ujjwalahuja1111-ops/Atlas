@@ -185,7 +185,13 @@ export async function apiListProposals(filter: { event_id?: string; site_id?: st
   return r.json();
 }
 
-export async function apiAcceptProposal(id: string, edits: Partial<AiProposal> = {}) {
+export type AcceptProposalInput = Partial<Pick<AiProposal, 'title' | 'description' | 'category' | 'suggested_priority'>> & {
+  priority?: AiProposal['suggested_priority'];
+  required_by?: string;
+  assigned_to_user_id?: string;
+};
+
+export async function apiAcceptProposal(id: string, edits: AcceptProposalInput = {}) {
   const r = await fetch(`${BACKEND}/api/ai-proposals/${id}/accept`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify(edits),

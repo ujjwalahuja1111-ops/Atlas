@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useState, type Dispatch, type SetStateAction } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Pressable, ScrollView,
-  ActivityIndicator, RefreshControl, Modal,
+  ActivityIndicator, RefreshControl, Modal, TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,7 +10,8 @@ import { theme } from '@/src/theme';
 import { loadAuth, type User } from '@/src/api';
 import {
   apiOperationalCenter, apiListItems, apiListUsers, apiAssignItem,
-  type OperationalCenter, type OperationalItem, type AssignableUser,
+  apiListProposals, apiAcceptProposal, apiRejectProposal,
+  type OperationalCenter, type OperationalItem, type AssignableUser, type AiProposal,
 } from '@/src/ops_api';
 
 const HEALTH_COLOR: Record<string, string> = {
@@ -29,33 +30,55 @@ const PRIORITY_COLOR: Record<string, string> = {
   high: theme.color.warning, critical: theme.color.error,
 };
 
-const TABS = ['overview', 'overdue', 'high_priority', 'awaiting', 'mine'] as const;
+const TABS = ['proposals', 'overview', 'overdue', 'high_priority', 'awaiting', 'mine'] as const;
 type Bucket = typeof TABS[number];
+type ProposalEdit = {
+  title: string;
+  description: string;
+  priority: AiProposal['suggested_priority'];
+  assigned_to_user_id: string;
+};
 
 export default function OpsScreen() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [center, setCenter] = useState<OperationalCenter | null>(null);
   const [mine, setMine] = useState<OperationalItem[]>([]);
-  const [bucket, setBucket] = useState<Bucket>('overview');
+  const [proposals, setProposals] = useState<AiProposal[]>([]);
+  const [bucket, setBucket] = useState<Bucket>('proposals');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [assigningItem, setAssigningItem] = useState<OperationalItem | null>(null);
+  const [reviewingProposal, setReviewingProposal] = useState<AiProposal | null>(null);
+  const [proposalEdit, setProposalEdit] = useState<ProposalEdit>({
+    title: '', description: '', priority: 'normal', assigned_to_user_id: '',
+  });
+  const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
   const [users, setUsers] = useState<AssignableUser[]>([]);
+
+  const loadUsers = useCallback(async () => {
+    if (users.length > 0) return users;
+    const list = await apiListUsers();
+    setUsers(list);
+    return list;
+  }, [users]);
 
   const load = useCallback(async () => {
     try {
-      const { user } = await loadAuth();
-      setUser(user);
-      const [c, m] = await Promise.all([
+      const auth = await loadAuth();
+      setUser(auth.user);
+      const [c, m, p] = await Promise.all([
         apiOperationalCenter(),
-        user ? apiListItems({ assigned_to_me: true }) : Promise.resolve([]),
+        auth.user ? apiListItems({ assigned_to_me: true }) : Promise.resolve([]),
+        auth.user?.role === 'supervisor' ? Promise.resolve([]) : apiListProposals({ status: 'pending' }),
       ]);
       setCenter(c);
       setMine(m);
+      setProposals(p);
+      if (auth.user?.role === 'supervisor' && bucket === 'proposals') setBucket('mine');
     } catch (e) { console.warn(e); }
     finally { setLoading(false); setRefreshing(false); }
-  }, []);
+  }, [bucket]);
 
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
@@ -67,6 +90,48 @@ export default function OpsScreen() {
     if (bucket === 'awaiting') return center.awaiting_verification;
     if (bucket === 'mine') return mine;
     return [];
+  };
+
+  const openAssign = async (item: OperationalItem) => {
+    try { await loadUsers(); } catch {}
+    setAssigningItem(item);
+  };
+
+  const openProposalReview = async (proposal: AiProposal) => {
+    try { await loadUsers(); } catch {}
+    setProposalEdit({
+      title: proposal.title,
+      description: proposal.description || '',
+      priority: proposal.suggested_priority || 'normal',
+      assigned_to_user_id: '',
+    });
+    setReviewingProposal(proposal);
+  };
+
+  const acceptProposal = async (proposal: AiProposal) => {
+    setProposalBusyId(proposal.id);
+    try {
+      const payload: any = {};
+      if (proposalEdit.title.trim() !== proposal.title) payload.title = proposalEdit.title.trim();
+      if (proposalEdit.description !== (proposal.description || '')) payload.description = proposalEdit.description;
+      if (proposalEdit.priority !== proposal.suggested_priority) payload.priority = proposalEdit.priority;
+      if (proposalEdit.assigned_to_user_id) payload.assigned_to_user_id = proposalEdit.assigned_to_user_id;
+      await apiAcceptProposal(proposal.id, payload);
+      setReviewingProposal(null);
+      setBucket('overview');
+      await load();
+    } catch (e) { console.warn(e); }
+    finally { setProposalBusyId(null); }
+  };
+
+  const rejectProposal = async (proposal: AiProposal) => {
+    setProposalBusyId(proposal.id);
+    try {
+      await apiRejectProposal(proposal.id, 'Rejected from Proposal Inbox');
+      if (reviewingProposal?.id === proposal.id) setReviewingProposal(null);
+      await load();
+    } catch (e) { console.warn(e); }
+    finally { setProposalBusyId(null); }
   };
 
   return (
@@ -81,16 +146,18 @@ export default function OpsScreen() {
       ) : (
         <>
           <View style={styles.kpiRow}>
+            {user?.role !== 'supervisor' ? (
+              <Kpi label="PROPOSALS" value={proposals.length} color={theme.color.info} testID="kpi-proposals" />
+            ) : null}
             <Kpi label="OPEN" value={center.counts.open} color={theme.color.brand} testID="kpi-open" />
             <Kpi label="OVERDUE" value={center.counts.overdue} color={theme.color.error} testID="kpi-overdue" />
             <Kpi label="HIGH" value={center.counts.high_priority} color={theme.color.warning} testID="kpi-high" />
             <Kpi label="VERIFY" value={center.counts.awaiting_verification} color={theme.color.info} testID="kpi-verify" />
-            <Kpi label="BLOCKED" value={center.counts.blocked} color="#9C27B0" testID="kpi-blocked" />
           </View>
 
           <View style={styles.chipsContainer}>
             <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsContent}>
-              {TABS.map((b) => {
+              {TABS.filter((b) => user?.role !== 'supervisor' || b !== 'proposals').map((b) => {
                 const active = b === bucket;
                 return (
                   <Pressable
@@ -100,7 +167,8 @@ export default function OpsScreen() {
                     style={[styles.chip, active && styles.chipActive]}
                   >
                     <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                      {b === 'overview' ? 'RECENT' : b === 'high_priority' ? 'HIGH' :
+                      {b === 'proposals' ? `PROPOSALS ${proposals.length}` :
+                       b === 'overview' ? 'RECENT' : b === 'high_priority' ? 'HIGH' :
                        b === 'awaiting' ? 'TO VERIFY' : b === 'mine' ? 'MINE' : b.toUpperCase()}
                     </Text>
                   </Pressable>
@@ -109,115 +177,283 @@ export default function OpsScreen() {
             </ScrollView>
           </View>
 
-          <FlatList
-            testID="ops-list"
-            data={dataForBucket()}
-            keyExtractor={(i) => i.id}
-            renderItem={({ item }) => (
-              <Pressable
-                testID={`ops-card-${item.id}`}
-                onPress={() => router.push(`/op/${item.id}`)}
-                style={styles.card}
-              >
-                <View style={styles.row}>
-                  <View style={[styles.healthDot, { backgroundColor: HEALTH_COLOR[item.health] }]} />
-                  <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
+          {bucket === 'proposals' ? (
+            <FlatList
+              testID="proposal-inbox-list"
+              data={proposals}
+              keyExtractor={(i) => i.id}
+              renderItem={({ item }) => (
+                <ProposalCard
+                  proposal={item}
+                  busy={proposalBusyId === item.id}
+                  onReview={() => openProposalReview(item)}
+                  onReject={() => rejectProposal(item)}
+                />
+              )}
+              ListEmptyComponent={
+                <View style={styles.empty}>
+                  <Ionicons name="sparkles" size={64} color={theme.color.brand} />
+                  <Text style={styles.emptyTitle}>No pending proposals</Text>
+                  <Text style={styles.emptyBody}>New AI proposals will appear here after capture analysis.</Text>
                 </View>
-                {/* Three-question summary + WHEN */}
-                <View style={styles.summary}>
-                  <SummaryRow icon="help-circle" label="Why" value={
-                    item.origin_type === 'ai_proposal' ? 'AI-detected from voice/photo' :
-                    item.origin_type === 'manual' ? 'Manually created' :
-                    item.origin_type
-                  } />
-                  <SummaryRow icon="cube-outline" label="What"
-                    value={item.category.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())} />
-                  <SummaryRow icon="person" label="Who"
-                    value={item.assigned_to_user_name || (item.suggested_owner_role
-                      ? `— suggest ${item.suggested_owner_role.replace(/_/g,' ')} —`
-                      : '— unassigned —')} />
-                  <SummaryRow icon="time-outline" label="When"
-                    value={item.required_by
-                      ? new Date(item.required_by).toLocaleDateString()
-                      : (item.metrics.current_age_hours !== null
-                          ? `${Math.round(item.metrics.current_age_hours)}h old`
-                          : '—')} />
-                  <SummaryRow icon="alert-circle" label="Blocker"
-                    value={item.blocker ? humanBlocker(item.blocker.category) : 'none'} />
+              }
+              contentContainerStyle={{ padding: theme.spacing.md, paddingBottom: 140 }}
+              refreshControl={
+                <RefreshControl refreshing={refreshing} tintColor={theme.color.brand}
+                  onRefresh={() => { setRefreshing(true); load(); }} />
+              }
+            />
+          ) : (
+            <FlatList
+              testID="ops-list"
+              data={dataForBucket()}
+              keyExtractor={(i) => i.id}
+              renderItem={({ item }) => (
+                <OperationalCard item={item} openAssign={openAssign}
+                  openDetail={() => router.push(`/op/${item.id}`)} />
+              )}
+              ListEmptyComponent={
+                <View style={styles.empty}>
+                  <Ionicons name="checkmark-done-circle" size={64} color={theme.color.brand} />
+                  <Text style={styles.emptyTitle}>Nothing here</Text>
+                  <Text style={styles.emptyBody}>
+                    {bucket === 'mine' ? 'No items assigned to you.' : 'No items in this view.'}
+                  </Text>
                 </View>
-                <View style={styles.tagsRow}>
-                  <Tag color={PRIORITY_COLOR[item.priority]}>{item.priority.toUpperCase()}</Tag>
-                  <Tag color={HEALTH_COLOR[item.health]}>{item.health.replace('_', ' ').toUpperCase()}</Tag>
-                  <Tag color={theme.color.surface3} dim>{STATUS_LABEL[item.status] || item.status.toUpperCase()}</Tag>
-                  {item.metrics.days_overdue > 0 ? (
-                    <Tag color={theme.color.error}>{`${item.metrics.days_overdue}d OVERDUE`}</Tag>
-                  ) : null}
-                  <View style={{ flex: 1 }} />
-                  <Pressable testID={`card-assign-${item.id}`}
-                    onPress={async (e) => {
-                      e.stopPropagation?.();
-                      if (users.length === 0) { try { setUsers(await apiListUsers()); } catch {} }
-                      setAssigningItem(item);
-                    }}
-                    style={styles.cardAssign}>
-                    <Ionicons name={item.assigned_to_user_id ? 'swap-horizontal' : 'person-add'} size={14} color={theme.color.info} />
-                    <Text style={styles.cardAssignText}>
-                      {item.assigned_to_user_id ? 'REASSIGN' : 'ASSIGN'}
-                    </Text>
-                  </Pressable>
-                </View>
-              </Pressable>
-            )}
-            ListEmptyComponent={
-              <View style={styles.empty}>
-                <Ionicons name="checkmark-done-circle" size={64} color={theme.color.brand} />
-                <Text style={styles.emptyTitle}>Nothing here</Text>
-                <Text style={styles.emptyBody}>
-                  {bucket === 'mine' ? 'No items assigned to you.' : 'No items in this view.'}
-                </Text>
-              </View>
-            }
-            contentContainerStyle={{ padding: theme.spacing.md, paddingBottom: 140 }}
-            refreshControl={
-              <RefreshControl refreshing={refreshing} tintColor={theme.color.brand}
-                onRefresh={() => { setRefreshing(true); load(); }} />
-            }
-          />
+              }
+              contentContainerStyle={{ padding: theme.spacing.md, paddingBottom: 140 }}
+              refreshControl={
+                <RefreshControl refreshing={refreshing} tintColor={theme.color.brand}
+                  onRefresh={() => { setRefreshing(true); load(); }} />
+              }
+            />
+          )}
         </>
       )}
 
-      {/* V3.3 — quick-assign picker (per-card) */}
-      <Modal visible={!!assigningItem} animationType="fade" transparent>
-        <Pressable style={styles.modalBack} onPress={() => setAssigningItem(null)}>
-          <View style={styles.modal} onStartShouldSetResponder={() => true}>
-            <Text style={styles.modalTitle}>ASSIGN TO</Text>
-            <ScrollView style={{ maxHeight: 360 }}>
-              {users.length === 0 ? (
-                <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No users available</Text>
-              ) : users.map((u) => {
-                const suggested = assigningItem?.suggested_owner_role &&
-                  (u.role === assigningItem.suggested_owner_role ||
-                   assigningItem.suggested_owner_role.includes(u.role));
-                return (
-                  <Pressable key={u.id} testID={`card-pick-assignee-${u.id}`}
-                    onPress={async () => {
-                      const t = assigningItem;
-                      setAssigningItem(null);
-                      try { await apiAssignItem(t!.id, u.id); await load(); } catch (e) { console.warn(e); }
-                    }}
-                    style={styles.pickRow}>
-                    <Ionicons name="person-circle-outline" size={20}
-                      color={suggested ? theme.color.brand : theme.color.textMuted} />
-                    <Text style={styles.pickName}>{u.name}</Text>
-                    <Text style={styles.pickRole}>{u.role}{suggested ? '  ★' : ''}</Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </View>
-        </Pressable>
-      </Modal>
+      <ProposalReviewModal
+        proposal={reviewingProposal}
+        edit={proposalEdit}
+        setEdit={setProposalEdit}
+        users={users}
+        busy={!!reviewingProposal && proposalBusyId === reviewingProposal.id}
+        close={() => setReviewingProposal(null)}
+        accept={() => reviewingProposal && acceptProposal(reviewingProposal)}
+        reject={() => reviewingProposal && rejectProposal(reviewingProposal)}
+      />
+
+      <AssignModal
+        item={assigningItem}
+        users={users}
+        close={() => setAssigningItem(null)}
+        assign={async (u) => {
+          const item = assigningItem;
+          setAssigningItem(null);
+          if (!item) return;
+          try { await apiAssignItem(item.id, u.id); await load(); } catch (e) { console.warn(e); }
+        }}
+      />
     </SafeAreaView>
+  );
+}
+
+function OperationalCard({ item, openAssign, openDetail }: {
+  item: OperationalItem;
+  openAssign: (item: OperationalItem) => void; openDetail: () => void;
+}) {
+  return (
+    <Pressable testID={`ops-card-${item.id}`} onPress={openDetail} style={styles.card}>
+      <View style={styles.row}>
+        <View style={[styles.healthDot, { backgroundColor: HEALTH_COLOR[item.health] }]} />
+        <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
+      </View>
+      <View style={styles.summary}>
+        <SummaryRow icon="help-circle" label="Why" value={
+          item.origin_type === 'ai_proposal' ? 'AI-detected from voice/photo' :
+          item.origin_type === 'manual' ? 'Manually created' : item.origin_type
+        } />
+        <SummaryRow icon="cube-outline" label="What"
+          value={item.category.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())} />
+        <SummaryRow icon="person" label="Who"
+          value={item.assigned_to_user_name || (item.suggested_owner_role
+            ? `suggest ${item.suggested_owner_role.replace(/_/g, ' ')}` : 'unassigned')} />
+        <SummaryRow icon="time-outline" label="When"
+          value={item.required_by ? new Date(item.required_by).toLocaleDateString()
+            : (item.metrics.current_age_hours !== null ? `${Math.round(item.metrics.current_age_hours)}h old` : '-')} />
+        <SummaryRow icon="alert-circle" label="Blocker"
+          value={item.blocker ? humanBlocker(item.blocker.category) : 'none'} />
+      </View>
+      <View style={styles.tagsRow}>
+        <Tag color={PRIORITY_COLOR[item.priority]}>{item.priority.toUpperCase()}</Tag>
+        <Tag color={HEALTH_COLOR[item.health]}>{item.health.replace('_', ' ').toUpperCase()}</Tag>
+        <Tag color={theme.color.surface3} dim>{STATUS_LABEL[item.status] || item.status.toUpperCase()}</Tag>
+        {item.metrics.days_overdue > 0 ? (
+          <Tag color={theme.color.error}>{`${item.metrics.days_overdue}d OVERDUE`}</Tag>
+        ) : null}
+        <View style={{ flex: 1 }} />
+        <Pressable testID={`card-assign-${item.id}`}
+          onPress={(e) => { e.stopPropagation?.(); openAssign(item); }}
+          style={styles.cardAssign}>
+          <Ionicons name={item.assigned_to_user_id ? 'swap-horizontal' : 'person-add'} size={14} color={theme.color.info} />
+          <Text style={styles.cardAssignText}>
+            {item.assigned_to_user_id ? 'REASSIGN' : 'ASSIGN'}
+          </Text>
+        </Pressable>
+      </View>
+    </Pressable>
+  );
+}
+
+function ProposalCard({ proposal, busy, onReview, onReject }: {
+  proposal: AiProposal; busy: boolean; onReview: () => void; onReject: () => void;
+}) {
+  return (
+    <Pressable testID={`proposal-card-${proposal.id}`} onPress={onReview} style={styles.card}>
+      <View style={styles.row}>
+        <View style={[styles.healthDot, { backgroundColor: PRIORITY_COLOR[proposal.suggested_priority] }]} />
+        <Text style={styles.title} numberOfLines={2}>{proposal.title}</Text>
+      </View>
+      <View style={styles.summary}>
+        <SummaryRow icon="cube-outline" label="What"
+          value={proposal.category.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase())} />
+        <SummaryRow icon="person" label="Who"
+          value={proposal.suggested_owner_role ? `suggest ${proposal.suggested_owner_role.replace(/_/g, ' ')}` : 'unassigned'} />
+        <SummaryRow icon="document-text-outline" label="Why"
+          value={proposal.source_snippet || proposal.description || 'AI proposal'} />
+      </View>
+      <View style={styles.tagsRow}>
+        <Tag color={PRIORITY_COLOR[proposal.suggested_priority]}>{proposal.suggested_priority.toUpperCase()}</Tag>
+        <Tag color={theme.color.info}>{proposal.confidence.toUpperCase()}</Tag>
+        <Tag color={theme.color.surface3} dim>PENDING</Tag>
+        <View style={{ flex: 1 }} />
+        <Pressable testID={`proposal-review-${proposal.id}`} onPress={onReview} disabled={busy}
+          style={styles.cardAssign}>
+          <Ionicons name="create-outline" size={14} color={theme.color.info} />
+          <Text style={styles.cardAssignText}>REVIEW</Text>
+        </Pressable>
+        <Pressable testID={`proposal-reject-${proposal.id}`} onPress={onReject} disabled={busy}
+          style={[styles.cardAssign, { borderColor: theme.color.error }]}>
+          <Ionicons name="close" size={14} color={theme.color.error} />
+          <Text style={[styles.cardAssignText, { color: theme.color.error }]}>REJECT</Text>
+        </Pressable>
+      </View>
+    </Pressable>
+  );
+}
+
+function ProposalReviewModal({ proposal, edit, setEdit, users, busy, close, accept, reject }: {
+  proposal: AiProposal | null;
+  edit: ProposalEdit;
+  setEdit: Dispatch<SetStateAction<ProposalEdit>>;
+  users: AssignableUser[];
+  busy: boolean;
+  close: () => void;
+  accept: () => void;
+  reject: () => void;
+}) {
+  return (
+    <Modal visible={!!proposal} animationType="slide" transparent>
+      <View style={styles.modalBack}>
+        <View style={styles.modal} onStartShouldSetResponder={() => true}>
+          <View style={styles.modalHead}>
+            <Text style={styles.modalTitle}>REVIEW PROPOSAL</Text>
+            <Pressable testID="proposal-review-close" onPress={close}>
+              <Ionicons name="close" size={24} color={theme.color.textDim} />
+            </Pressable>
+          </View>
+          {proposal ? (
+            <>
+              <EditField label="Title" value={edit.title} testID="proposal-edit-title"
+                onChangeText={(t: string) => setEdit((p) => ({ ...p, title: t }))} />
+              <EditField label="Description" value={edit.description} testID="proposal-edit-description"
+                onChangeText={(t: string) => setEdit((p) => ({ ...p, description: t }))} />
+              <Text style={styles.fieldLabel}>Priority</Text>
+              <View style={styles.prioRow}>
+                {(['low', 'normal', 'high', 'critical'] as const).map((priority) => (
+                  <Pressable key={priority} testID={`proposal-priority-${priority}`}
+                    onPress={() => setEdit((p) => ({ ...p, priority }))}
+                    style={[styles.prioBtn, edit.priority === priority && {
+                      backgroundColor: PRIORITY_COLOR[priority], borderColor: PRIORITY_COLOR[priority],
+                    }]}>
+                    <Text style={[styles.prioText, edit.priority === priority && { color: '#fff' }]}>{priority.toUpperCase()}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <Text style={styles.fieldLabel}>Assign during acceptance</Text>
+              <ScrollView style={{ maxHeight: 180 }}>
+                <Pressable testID="proposal-assignee-none"
+                  onPress={() => setEdit((p) => ({ ...p, assigned_to_user_id: '' }))}
+                  style={styles.pickRow}>
+                  <Ionicons name="remove-circle-outline" size={20} color={theme.color.textMuted} />
+                  <Text style={styles.pickName}>Unassigned</Text>
+                </Pressable>
+                {users.map((u) => (
+                  <Pressable key={u.id} testID={`proposal-pick-assignee-${u.id}`}
+                    onPress={() => setEdit((p) => ({ ...p, assigned_to_user_id: u.id }))}
+                    style={styles.pickRow}>
+                    <Ionicons
+                      name={edit.assigned_to_user_id === u.id ? 'checkmark-circle' : 'person-circle-outline'}
+                      size={20}
+                      color={edit.assigned_to_user_id === u.id ? theme.color.brand : theme.color.textMuted}
+                    />
+                    <Text style={styles.pickName}>{u.name}</Text>
+                    <Text style={styles.pickRole}>{u.role}</Text>
+                  </Pressable>
+                ))}
+              </ScrollView>
+              <View style={styles.reviewActions}>
+                <Pressable testID="proposal-reject" disabled={busy} onPress={reject}
+                  style={[styles.reviewBtn, styles.rejectBtn]}>
+                  <Ionicons name="close" size={18} color={theme.color.error} />
+                  <Text style={[styles.reviewBtnText, { color: theme.color.error }]}>REJECT</Text>
+                </Pressable>
+                <Pressable testID="proposal-accept" disabled={busy || !edit.title.trim()} onPress={accept}
+                  style={[styles.reviewBtn, styles.acceptBtn, (busy || !edit.title.trim()) && { opacity: 0.5 }]}>
+                  <Ionicons name="checkmark" size={18} color={theme.color.onBrand} />
+                  <Text style={[styles.reviewBtnText, { color: theme.color.onBrand }]}>ACCEPT</Text>
+                </Pressable>
+              </View>
+            </>
+          ) : null}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function AssignModal({ item, users, close, assign }: {
+  item: OperationalItem | null;
+  users: AssignableUser[];
+  close: () => void;
+  assign: (u: AssignableUser) => void;
+}) {
+  return (
+    <Modal visible={!!item} animationType="fade" transparent>
+      <Pressable style={styles.modalBack} onPress={close}>
+        <View style={styles.modal} onStartShouldSetResponder={() => true}>
+          <Text style={styles.modalTitle}>ASSIGN TO</Text>
+          <ScrollView style={{ maxHeight: 360 }}>
+            {users.length === 0 ? (
+              <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No users available</Text>
+            ) : users.map((u) => {
+              const suggested = item?.suggested_owner_role &&
+                (u.role === item.suggested_owner_role ||
+                 item.suggested_owner_role.includes(u.role));
+              return (
+                <Pressable key={u.id} testID={`card-pick-assignee-${u.id}`}
+                  onPress={() => assign(u)}
+                  style={styles.pickRow}>
+                  <Ionicons name="person-circle-outline" size={20}
+                    color={suggested ? theme.color.brand : theme.color.textMuted} />
+                  <Text style={styles.pickName}>{u.name}</Text>
+                  <Text style={styles.pickRole}>{u.role}{suggested ? ' *' : ''}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      </Pressable>
+    </Modal>
   );
 }
 
@@ -248,6 +484,21 @@ function Tag({ children, color, dim }: any) {
   );
 }
 
+function EditField({ label, value, onChangeText, testID }: any) {
+  return (
+    <View style={{ marginBottom: 10 }}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <TextInput
+        testID={testID}
+        value={value}
+        onChangeText={onChangeText}
+        placeholderTextColor={theme.color.textDim}
+        style={styles.input}
+      />
+    </View>
+  );
+}
+
 export function humanBlocker(c: string) {
   return c.replace(/_/g, ' ').replace(/\b\w/g, (l) => l.toUpperCase());
 }
@@ -263,8 +514,8 @@ const styles = StyleSheet.create({
     flex: 1, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
     paddingVertical: 12, alignItems: 'center', borderWidth: 1, borderColor: theme.color.border,
   },
-  kpiValue: { fontSize: 22, fontWeight: '900' },
-  kpiLabel: { color: theme.color.textDim, fontSize: 10, fontWeight: '800', letterSpacing: 1, marginTop: 2 },
+  kpiValue: { fontSize: 20, fontWeight: '900' },
+  kpiLabel: { color: theme.color.textDim, fontSize: 9, fontWeight: '800', letterSpacing: 1, marginTop: 2 },
   chipsContainer: { height: 56 },
   chipsContent: { paddingHorizontal: theme.spacing.md, gap: 8, alignItems: 'center', height: 56 },
   chip: {
@@ -298,10 +549,26 @@ const styles = StyleSheet.create({
   emptyTitle: { color: theme.color.text, fontSize: 18, fontWeight: '900', letterSpacing: 1 },
   emptyBody: { color: theme.color.textMuted, textAlign: 'center' },
   modalBack: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center', padding: 24 },
-  modal: { width: '100%', maxWidth: 360, backgroundColor: theme.color.surface, padding: theme.spacing.md,
+  modal: { width: '100%', maxWidth: 380, backgroundColor: theme.color.surface, padding: theme.spacing.md,
            borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border },
-  modalTitle: { color: theme.color.brand, fontSize: 12, fontWeight: '900', letterSpacing: 2, marginBottom: theme.spacing.sm },
+  modalHead: { flexDirection: 'row', alignItems: 'center', marginBottom: theme.spacing.sm },
+  modalTitle: { flex: 1, color: theme.color.brand, fontSize: 12, fontWeight: '900', letterSpacing: 2, marginBottom: theme.spacing.sm },
   pickRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 },
   pickName: { color: theme.color.text, fontSize: 14, fontWeight: '700' },
   pickRole: { marginLeft: 'auto', color: theme.color.textDim, fontSize: 11 },
+  fieldLabel: { color: theme.color.textDim, fontSize: 11, fontWeight: '800', letterSpacing: 1, marginBottom: 4 },
+  input: { color: theme.color.text, backgroundColor: theme.color.surface2,
+           borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.color.border,
+           paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  prioRow: { flexDirection: 'row', gap: 6, marginBottom: theme.spacing.sm },
+  prioBtn: { flex: 1, paddingVertical: 8, borderRadius: theme.radius.sm,
+             borderWidth: 1, borderColor: theme.color.border, alignItems: 'center',
+             backgroundColor: theme.color.surface2 },
+  prioText: { color: theme.color.textDim, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  reviewActions: { flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.md },
+  reviewBtn: { flex: 1, height: 48, borderRadius: theme.radius.md, borderWidth: 1,
+               flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6 },
+  acceptBtn: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  rejectBtn: { backgroundColor: theme.color.surface2, borderColor: theme.color.error },
+  reviewBtnText: { fontSize: 12, fontWeight: '900', letterSpacing: 1 },
 });
