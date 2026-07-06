@@ -42,11 +42,9 @@ export default function ProjectsScreen() {
 
   const onPickProject = async (p: Project) => {
     if ((p as any).archived_at) return;
-    const sites = sitesByProject[p.id] || [];
-    if (sites.length > 0) {
-      await setActiveSite(sites[0].id);
-    }
-    router.replace('/(tabs)');
+    // Sprint 2: navigate into project workspace (sites + summary) instead of
+    // silently defaulting to the first site.
+    router.push(`/projects/${p.id}`);
   };
 
   const onSave = async () => {

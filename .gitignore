@@ -1,0 +1,11 @@
+
+# python
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# expo
+frontend/.expo/
+frontend/node_modules/
+

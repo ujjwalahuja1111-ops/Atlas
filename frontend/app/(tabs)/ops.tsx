@@ -263,6 +263,14 @@ function OperationalCard({ item, openAssign, openDetail }: {
 }) {
   return (
     <Pressable testID={`ops-card-${item.id}`} onPress={openDetail} style={styles.card}>
+      {(item.project_name || item.site_name) ? (
+        <View style={styles.scopeChipRow}>
+          <Ionicons name="location" size={11} color={theme.color.brand} />
+          <Text style={styles.scopeChipText} numberOfLines={1}>
+            {[item.project_name, item.site_name].filter(Boolean).join(' · ')}
+          </Text>
+        </View>
+      ) : null}
       <View style={styles.row}>
         <View style={[styles.healthDot, { backgroundColor: HEALTH_COLOR[item.health] }]} />
         <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
@@ -309,6 +317,14 @@ function ProposalCard({ proposal, busy, onReview, onReject }: {
 }) {
   return (
     <Pressable testID={`proposal-card-${proposal.id}`} onPress={onReview} style={styles.card}>
+      {(proposal.project_name || proposal.site_name) ? (
+        <View style={styles.scopeChipRow}>
+          <Ionicons name="location" size={11} color={theme.color.brand} />
+          <Text style={styles.scopeChipText} numberOfLines={1}>
+            {[proposal.project_name, proposal.site_name].filter(Boolean).join(' · ')}
+          </Text>
+        </View>
+      ) : null}
       <View style={styles.row}>
         <View style={[styles.healthDot, { backgroundColor: PRIORITY_COLOR[proposal.suggested_priority] }]} />
         <Text style={styles.title} numberOfLines={2}>{proposal.title}</Text>
@@ -539,6 +555,8 @@ const styles = StyleSheet.create({
   sumLabel: { color: theme.color.textDim, fontSize: 12, fontWeight: '700' },
   sumValue: { color: theme.color.text, fontSize: 13, flex: 1, fontWeight: '600' },
   tagsRow: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: 6, marginTop: 6 },
+  scopeChipRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 6 },
+  scopeChipText: { color: theme.color.brand, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
   tag: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1 },
   tagText: { fontSize: 10, fontWeight: '900', letterSpacing: 1 },
   cardAssign: { flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 8, paddingVertical: 4,

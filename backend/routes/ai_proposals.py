@@ -11,11 +11,16 @@ router = APIRouter(prefix="/api", tags=["ai-proposals"])
 @router.get("/ai-proposals")
 async def list_proposals(event_id: Optional[str] = None,
                          site_id: Optional[str] = None,
+                         project_id: Optional[str] = None,
                          status: Optional[str] = None,
                          user: dict = Depends(get_current_user)):
-    return await operations_engine.list_ai_proposals(
+    proposals = await operations_engine.list_ai_proposals(
         event_id=event_id, site_id=site_id, status=status,
     )
+    await operations_engine.attach_names(proposals)
+    if project_id:
+        proposals = [p for p in proposals if p.get("project_id") == project_id]
+    return proposals
 
 
 class AcceptReq(BaseModel):

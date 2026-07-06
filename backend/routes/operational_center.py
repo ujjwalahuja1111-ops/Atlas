@@ -9,8 +9,26 @@ router = APIRouter(prefix="/api", tags=["operational-center"])
 
 @router.get("/operational-center")
 async def operational_center(site_id: Optional[str] = None,
+                             project_id: Optional[str] = None,
                              user: dict = Depends(get_current_user)):
-    return await operations_engine.operational_center(site_id=site_id)
+    center = await operations_engine.operational_center(site_id=site_id)
+    # Optional project scope — apply after bucketing (small lists, fine to filter in-memory).
+    if project_id:
+        for key in ("open", "overdue", "high_priority", "awaiting_verification",
+                    "recently_completed", "recently_updated"):
+            center[key] = [i for i in center.get(key, []) if i.get("project_id") == project_id]
+        center["counts"] = {
+            "open": len(center["open"]),
+            "overdue": len(center["overdue"]),
+            "high_priority": len(center["high_priority"]),
+            "awaiting_verification": len(center["awaiting_verification"]),
+            "blocked": sum(1 for i in center["open"] if i.get("blocker")),
+        }
+    # Denormalise names on every list (single bulk lookup — cheap).
+    for key in ("open", "overdue", "high_priority", "awaiting_verification",
+                "recently_completed", "recently_updated"):
+        await operations_engine.attach_names(center.get(key, []))
+    return center
 
 
 @router.get("/sites/{site_id}/requirements")

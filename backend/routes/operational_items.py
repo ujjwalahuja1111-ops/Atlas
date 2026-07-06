@@ -50,6 +50,7 @@ async def create_item(req: CreateItem, user: dict = Depends(get_current_user)):
 
 @router.get("/operational-items")
 async def list_items(site_id: Optional[str] = None,
+                     project_id: Optional[str] = None,
                      status: Optional[str] = None,
                      priority: Optional[str] = None,
                      category: Optional[str] = None,
@@ -59,7 +60,11 @@ async def list_items(site_id: Optional[str] = None,
         site_id=site_id, status=status, priority=priority, category=category,
         assigned_to_user_id=user["id"] if assigned_to_me else None,
     )
-    return [operations_engine.enrich(i) for i in items]
+    if project_id:
+        items = [i for i in items if i.get("project_id") == project_id]
+    items = [operations_engine.enrich(i) for i in items]
+    await operations_engine.attach_names(items)
+    return items
 
 
 @router.get("/operational-items/{item_id}")
@@ -73,7 +78,9 @@ async def get_item(item_id: str, user: dict = Depends(get_current_user)):
     if item.get("inherited_evidence_event_id"):
         from engines import timeline_engine
         inherited = await timeline_engine.single(item["inherited_evidence_event_id"])
-    return {"item": operations_engine.enrich(item), "history": events, "evidence": inherited}
+    enriched = operations_engine.enrich(item)
+    await operations_engine.attach_names_single(enriched)
+    return {"item": enriched, "history": events, "evidence": inherited}
 
 
 class TransitionReq(BaseModel):

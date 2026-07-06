@@ -29,6 +29,16 @@ export type Site = {
   location: string;
   image_url: string;
   created_at: string;
+  archived_at?: string | null;
+};
+
+export type ProjectSummary = {
+  project: { id: string; name: string; code?: string; location?: string };
+  active_sites: number;
+  total_sites: number;
+  open_tasks: number;
+  pending_material_requests: number;
+  pending_labour_requests: number;
 };
 
 export type AiStatus = 'pending' | 'analyzed' | 'failed' | 'skipped';
@@ -170,10 +180,69 @@ export async function apiUnarchiveProject(id: string): Promise<Project> {
   return r.json();
 }
 
-export async function apiListSites(projectId?: string): Promise<Site[]> {
-  const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : '';
+export async function apiListSites(projectId?: string, includeArchived = false): Promise<Site[]> {
+  const params = new URLSearchParams();
+  if (projectId) params.set('project_id', projectId);
+  if (includeArchived) params.set('include_archived', 'true');
+  const qs = params.toString() ? `?${params.toString()}` : '';
   const r = await fetch(`${BACKEND}/api/sites${qs}`, { headers: await authHeaders() });
   if (!r.ok) throw new Error('sites');
+  return r.json();
+}
+
+export async function apiCreateSite(input: { project_id: string; name: string; location?: string; image_url?: string }): Promise<Site> {
+  const r = await fetch(`${BACKEND}/api/sites`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiUpdateSite(id: string, input: Partial<{ name: string; location: string; image_url: string }>): Promise<Site> {
+  const r = await fetch(`${BACKEND}/api/sites/${id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiArchiveSite(id: string): Promise<Site> {
+  const r = await fetch(`${BACKEND}/api/sites/${id}/archive`, {
+    method: 'POST', headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiUnarchiveSite(id: string): Promise<Site> {
+  const r = await fetch(`${BACKEND}/api/sites/${id}/unarchive`, {
+    method: 'POST', headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiDeleteSite(id: string): Promise<{ deleted: boolean; refs?: Record<string, number> }> {
+  const r = await fetch(`${BACKEND}/api/sites/${id}`, {
+    method: 'DELETE', headers: await authHeaders(),
+  });
+  if (r.status === 409) {
+    const body = await r.json();
+    return { deleted: false, refs: body?.detail?.refs };
+  }
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiProjectSummary(projectId: string): Promise<ProjectSummary> {
+  const r = await fetch(`${BACKEND}/api/projects/${projectId}/summary`, {
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
 
@@ -239,4 +308,12 @@ export async function setActiveSite(id: string) {
 }
 export async function getActiveSite() {
   return AsyncStorage.getItem(SITE_KEY);
+}
+
+const PROJECT_KEY = 'atlas.project';
+export async function setActiveProject(id: string) {
+  await AsyncStorage.setItem(PROJECT_KEY, id);
+}
+export async function getActiveProject() {
+  return AsyncStorage.getItem(PROJECT_KEY);
 }

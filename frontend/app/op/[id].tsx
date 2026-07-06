@@ -264,6 +264,14 @@ export default function OpDetail() {
           </View>
 
           <Text style={styles.title}>{item.title}</Text>
+          {(item.project_name || item.site_name) ? (
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 }}>
+              <Ionicons name="location" size={12} color={theme.color.brand} />
+              <Text style={{ color: theme.color.brand, fontSize: 11, fontWeight: '900', letterSpacing: 1 }} numberOfLines={1}>
+                {[item.project_name, item.site_name].filter(Boolean).join(' · ')}
+              </Text>
+            </View>
+          ) : null}
           {item.description ? <Text style={styles.desc}>{item.description}</Text> : null}
 
           {/* THREE QUESTIONS — always visible */}

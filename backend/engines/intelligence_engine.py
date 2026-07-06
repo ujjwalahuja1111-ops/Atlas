@@ -397,7 +397,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
 
     # ---- materials ----
     for m in _list("materials"):
-        if not isinstance(m, dict): continue
+        if not isinstance(m, dict):
+            continue
         name = _str(m.get("name")) or "material"
         qty = m.get("quantity")
         unit = _str(m.get("unit"))
@@ -412,23 +413,25 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                                                   "priority", "trade", "area", "reason", "confidence")})
 
     # ---- labour ----
-    for l in _list("labour"):
-        if not isinstance(l, dict): continue
-        trade = _str(l.get("trade")) or "labour"
-        cnt = l.get("count")
+    for lb in _list("labour"):
+        if not isinstance(lb, dict):
+            continue
+        trade = _str(lb.get("trade")) or "labour"
+        cnt = lb.get("count")
         cnt_str = "" if cnt in (None, "") else str(cnt)
         title = " ".join(filter(None, [cnt_str, trade, "required"])).strip() or f"{trade} required"
         await add("labour_requirement", title,
                   suggested_owner_role="coordinator",
-                  priority=l.get("priority"),
-                  confidence=_str(l.get("confidence")) or "high",
+                  priority=lb.get("priority"),
+                  confidence=_str(lb.get("confidence")) or "high",
                   snippet=f"Labour: {cnt_str} {trade}".strip(),
-                  details={k: l.get(k) for k in ("trade", "count", "required_date",
+                  details={k: lb.get(k) for k in ("trade", "count", "required_date",
                                                   "priority", "area", "reason", "confidence")})
 
     # ---- equipment ----
     for e in _list("equipment"):
-        if not isinstance(e, dict): continue
+        if not isinstance(e, dict):
+            continue
         name = _str(e.get("name") or e.get("equipment")) or "equipment"
         qty = e.get("quantity")
         qty_str = "" if qty in (None, "") else str(qty)
@@ -443,7 +446,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
 
     # ---- client_approvals ----
     for c in _list("client_approvals"):
-        if not isinstance(c, dict): continue
+        if not isinstance(c, dict):
+            continue
         what = _str(c.get("what")) or "Client approval pending"
         await add("client_approval", what,
                   suggested_owner_role="client_coordinator",
@@ -454,7 +458,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
 
     # ---- drawing_requests ----
     for d in _list("drawing_requests"):
-        if not isinstance(d, dict): continue
+        if not isinstance(d, dict):
+            continue
         drawing = _str(d.get("drawing")) or "Drawing request"
         rev = _str(d.get("revision"))
         title = f"{drawing}" + (f" (rev {rev})" if rev else "")
@@ -467,7 +472,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
 
     # ---- inspections ----
     for ins in _list("inspections"):
-        if not isinstance(ins, dict): continue
+        if not isinstance(ins, dict):
+            continue
         what = _str(ins.get("what")) or "Inspection"
         await add("inspection", what,
                   suggested_owner_role="qa",
@@ -478,7 +484,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
 
     # ---- safety_observations ----
     for s in _list("safety_observations"):
-        if not isinstance(s, dict): continue
+        if not isinstance(s, dict):
+            continue
         obs = _str(s.get("observation")) or "Safety observation"
         await add("safety_observation", obs,
                   suggested_owner_role="safety_officer",
@@ -489,7 +496,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
 
     # ---- quality_observations ----
     for q in _list("quality_observations"):
-        if not isinstance(q, dict): continue
+        if not isinstance(q, dict):
+            continue
         obs = _str(q.get("observation")) or "Quality observation"
         await add("quality_observation", obs,
                   suggested_owner_role="qa",
@@ -500,7 +508,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
 
     # ---- commitments ----
     for c in _list("commitments"):
-        if not isinstance(c, dict): continue
+        if not isinstance(c, dict):
+            continue
         what = _str(c.get("what")) or "Commitment"
         owed_to = _str(c.get("owed_to"))
         title = what + (f" → {owed_to}" if owed_to else "")
@@ -513,7 +522,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
 
     # ---- follow_ups ----
     for f in _list("follow_ups"):
-        if not isinstance(f, dict): continue
+        if not isinstance(f, dict):
+            continue
         what = _str(f.get("what")) or "Follow up"
         await add("follow_up", what,
                   suggested_owner_role="coordinator",

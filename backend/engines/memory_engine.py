@@ -67,10 +67,14 @@ async def update_project(project_id: str, *, name: Optional[str] = None,
                          location: Optional[str] = None,
                          image_url: Optional[str] = None) -> Optional[dict]:
     upd: dict = {}
-    if name is not None: upd["name"] = name
-    if code is not None: upd["code"] = code
-    if location is not None: upd["location"] = location
-    if image_url is not None: upd["image_url"] = image_url
+    if name is not None:
+        upd["name"] = name
+    if code is not None:
+        upd["code"] = code
+    if location is not None:
+        upd["location"] = location
+    if image_url is not None:
+        upd["image_url"] = image_url
     if not upd:
         return await get_project(project_id)
     upd["updated_at"] = _now()
@@ -94,8 +98,11 @@ async def unarchive_project(project_id: str) -> Optional[dict]:
     return await get_project(project_id)
 
 
-async def list_sites(project_id: Optional[str] = None) -> list[dict]:
-    q = {"project_id": project_id} if project_id else {}
+async def list_sites(project_id: Optional[str] = None,
+                     include_archived: bool = False) -> list[dict]:
+    q: dict = {"project_id": project_id} if project_id else {}
+    if not include_archived:
+        q["archived_at"] = None
     return await db.sites.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
@@ -125,6 +132,48 @@ async def insert_site(project_id: str, name: str, location: str = "", image_url:
         "created_at": _now(),
     }
     return await _insert(db.sites, doc)
+
+
+async def update_site(site_id: str, *, name: Optional[str] = None,
+                      location: Optional[str] = None,
+                      image_url: Optional[str] = None) -> Optional[dict]:
+    upd: dict = {}
+    if name is not None:
+        upd["name"] = name
+    if location is not None:
+        upd["location"] = location
+    if image_url is not None:
+        upd["image_url"] = image_url
+    if not upd:
+        return await get_site(site_id)
+    upd["updated_at"] = _now()
+    await db.sites.update_one({"id": site_id}, {"$set": upd})
+    return await get_site(site_id)
+
+
+async def archive_site(site_id: str) -> Optional[dict]:
+    await db.sites.update_one({"id": site_id}, {"$set": {"archived_at": _now()}})
+    return await get_site(site_id)
+
+
+async def unarchive_site(site_id: str) -> Optional[dict]:
+    await db.sites.update_one({"id": site_id}, {"$set": {"archived_at": None}})
+    return await get_site(site_id)
+
+
+async def site_reference_counts(site_id: str) -> dict:
+    """Counts of dependent records — used to decide if a site can be hard-deleted."""
+    return {
+        "events": await db.events.count_documents({"site_id": site_id}),
+        "operational_items": await db.operational_items.count_documents({"site_id": site_id}),
+        "ai_proposals": await db.ai_proposals.count_documents({"site_id": site_id}),
+    }
+
+
+async def delete_site(site_id: str) -> bool:
+    """Hard delete a site. Caller MUST check site_reference_counts() first."""
+    r = await db.sites.delete_one({"id": site_id})
+    return r.deleted_count > 0
 
 
 # ---------------- raw_assets ----------------

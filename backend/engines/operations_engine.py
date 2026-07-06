@@ -197,11 +197,16 @@ async def list_items(*, site_id: Optional[str] = None,
                      category: Optional[str] = None,
                      limit: int = 300) -> list[dict]:
     q: dict = {}
-    if site_id: q["site_id"] = site_id
-    if status: q["status"] = status
-    if priority: q["priority"] = priority
-    if assigned_to_user_id: q["assigned_to_user_id"] = assigned_to_user_id
-    if category: q["category"] = category
+    if site_id:
+        q["site_id"] = site_id
+    if status:
+        q["status"] = status
+    if priority:
+        q["priority"] = priority
+    if assigned_to_user_id:
+        q["assigned_to_user_id"] = assigned_to_user_id
+    if category:
+        q["category"] = category
     return (await db.operational_items.find(q, {"_id": 0})
             .sort("last_updated_at", -1).to_list(limit))
 
@@ -638,6 +643,56 @@ def enrich(item: dict) -> dict:
     item["health"] = derive_health(item)
     item["metrics"] = compute_metrics(item)
     return item
+
+
+# ---------------- Sprint-2: project+site name denormalisation ----------------
+async def _name_maps(site_ids: set[str], project_ids: set[str]) -> tuple[dict, dict]:
+    """Fetch site+project names in two bulk queries. Cheap and cache-friendly."""
+    site_map: dict = {}
+    project_map: dict = {}
+    if site_ids:
+        async for s in db.sites.find({"id": {"$in": list(site_ids)}}, {"_id": 0, "id": 1, "name": 1, "project_id": 1}):
+            site_map[s["id"]] = s
+    if project_ids:
+        async for p in db.projects.find({"id": {"$in": list(project_ids)}}, {"_id": 0, "id": 1, "name": 1}):
+            project_map[p["id"]] = p
+    return site_map, project_map
+
+
+async def attach_names(docs: list[dict]) -> list[dict]:
+    """Attach site_name + project_name to a list of docs that carry site_id
+    (and, optionally, project_id). Never mutates the DB; purely a read-side
+    denormalisation. Safe to call on operational_items, ai_proposals, or events.
+    """
+    if not docs:
+        return docs
+    site_ids = {d["site_id"] for d in docs if d.get("site_id")}
+    project_ids = {d["project_id"] for d in docs if d.get("project_id")}
+    # Project ids referenced only via site → resolve after we know the site's project.
+    site_map, project_map = await _name_maps(site_ids, project_ids)
+    missing_prj = {
+        s.get("project_id") for s in site_map.values()
+        if s.get("project_id") and s["project_id"] not in project_map
+    }
+    if missing_prj:
+        _, extra = await _name_maps(set(), missing_prj)
+        project_map.update(extra)
+    for d in docs:
+        s = site_map.get(d.get("site_id")) if d.get("site_id") else None
+        d["site_name"] = s.get("name") if s else None
+        pid = d.get("project_id") or (s.get("project_id") if s else None)
+        p = project_map.get(pid) if pid else None
+        d["project_id"] = pid
+        d["project_name"] = p.get("name") if p else None
+    return docs
+
+
+async def attach_names_single(doc: dict) -> dict:
+    """Convenience for single-doc paths."""
+    if not doc:
+        return doc
+    (out,) = await attach_names([doc])
+    return out
 
 
 # ---------------- operational center buckets ----------------

@@ -49,6 +49,8 @@ export type OperationalItem = {
   suggested_owner_role?: string | null;
   ai_confidence?: string | null;
   ai_details?: Record<string, any> | null;
+  project_name?: string | null;
+  site_name?: string | null;
   metrics: {
     current_age_hours: number | null;
     time_remaining_hours: number | null;
@@ -83,6 +85,9 @@ export type AiProposal = {
   source_snippet: string;
   details?: Record<string, any>;
   created_at: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  site_name?: string | null;
 };
 
 export type AssignableUser = { id: string; name: string; role: string };
