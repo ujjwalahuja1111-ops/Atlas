@@ -1,25 +1,25 @@
 import { useState } from 'react';
 import {
   View, Text, TextInput, Pressable, StyleSheet, KeyboardAvoidingView,
-  Platform, ActivityIndicator, ImageBackground,
+  Platform, ActivityIndicator, ImageBackground, ScrollView,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '@/src/theme';
-import { apiLogin, saveAuth, apiSeedDemo, type Role } from '@/src/api';
+import { apiLogin, saveAuth, apiSeedDemo } from '@/src/api';
+import {
+  BACKEND_ROLE_FOR, VIEW_ROLE_ICON, VIEW_ROLE_LABEL, setViewRole,
+  type ViewRole,
+} from '@/src/roles';
 
-const ROLES: { value: Role; label: string; icon: any }[] = [
-  { value: 'supervisor', label: 'Supervisor', icon: 'hardware-chip-outline' },
-  { value: 'coordinator', label: 'Coordinator', icon: 'clipboard-outline' },
-  { value: 'management', label: 'Management', icon: 'briefcase-outline' },
-];
+const VIEW_ROLES: ViewRole[] = ['client', 'supervisor', 'pm', 'admin'];
 
 export default function LoginScreen() {
   const router = useRouter();
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
-  const [role, setRole] = useState<Role>('supervisor');
+  const [viewRole, setViewRoleState] = useState<ViewRole>('supervisor');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -30,8 +30,10 @@ export default function LoginScreen() {
     }
     setLoading(true); setError('');
     try {
-      const res = await apiLogin(phone.trim(), name.trim(), role);
+      const backendRole = BACKEND_ROLE_FOR[viewRole];
+      const res = await apiLogin(phone.trim(), name.trim(), backendRole);
       await saveAuth(res.token, res.user);
+      await setViewRole(viewRole);
       apiSeedDemo().catch(() => {});
       router.replace('/(tabs)');
     } catch (e: any) {
@@ -75,17 +77,17 @@ export default function LoginScreen() {
             />
             <Text style={styles.label}>Role</Text>
             <View style={styles.roleRow}>
-              {ROLES.map((r) => {
-                const active = role === r.value;
+              {VIEW_ROLES.map((r) => {
+                const active = viewRole === r;
                 return (
                   <Pressable
-                    key={r.value} testID={`role-${r.value}`}
-                    onPress={() => setRole(r.value)}
+                    key={r} testID={`role-${r}`}
+                    onPress={() => setViewRoleState(r)}
                     style={[styles.roleChip, active && styles.roleChipActive]}
                   >
-                    <Ionicons name={r.icon} size={22}
+                    <Ionicons name={VIEW_ROLE_ICON[r]} size={20}
                       color={active ? theme.color.onBrand : theme.color.textMuted} />
-                    <Text style={[styles.roleText, active && styles.roleTextActive]}>{r.label}</Text>
+                    <Text style={[styles.roleText, active && styles.roleTextActive]}>{VIEW_ROLE_LABEL[r]}</Text>
                   </Pressable>
                 );
               })}

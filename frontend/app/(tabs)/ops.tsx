@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { theme } from '@/src/theme';
 import { loadAuth, type User } from '@/src/api';
+import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
 import {
   apiOperationalCenter, apiListItems, apiListUsers, apiAssignItem,
   apiListProposals, apiAcceptProposal, apiRejectProposal,
@@ -42,6 +43,7 @@ type ProposalEdit = {
 export default function OpsScreen() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
+  const [viewRole, setVR] = useState<ViewRole>('supervisor');
   const [center, setCenter] = useState<OperationalCenter | null>(null);
   const [mine, setMine] = useState<OperationalItem[]>([]);
   const [proposals, setProposals] = useState<AiProposal[]>([]);
@@ -67,15 +69,30 @@ export default function OpsScreen() {
     try {
       const auth = await loadAuth();
       setUser(auth.user);
-      const [c, m, p] = await Promise.all([
-        apiOperationalCenter(),
-        auth.user ? apiListItems({ assigned_to_me: true }) : Promise.resolve([]),
-        auth.user?.role === 'supervisor' ? Promise.resolve([]) : apiListProposals({ status: 'pending' }),
+      const vr = await getViewRole();
+      setVR(vr);
+      const p = VIEW_PERMS[vr];
+      const [c, m, prList] = await Promise.all([
+        p.showOpsBuckets ? apiOperationalCenter() : Promise.resolve(null),
+        p.onlyMyItems && auth.user
+          ? apiListItems({ assigned_to_me: true })
+          : (p.showAssignments && auth.user
+              ? apiListItems({ assigned_to_me: true })
+              : Promise.resolve([])),
+        p.showProposals ? apiListProposals({ status: 'pending' }) : Promise.resolve([]),
       ]);
       setCenter(c);
+      // supervisor: also constrain to site_issue if you want a pure "Issues" view — leave general list too
       setMine(m);
-      setProposals(p);
-      if (auth.user?.role === 'supervisor' && bucket === 'proposals') setBucket('mine');
+      // client: filter proposals to allowed category
+      const filteredProps = p.proposalCategoryFilter
+        ? prList.filter((x) => x.category === p.proposalCategoryFilter)
+        : prList;
+      setProposals(filteredProps);
+      // pick default bucket per role
+      if (!p.showOpsBuckets && !p.showProposals) setBucket('mine');
+      else if (!p.showOpsBuckets && p.showProposals) setBucket('proposals');
+      else if (bucket === 'proposals' && !p.showProposals) setBucket('mine');
     } catch (e) { console.warn(e); }
     finally { setLoading(false); setRefreshing(false); }
   }, [bucket]);

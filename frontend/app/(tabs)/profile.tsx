@@ -5,6 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { clearAuth, loadAuth, type User } from '@/src/api';
+import { clearViewRole, getViewRole, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
 
 const ROLE_LABEL: Record<string, string> = {
   supervisor: 'Site Supervisor',
@@ -15,16 +16,19 @@ const ROLE_LABEL: Record<string, string> = {
 export default function ProfileScreen() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
+  const [viewRole, setVR] = useState<ViewRole>('supervisor');
 
   useEffect(() => {
     (async () => {
       const { user } = await loadAuth();
       setUser(user);
+      setVR(await getViewRole());
     })();
   }, []);
 
   const logout = async () => {
     await clearAuth();
+    await clearViewRole();
     router.replace('/login');
   };
 
@@ -50,12 +54,13 @@ export default function ProfileScreen() {
         <Text style={styles.phone}>{user.phone}</Text>
         <View style={styles.roleTag}>
           <Ionicons name="shield-checkmark" size={16} color={theme.color.onBrand} />
-          <Text style={styles.roleText}>{ROLE_LABEL[user.role] || user.role}</Text>
+          <Text style={styles.roleText}>{VIEW_ROLE_LABEL[viewRole]}</Text>
         </View>
       </View>
 
       <View style={styles.info}>
-        <Row icon="business" label="Platform" value="Project Atlas v2" />
+        <Row icon="business" label="Workspace" value={VIEW_ROLE_LABEL[viewRole]} />
+        <Row icon="key" label="Backend role" value={ROLE_LABEL[user.role] || user.role} />
         <Row icon="globe" label="Voice languages" value="HI · PA · EN" />
         <Row icon="time" label="Member since" value={new Date(user.created_at).toLocaleDateString()} />
       </View>
