@@ -40,5 +40,26 @@ Voice + photo capture → AI structured events. Phone+name auth. Three roles. Hi
 - AI proposal acceptance trusts user edits without re-running GPT — fine for pilot, may revisit in V4.
 - In-process queue worker still single-instance. Future: Redis/Celery — only `intelligence_engine.enqueue()` needs to change.
 
-## V4 — Future (not started)
-Candidates: Construction Ontology (Knowledge Engine), Workflow Engine (approvals automation), Learning Engine (AI feedback loop), Documents tab on Site Workspace, multi-blocker stack.
+## V4 — Sprint 4: Construction Knowledge Core
+**Scope:** architecture sprint. Activate the reserved Knowledge Engine (#6) slot with reusable, versioned master-data objects that future Scheduling/BOQ/Baseline/Project-Generation/AI-Recommendation engines will read from. Explicitly NOT a feature sprint — no scheduling, BOQs, progress tracking, material/labour planning, AI behaviour, or project assignment.
+
+**Delivered:**
+- New **Knowledge Engine** (Engine #6, `engines/knowledge_engine.py`) — a single collection `knowledge_items`, discriminated by `type`: category / phase / activity / checklist_template / required_document. One generic engine avoids duplicating CRUD/search/archive/versioning logic per type.
+- **Generic typed relationships**: `relationships: [{id, type, target_id, metadata, created_at}]` embedded per item — not a hardcoded `depends_on` array. V1 exercises `depends_on` (Activity Dependencies) only; the shape supports `precedes`, `requires`, `references`, `uses`, `inspected_by`, `linked_document`, `linked_material`, `linked_equipment` without any future schema change. No cycle detection in V1 (data shape only).
+- **Versioning**: every edit snapshots the pre-edit doc into append-only `knowledge_versions` (mirrors the Corrections ADR pattern) before bumping `version` on the live doc. Full history retrievable per item.
+- **Soft-archive / restore**: `archived_at`, identical mechanics to projects/sites.
+- **Search + filter**: `?q=` (name/description/code/tags/ai_keywords, case-insensitive), `?type=`, `?category_id=`, `?phase_id=`, `?tag=`, `?include_archived=`.
+- **Admin-only mutations**: gated on backend role `management` (the existing target of the frontend `admin` view-role). Reads open to all authenticated roles.
+- **New mobile screens**: `/knowledge` (browse/search/filter/create/archive workspace, type tabs) + `/knowledge/[id]` (detail, inline edit, Dependency Viewer, version history) — entry point added to Profile screen, admin-only.
+- **Extension points, deliberately not wired to behaviour yet**: `tags`, `ai_keywords`, `default_duration_days` fields exist on Activities for future Search/AI/Scheduling engines to consume; `reference_counts()` helper exists for a future hard-delete guard (V1 only supports archive).
+- Canonical docs updated: ARCHITECTURE (Knowledge Engine row, collections table, new architecture section, V4 API surface), DECISIONS (ADR-014 through ADR-017), SPRINTS (this entry).
+
+**Backward compatibility:** Purely additive. No existing route, model, collection, or engine modified. All V1/V2/V3 endpoints and response shapes unchanged.
+
+**Risks / debt identified:**
+- No cycle detection on `depends_on` relationships — fine for V1 data entry, must be addressed before any future Scheduling/Baseline engine consumes this graph for sequencing.
+- No hard-delete for knowledge items (archive only) — `reference_counts()` is designed in but not exposed, mirroring the site hard-delete guard pattern for when it's needed.
+- Relationship `type` is not server-validated against a closed enum (by design, for extensibility) — a typo'd relationship type is stored as-is. Acceptable at V1 scale with a single admin actor; revisit if the vocabulary needs enforcement once other engines start writing relationships.
+
+## V5 — Future (not started)
+Candidates: Workflow Engine (approvals automation), Learning Engine (AI feedback loop), Documents tab on Site Workspace, multi-blocker stack, and the first real consumer of Construction Knowledge Core (e.g. Scheduling/Baseline reading Activities + dependencies to generate a project plan).

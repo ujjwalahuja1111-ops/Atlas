@@ -49,3 +49,25 @@ Date: V3.
 
 ## ADR-013 — Timeline merges operational events only on explicit opt-in (V3)
 **Context:** Backward compatibility. **Decision:** `GET /api/timeline?include=ops` merges `operational_events` into the chronological feed. Default behaviour returns only Construction Events. **Alternatives:** Always merge (rejected — breaks V2 clients). Date: V3.
+
+## ADR-014 — Construction Knowledge Core is one discriminated collection, not five (V4)
+**Context:** Sprint 4 asked for reusable master definitions across Categories, Phases, Activities, Checklist Templates, and Required Documents — all needing identical CRUD/search/archive/versioning mechanics. `ARCHITECTURE.md` had already reserved a single collection name (`construction_ontology`) for the Knowledge Engine slot. **Decision:** One collection `knowledge_items`, discriminated by `type`. One engine module (`knowledge_engine.py`) implements CRUD/search/archive/versioning once; per-type behaviour (category/phase refs, checklist items, document kind) is just conditional fields on the same shape. **Alternatives:**
+  - Five separate collections/routes/engines → rejected: duplicates near-identical logic five times, violates "no duplicated code," and fights the single reserved-collection design already implied in the architecture docs.
+Date: V4.
+
+## ADR-015 — Knowledge relationships are generic typed edges, not a fixed `depends_on` list (V4)
+**Context:** The brief's initial ask was Activity Dependencies only. On review, dependencies are one instance of a broader need: activities will eventually also link to documents, materials, equipment, and inspections. **Decision:** `knowledge_items.relationships[]` is a generic edge list — `{id, type, target_id, metadata, created_at}`. `type` is a free string; a curated `KNOWN_RELATIONSHIP_TYPES` set drives UI dropdowns but is NOT enforced server-side, so future engines can introduce new edge kinds without a schema change. V1 only exercises `depends_on`. No cycle detection / graph traversal is implemented — this is a data shape, not a scheduling engine. **Alternatives:**
+  - `depends_on: [activity_id]` embedded array → rejected: would need a second schema change the moment `linked_document` or `linked_material` was needed.
+  - A separate `knowledge_relationships` collection → rejected for V1: adds a join for a Dependency Viewer that always reads relationships alongside the item; revisit if relationship volume or cross-item queries grow.
+Date: V4.
+
+## ADR-016 — Knowledge versioning mirrors the Corrections pattern (V4)
+**Context:** Sprint 4 requires versioning, and Atlas already has a precedent for "never overwrite a fact in place" (ADR-004, ADR-012). **Decision:** Every `knowledge_items` update snapshots the pre-edit document into append-only `knowledge_versions` before applying the change, then increments `version` on the live doc. **Alternatives:**
+  - In-place edit with no history → rejected: brief explicitly requires "Versioning."
+  - Full event-sourced ledger (CQRS, like `operational_events`/`operational_items`) → rejected for V1 as over-engineered for slow-moving master data; the corrections-style snapshot gives real audit history at a fraction of the complexity. Revisit if Knowledge items start changing at ledger-worthy frequency.
+Date: V4.
+
+## ADR-017 — "Admin-only" maps to the existing `management` backend role (V4)
+**Context:** The sprint brief calls the Knowledge frontend "Admin-only," but Atlas has no `admin` backend role — only `supervisor | coordinator | management`. **Decision:** Reuse the mapping `frontend/src/roles.ts` already defines (`admin` view-role → `management` backend role) rather than introduce a new role. Knowledge mutation endpoints gate on `user.role == "management"`; read endpoints stay open to all authenticated roles since future engines/workspaces will need to reference this data. **Alternatives:**
+  - Add a new `admin` backend role → rejected: touches auth, login, and every existing role-gated route; out of scope for an architecture sprint whose brief explicitly forbids breaking changes and redesign.
+Date: V4.

@@ -9,7 +9,7 @@
 | 3 | Intelligence | `engines/intelligence_engine.py` | Async worker; Whisper + GPT-4o; Evidence + Prompt versioning; emits AI Proposals | ✅ V2 + V3 |
 | 4 | Timeline | `engines/timeline_engine.py` | Chronological projection over events + analyses + corrections (+ ops via `include=ops`) | ✅ V2 + V3 |
 | 5 | **Operations** | `engines/operations_engine.py` | Operational Items lifecycle, CQRS projection over ledger, Health derivation, AI Proposal acceptance | ✅ **V3** |
-| 6 | Knowledge | *(reserved)* | Construction Ontology — Trade → Activity → Material → Equipment … | reserved |
+| 6 | **Knowledge** | `engines/knowledge_engine.py` | Construction Knowledge Core — reusable master definitions (Category/Phase/Activity/Checklist Template/Required Document), generic typed relationships, versioning, soft-archive | ✅ **V4** |
 | 7 | Workflow | *(reserved)* | Future approvals automation | reserved |
 | 8 | Learning | *(reserved — `ai_feedback`)* | Closes the loop from human corrections back into models | reserved |
 
@@ -54,7 +54,8 @@
 | `operational_events` | **append-only ledger** | every lifecycle/comment/blocker/escalation event |
 | `operational_items` | derived projection (rebuildable) | cheap current-state read |
 | `ai_feedback`* | reserved | future Learning Engine |
-| `construction_ontology`* | reserved | future Knowledge Engine |
+| `knowledge_items` | soft-archive + versioned | Construction Knowledge Core master data, one collection discriminated by `type` (category/phase/activity/checklist_template/required_document) |
+| `knowledge_versions` | **append-only** | immutable pre-edit snapshots of `knowledge_items`, mirroring the `corrections` pattern |
 
 ## Evidence Model
 Every `ai_analyses.evidence[]` entry: `{kind, asset_id?, sha256?, value?}` referencing audio/photo/text artefacts. Every `operational_items.inherited_evidence_event_id` links back to the originating Construction Event so all evidence is reachable in one hop.
@@ -74,6 +75,14 @@ Every Operational Item answers without an extra fetch:
 ## Time Intelligence (computed on read)
 `current_age_hours · time_remaining_hours · days_overdue · time_to_complete_hours · verification_delay_hours`.
 
+## Construction Knowledge Core (V4)
+Single collection `knowledge_items`, discriminated by `type`: `category | phase | activity | checklist_template | required_document`. One generic engine avoids duplicating CRUD/search/archive/versioning logic five times.
+- **Relationships are generic, typed edges** embedded on the item: `relationships: [{id, type, target_id, metadata, created_at}]`. V1 populates `depends_on` (Activity Dependencies) but the shape supports future edge types (`precedes`, `requires`, `references`, `uses`, `inspected_by`, `linked_document`, `linked_material`, `linked_equipment`) without a schema change. No graph traversal / cycle detection in V1 — data shape only.
+- **Versioning** mirrors the `corrections` ADR pattern: every edit snapshots the pre-edit document into `knowledge_versions` (immutable, append-only) before applying the update, then bumps `version` on the live doc.
+- **Soft-archive** via `archived_at`, identical to projects/sites — no new archive paradigm.
+- **Admin-only**: mutating endpoints require backend role `management` (the existing mapping target of the frontend `admin` view-role in `roles.ts`). Read endpoints are open to any authenticated role, since future engines/roles will need to reference this data.
+- Out of scope for V1 (explicit extension points, not implemented): Scheduling, BOQs, Baseline Engine, Progress Tracking, Material/Labour Planning, AI Behaviour/Recommendations, Project assignment.
+
 ## API surface
 
 ### V2 (unchanged)
@@ -82,5 +91,8 @@ Every Operational Item answers without an extra fetch:
 ### V3 (new)
 `POST /api/operational-items · GET /api/operational-items · GET /api/operational-items/{id} · POST /api/operational-items/{id}/transition · POST /api/operational-items/{id}/assign · POST /api/operational-items/{id}/comments · POST /api/operational-items/{id}/blocker · DELETE /api/operational-items/{id}/blocker · POST /api/operational-items/{id}/due · POST /api/operational-items/{id}/escalate · GET /api/ai-proposals · POST /api/ai-proposals/{id}/accept · POST /api/ai-proposals/{id}/reject · GET /api/operational-center · GET /api/sites/{id}/requirements · GET /api/timeline?include=ops`
 
+### V4 (new)
+`GET /api/knowledge-items · POST /api/knowledge-items · GET /api/knowledge-items/{id} · PATCH /api/knowledge-items/{id} · POST /api/knowledge-items/{id}/archive · POST /api/knowledge-items/{id}/unarchive · GET /api/knowledge-items/{id}/versions · POST /api/knowledge-items/{id}/relationships · DELETE /api/knowledge-items/{id}/relationships/{relationship_id} · GET /api/knowledge-meta`
+
 ## Backward Compatibility
-V2 endpoints and response shapes are unchanged. Timeline default behaviour unchanged. No data migration required.
+V2 and V3 endpoints and response shapes are unchanged. Timeline default behaviour unchanged. No data migration required. V4 is purely additive (new collections, new router) — no existing route, model, or engine was modified.

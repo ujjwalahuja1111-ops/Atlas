@@ -1,0 +1,171 @@
+"""Construction Knowledge Core routes (Sprint 4 / Engine 6).
+
+Read endpoints are available to any authenticated role, since future engines
+and every role's workspace will eventually need to *reference* this data
+(e.g. picking an activity when logging an event). Only mutations are gated
+admin-only, matching the sprint brief ("Frontend: Admin-only").
+
+"Admin" has no dedicated backend role in Atlas — `frontend/src/roles.ts`
+already maps the admin *view role* onto the existing `management` backend
+role. We mirror that mapping here rather than introducing a new role.
+"""
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from typing import Optional
+from core.auth import get_current_user
+from engines import knowledge_engine
+
+router = APIRouter(prefix="/api", tags=["knowledge"])
+
+
+def _require_admin(user: dict) -> None:
+    if user["role"] != "management":
+        raise HTTPException(status_code=403, detail="Construction Knowledge Core is admin-only")
+
+
+class KnowledgeItemCreate(BaseModel):
+    type: str
+    name: str
+    description: str = ""
+    code: str = ""
+    category_id: Optional[str] = None
+    phase_id: Optional[str] = None
+    tags: list[str] = []
+    ai_keywords: list[str] = []
+    default_duration_days: Optional[float] = None
+    checklist_items: list[dict] = []
+    document_kind: Optional[str] = None
+
+
+class KnowledgeItemUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    code: Optional[str] = None
+    category_id: Optional[str] = None
+    phase_id: Optional[str] = None
+    tags: Optional[list[str]] = None
+    ai_keywords: Optional[list[str]] = None
+    default_duration_days: Optional[float] = None
+    checklist_items: Optional[list[dict]] = None
+    document_kind: Optional[str] = None
+
+
+class RelationshipCreate(BaseModel):
+    type: str
+    target_id: str
+    metadata: dict = {}
+
+
+@router.get("/knowledge-items")
+async def list_knowledge_items(
+    type: Optional[str] = None,
+    category_id: Optional[str] = None,
+    phase_id: Optional[str] = None,
+    tag: Optional[str] = None,
+    q: Optional[str] = None,
+    include_archived: bool = False,
+    user: dict = Depends(get_current_user),
+):
+    try:
+        items = await knowledge_engine.list_items(
+            type_=type, category_id=category_id, phase_id=phase_id,
+            tag=tag, q=q, include_archived=include_archived,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return [await knowledge_engine.enrich(i) for i in items]
+
+
+@router.get("/knowledge-items/{item_id}")
+async def get_knowledge_item(item_id: str, user: dict = Depends(get_current_user)):
+    item = await knowledge_engine.get_item(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge item not found")
+    return await knowledge_engine.enrich(item)
+
+
+@router.get("/knowledge-items/{item_id}/versions")
+async def get_knowledge_item_versions(item_id: str, user: dict = Depends(get_current_user)):
+    item = await knowledge_engine.get_item(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Knowledge item not found")
+    return await knowledge_engine.list_versions(item_id)
+
+
+@router.post("/knowledge-items", status_code=201)
+async def create_knowledge_item(req: KnowledgeItemCreate, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    try:
+        item = await knowledge_engine.create_item(
+            actor=user, type_=req.type, name=req.name, description=req.description,
+            code=req.code, category_id=req.category_id, phase_id=req.phase_id,
+            tags=req.tags, ai_keywords=req.ai_keywords,
+            default_duration_days=req.default_duration_days,
+            checklist_items=req.checklist_items, document_kind=req.document_kind,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return await knowledge_engine.enrich(item)
+
+
+@router.patch("/knowledge-items/{item_id}")
+async def update_knowledge_item(item_id: str, req: KnowledgeItemUpdate, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    try:
+        item = await knowledge_engine.update_item(
+            item_id, actor=user, updates=req.model_dump(exclude_unset=True),
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return await knowledge_engine.enrich(item)
+
+
+@router.post("/knowledge-items/{item_id}/archive")
+async def archive_knowledge_item(item_id: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    try:
+        item = await knowledge_engine.archive_item(item_id, actor=user)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return await knowledge_engine.enrich(item)
+
+
+@router.post("/knowledge-items/{item_id}/unarchive")
+async def unarchive_knowledge_item(item_id: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    try:
+        item = await knowledge_engine.unarchive_item(item_id, actor=user)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return await knowledge_engine.enrich(item)
+
+
+@router.post("/knowledge-items/{item_id}/relationships", status_code=201)
+async def add_relationship(item_id: str, req: RelationshipCreate, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    try:
+        item = await knowledge_engine.add_relationship(
+            item_id, actor=user, type_=req.type, target_id=req.target_id, metadata=req.metadata,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return await knowledge_engine.enrich(item)
+
+
+@router.delete("/knowledge-items/{item_id}/relationships/{relationship_id}")
+async def remove_relationship(item_id: str, relationship_id: str, user: dict = Depends(get_current_user)):
+    _require_admin(user)
+    try:
+        item = await knowledge_engine.remove_relationship(item_id, relationship_id, actor=user)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return await knowledge_engine.enrich(item)
+
+
+@router.get("/knowledge-meta")
+async def knowledge_meta(user: dict = Depends(get_current_user)):
+    """Static vocab for frontend dropdowns (types + curated relationship types)."""
+    return {
+        "types": sorted(knowledge_engine.TYPES),
+        "relationship_types": sorted(knowledge_engine.KNOWN_RELATIONSHIP_TYPES),
+    }

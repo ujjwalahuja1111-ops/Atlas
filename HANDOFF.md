@@ -211,7 +211,7 @@ Full pinned tree lives in `package.json` + `yarn.lock`.
 
 > Authoritative diagram + collection map: see `/memory/ARCHITECTURE.md`.
 
-Five engines, each single-purpose:
+Six engines, each single-purpose:
 
 | # | Engine | Responsibility |
 |---|---|---|
@@ -220,8 +220,9 @@ Five engines, each single-purpose:
 | 3 | **Intelligence** (`intelligence_engine.py`) | Async `asyncio.Queue` worker started by FastAPI lifespan. Whisper → GPT-4o → `ai_analyses` (with explicit evidence + prompt_version_id) → `ai_proposals`. Idempotent. Includes V3.2.2 recovery for analyzed-without-proposals orphans. |
 | 4 | **Timeline** (`timeline_engine.py`) | Read-only chronological projection over `events + ai_analyses + corrections`. Opt-in merge of operational events via `?include=ops`. |
 | 5 | **Operations** (`operations_engine.py`) | CQRS: `operational_events` is the append-only ledger; `operational_items` is a derived projection (rebuildable). Owns lifecycle transitions, blocker management, health derivation, time intelligence, AI proposal acceptance, V3.3 edits, voice updates, duplicate marking. |
+| 6 | **Knowledge** (`knowledge_engine.py`) | Construction Knowledge Core (V4). One collection `knowledge_items` discriminated by `type` (category/phase/activity/checklist_template/required_document). Generic typed `relationships[]` edges, versioning via `knowledge_versions` snapshots, soft-archive. Admin-only mutations. |
 
-Engines 6–8 (Knowledge / Workflow / Learning) are reserved; collections placeholders exist.
+Engines 7–8 (Workflow / Learning) remain reserved; `ai_feedback` collection placeholder exists.
 
 ### Request → write → projection flow
 
@@ -263,7 +264,8 @@ POST /api/events  ─►  Reality Engine  ─►  Memory Engine writes events+ra
 | `operational_events` | **append-only ledger** | every lifecycle / comment / blocker / edit / voice-update / assign event | `id`, `operational_item_id`, `kind`, `actor_user_id`, `actor_user_name`, `prev_status`, `new_status`, `payload`, `created_at` |
 | `operational_items` | derived projection (rebuildable) | cheap current-state read | `id`, `category`, `title`, `description`, `site_id`, `project_id`, `origin_type`, `origin_reference_id`, `inherited_evidence_event_id`, `status`, `priority`, all `*_by_user_*` + `*_at` fields, `blocker`, `health`, `last_updated_at`, `last_derived_from_op_event_id`, `suggested_owner_role?`, `ai_details?`, `ai_confidence?`, `duplicate_of_item_id?` |
 | `ai_feedback`* | reserved | future Learning Engine | — |
-| `construction_ontology`* | reserved | future Knowledge Engine | — |
+| `knowledge_items` | soft-archive + versioned | Construction Knowledge Core (V4) master data | `id`, `type`, `name`, `description`, `code`, `category_id?`, `phase_id?`, `tags[]`, `ai_keywords[]`, `default_duration_days?`, `checklist_items[]`, `document_kind?`, `relationships[]`, `version`, `archived_at?`, `created_by_*`, `updated_by_*`, `created_at`, `updated_at` |
+| `knowledge_versions` | **append-only** | immutable pre-edit snapshots of `knowledge_items`, mirrors `corrections` pattern | `id`, `item_id`, `item_type`, `version`, `snapshot`, `changed_by_*`, `created_at` |
 
 `*` = reserved, not yet written by any code path.
 
@@ -394,6 +396,20 @@ curl -X POST http://localhost:8001/api/ai-proposals/$PROP/accept \
 GET /api/operational-center            # buckets: open / overdue / high_priority / awaiting_verification / recently_completed / recently_updated + counts
 GET /api/sites/{site_id}/requirements  # living checklist for requirement categories
 ```
+
+### 9.9a Construction Knowledge Core (V4, admin-only mutations)
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/knowledge-items` (+ `type`, `category_id`, `phase_id`, `tag`, `q`, `include_archived`) | list/search/filter; open to all roles |
+| `POST` | `/api/knowledge-items` | create; **management role only** |
+| `GET` | `/api/knowledge-items/{id}` | enriched with `category_name`/`phase_name`/`relationships[].target_name` |
+| `PATCH` | `/api/knowledge-items/{id}` | update; bumps `version`, snapshots prior state; **management only** |
+| `POST` | `/api/knowledge-items/{id}/archive` / `/unarchive` | soft-archive; **management only** |
+| `GET` | `/api/knowledge-items/{id}/versions` | immutable pre-edit snapshots, newest first |
+| `POST` | `/api/knowledge-items/{id}/relationships` | `{type, target_id, metadata?}`; generic typed edge; **management only** |
+| `DELETE` | `/api/knowledge-items/{id}/relationships/{relationship_id}` | **management only** |
+| `GET` | `/api/knowledge-meta` | `{types[], relationship_types[]}` vocab for UI dropdowns |
 
 ### 9.10 Response shapes
 
@@ -632,9 +648,10 @@ Notes:
 
 ## 18. Open TODOs / deferred features
 
-* **Engine 6 — Knowledge Engine** (Construction Ontology). Reserved collection `construction_ontology`.
+* ~~**Engine 6 — Knowledge Engine** (Construction Ontology).~~ Delivered in V4 (Sprint 4) as `knowledge_items`/`knowledge_versions`. See §9.9a and `memory/ARCHITECTURE.md`.
 * **Engine 7 — Workflow Engine** (approvals automation).
 * **Engine 8 — Learning Engine** (feedback loop). Reserved collection `ai_feedback`.
+* **Knowledge graph cycle detection** — `depends_on` relationships have no cycle guard yet; needed before a future Scheduling/Baseline engine consumes the dependency graph for sequencing.
 * **Multi-blocker stack** (only single active blocker today).
 * **S3 / MinIO** for raw assets.
 * **Pytest coverage for V3.3** (edit / voice-update / duplicate / archive / cancel paths,

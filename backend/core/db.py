@@ -23,6 +23,13 @@ async def ensure_indexes() -> None:
     await db.operational_events.create_index([("operational_item_id", 1), ("created_at", 1)])
     await db.ai_proposals.create_index([("event_id", 1), ("decision", 1)])
     await db.ai_proposals.create_index("site_id")
+    # V4 — Knowledge Engine (Sprint 4)
+    await db.knowledge_items.create_index([("type", 1), ("archived_at", 1)])
+    await db.knowledge_items.create_index("category_id")
+    await db.knowledge_items.create_index("phase_id")
+    await db.knowledge_items.create_index("tags")
+    await db.knowledge_items.create_index("relationships.target_id")
+    await db.knowledge_versions.create_index([("item_id", 1), ("version", -1)])
 
 
 async def close_client() -> None:

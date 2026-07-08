@@ -65,6 +65,14 @@ export default function ProfileScreen() {
         <Row icon="time" label="Member since" value={new Date(user.created_at).toLocaleDateString()} />
       </View>
 
+      {viewRole === 'admin' && (
+        <Pressable testID="open-knowledge" onPress={() => router.push('/knowledge')} style={styles.knowledgeBtn}>
+          <Ionicons name="library-outline" size={22} color={theme.color.brand} />
+          <Text style={styles.knowledgeText}>CONSTRUCTION KNOWLEDGE</Text>
+          <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+        </Pressable>
+      )}
+
       <Pressable testID="logout-button" onPress={logout} style={styles.logoutBtn}>
         <Ionicons name="log-out-outline" size={28} color={theme.color.error} />
         <Text style={styles.logoutText}>LOG OUT</Text>
@@ -112,6 +120,13 @@ const styles = StyleSheet.create({
   },
   rowLabel: { color: theme.color.textDim, fontSize: 12, fontWeight: '700', letterSpacing: 1 },
   rowValue: { color: theme.color.text, fontSize: 16, fontWeight: '700', marginTop: 2 },
+  knowledgeBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    marginHorizontal: theme.spacing.md, marginTop: theme.spacing.md,
+    minHeight: 56, paddingHorizontal: theme.spacing.md, backgroundColor: theme.color.surface2,
+    borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border,
+  },
+  knowledgeText: { flex: 1, color: theme.color.text, fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
   logoutBtn: {
     marginTop: 'auto', marginHorizontal: theme.spacing.md, marginBottom: theme.spacing.lg,
     height: 72, borderRadius: theme.radius.md, borderWidth: 2, borderColor: theme.color.error,
