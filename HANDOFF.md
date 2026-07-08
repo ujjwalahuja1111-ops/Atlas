@@ -401,15 +401,17 @@ GET /api/sites/{site_id}/requirements  # living checklist for requirement catego
 
 | Method | Path | Notes |
 |---|---|---|
-| `GET` | `/api/knowledge-items` (+ `type`, `category_id`, `phase_id`, `tag`, `q`, `include_archived`) | list/search/filter; open to all roles |
-| `POST` | `/api/knowledge-items` | create; **management role only** |
+| `GET` | `/api/knowledge-items` (+ `type`, `category_id`, `phase_id`, `tag`, `status`, `q`, `include_archived`) | list/search/filter; open to all roles |
+| `POST` | `/api/knowledge-items` | create; **management role only**; `status` defaults to `draft` |
 | `GET` | `/api/knowledge-items/{id}` | enriched with `category_name`/`phase_name`/`relationships[].target_name` |
-| `PATCH` | `/api/knowledge-items/{id}` | update; bumps `version`, snapshots prior state; **management only** |
-| `POST` | `/api/knowledge-items/{id}/archive` / `/unarchive` | soft-archive; **management only** |
+| `PATCH` | `/api/knowledge-items/{id}` | update; bumps `version`, snapshots prior state; **management only**; `status` accepts `draft`/`active`/`deprecated` only — not `archived` (use the archive endpoint) |
+| `POST` | `/api/knowledge-items/{id}/archive` / `/unarchive` | soft-archive; **management only**; also sets `status` to `archived`/`active` respectively |
 | `GET` | `/api/knowledge-items/{id}/versions` | immutable pre-edit snapshots, newest first |
 | `POST` | `/api/knowledge-items/{id}/relationships` | `{type, target_id, metadata?}`; generic typed edge; **management only** |
 | `DELETE` | `/api/knowledge-items/{id}/relationships/{relationship_id}` | **management only** |
-| `GET` | `/api/knowledge-meta` | `{types[], relationship_types[]}` vocab for UI dropdowns |
+| `GET` | `/api/knowledge-meta` | `{types[], relationship_types[], statuses[]}` vocab for UI dropdowns |
+
+`knowledge_items` also carries a reserved `applicability` dict (freeform — project types, building types, construction types, regions, ...) for future project-generation filtering. Not read by any filter logic in V4.
 
 ### 9.10 Response shapes
 
@@ -449,6 +451,11 @@ Examples in the V3.2 test suite (`backend/tests/test_atlas_v3_2.py`) and in the 
 | Regenerate proposals | ❌ (403) | ✅ | ✅ |
 | Escalate | ✅ | ✅ | ✅ |
 | Transition status (incl. archive/cancel) | ✅ | ✅ | ✅ |
+| Read Construction Knowledge (V4) | ✅ | ✅ | ✅ |
+| Create/edit/archive Construction Knowledge (V4) | ❌ (403) | ❌ (403) | ✅ |
+
+### Frontend workspace routing (V4 cleanup)
+Sprint 3 added four *view-role* workspaces (Client / Supervisor / PM / Admin) layered on top of the three backend roles, originally chosen via a manual picker on the login screen. That picker is gone. Login now auto-resolves the workspace: `frontend/src/roles.ts` caches the last-known backend role per phone number per device, sends that (or the same `supervisor` default the backend itself uses for a brand-new phone) to the unchanged `POST /api/auth/login`, then routes into the workspace matching the **authoritative** role returned in the response via a single canonical map — `supervisor→supervisor`, `coordinator→pm`, `management→admin`. No backend route, request/response shape, or JWT mechanics changed. `client` remains fully defined in the frontend's permission tables but is no longer reachable via login auto-routing, since no backend signal distinguishes a "client" coordinator from a "PM" coordinator. See `memory/DECISIONS.md` ADR-020.
 
 ---
 

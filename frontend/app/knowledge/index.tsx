@@ -10,7 +10,8 @@ import { theme } from '@/src/theme';
 import { getViewRole, type ViewRole } from '@/src/roles';
 import {
   apiListKnowledgeItems, apiCreateKnowledgeItem, apiArchiveKnowledgeItem, apiUnarchiveKnowledgeItem,
-  type KnowledgeItem, type KnowledgeType, type KnowledgeItemInput,
+  type KnowledgeItem, type KnowledgeType, type KnowledgeItemInput, type KnowledgeStatus,
+  SETTABLE_KNOWLEDGE_STATUSES,
 } from '@/src/knowledge_api';
 
 const TYPE_TABS: { key: KnowledgeType; label: string; icon: any }[] = [
@@ -20,6 +21,20 @@ const TYPE_TABS: { key: KnowledgeType; label: string; icon: any }[] = [
   { key: 'checklist_template', label: 'CHECKLISTS', icon: 'checkbox' },
   { key: 'required_document', label: 'DOCUMENTS', icon: 'document-text' },
 ];
+
+// draft/active/deprecated only — 'archived' is a distinct action (archive
+// button), not a status choice, so it's kept out of this creation/edit chip
+// list on purpose (mirrors the backend's SETTABLE_STATUSES).
+const STATUS_OPTIONS = SETTABLE_KNOWLEDGE_STATUSES;
+
+function statusColor(status: KnowledgeStatus): string {
+  switch (status) {
+    case 'active': return theme.color.success;
+    case 'deprecated': return theme.color.warning;
+    case 'archived': return theme.color.textDim;
+    default: return theme.color.info; // draft
+  }
+}
 
 function csv(v: string): string[] {
   return v.split(',').map((s) => s.trim()).filter(Boolean);
@@ -74,6 +89,7 @@ export default function KnowledgeWorkspace() {
         default_duration_days: editing.default_duration_days ?? null,
         checklist_items: editing.checklist_items || [],
         document_kind: editing.document_kind || null,
+        status: editing.status || 'draft',
       });
       setEditing(null);
       await load();
@@ -196,9 +212,18 @@ export default function KnowledgeWorkspace() {
                     {item.phase_name ? ` · ${item.phase_name}` : ''}
                     {item.tags?.length ? ` · ${item.tags.join(', ')}` : ''}
                   </Text>
-                  {archived ? (
-                    <View style={styles.badgeArchived}><Text style={styles.badgeArchivedText}>ARCHIVED</Text></View>
-                  ) : null}
+                  <View style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
+                    {!archived && (
+                      <View style={[styles.badgeStatus, { borderColor: statusColor(item.status) }]}>
+                        <Text style={[styles.badgeStatusText, { color: statusColor(item.status) }]}>
+                          {item.status.toUpperCase()}
+                        </Text>
+                      </View>
+                    )}
+                    {archived ? (
+                      <View style={styles.badgeArchived}><Text style={styles.badgeArchivedText}>ARCHIVED</Text></View>
+                    ) : null}
+                  </View>
                 </View>
                 <View style={styles.actions}>
                   {archived ? (
@@ -236,6 +261,22 @@ export default function KnowledgeWorkspace() {
               onChangeText={(t) => setEditing({ ...(editing || {}), description: t })} multiline />
             <Field label="Code (optional)" value={editing?.code || ''} testID="knowledge-input-code"
               onChangeText={(t) => setEditing({ ...(editing || {}), code: t })} />
+
+            <Text style={styles.label}>Status</Text>
+            <View style={styles.statusRow}>
+              {STATUS_OPTIONS.map((s) => {
+                const active = (editing?.status || 'draft') === s;
+                return (
+                  <Pressable key={s} testID={`knowledge-status-${s}`}
+                    onPress={() => setEditing({ ...(editing || {}), status: s })}
+                    style={[styles.statusChip, active && styles.statusChipActive]}>
+                    <Text style={[styles.statusChipText, active && styles.statusChipTextActive]}>
+                      {s.toUpperCase()}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
 
             {showCategoryPhase && (
               <>
@@ -378,6 +419,15 @@ const styles = StyleSheet.create({
   badgeArchived: { alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
                   backgroundColor: theme.color.surface3, marginTop: 4 },
   badgeArchivedText: { color: theme.color.warning, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  badgeStatus: { alignSelf: 'flex-start', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4,
+                borderWidth: 1, backgroundColor: theme.color.surface3 },
+  badgeStatusText: { fontSize: 10, fontWeight: '900', letterSpacing: 1 },
+  statusRow: { flexDirection: 'row', gap: 8, marginBottom: theme.spacing.sm },
+  statusChip: { flex: 1, paddingVertical: 10, borderRadius: theme.radius.sm, alignItems: 'center',
+               backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border },
+  statusChipActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  statusChipText: { color: theme.color.brand, fontSize: 11, fontWeight: '900', letterSpacing: 0.5 },
+  statusChipTextActive: { color: theme.color.onBrand },
   actions: { flexDirection: 'row', gap: 6 },
   actionBtn: { width: 36, height: 36, borderRadius: 18, backgroundColor: theme.color.surface3,
               alignItems: 'center', justifyContent: 'center' },

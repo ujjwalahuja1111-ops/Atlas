@@ -1,25 +1,19 @@
 import { useState } from 'react';
 import {
   View, Text, TextInput, Pressable, StyleSheet, KeyboardAvoidingView,
-  Platform, ActivityIndicator, ImageBackground, ScrollView,
+  Platform, ActivityIndicator, ImageBackground,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '@/src/theme';
 import { apiLogin, saveAuth, apiSeedDemo } from '@/src/api';
-import {
-  BACKEND_ROLE_FOR, VIEW_ROLE_ICON, VIEW_ROLE_LABEL, setViewRole,
-  type ViewRole,
-} from '@/src/roles';
-
-const VIEW_ROLES: ViewRole[] = ['client', 'supervisor', 'pm', 'admin'];
+import { resolveLoginRole, completeLoginRouting } from '@/src/roles';
 
 export default function LoginScreen() {
   const router = useRouter();
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
-  const [viewRole, setViewRoleState] = useState<ViewRole>('supervisor');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -30,10 +24,16 @@ export default function LoginScreen() {
     }
     setLoading(true); setError('');
     try {
-      const backendRole = BACKEND_ROLE_FOR[viewRole];
-      const res = await apiLogin(phone.trim(), name.trim(), backendRole);
+      // Sprint 4 cleanup: no manual workspace picker. We resolve which
+      // backend role to authenticate as (returning phone number on this
+      // device -> its last-known role; brand-new phone -> the same safe
+      // default the backend itself uses), then auto-route into the
+      // matching workspace using the AUTHORITATIVE role the backend hands
+      // back — see src/roles.ts for the single, centralized mapping.
+      const guessedRole = await resolveLoginRole(phone.trim());
+      const res = await apiLogin(phone.trim(), name.trim(), guessedRole);
       await saveAuth(res.token, res.user);
-      await setViewRole(viewRole);
+      await completeLoginRouting(phone.trim(), res.user.role);
       apiSeedDemo().catch(() => {});
       router.replace('/(tabs)');
     } catch (e: any) {
@@ -75,23 +75,6 @@ export default function LoginScreen() {
               placeholder="98765 43210" placeholderTextColor={theme.color.textDim}
               keyboardType="phone-pad" style={styles.input}
             />
-            <Text style={styles.label}>Role</Text>
-            <View style={styles.roleRow}>
-              {VIEW_ROLES.map((r) => {
-                const active = viewRole === r;
-                return (
-                  <Pressable
-                    key={r} testID={`role-${r}`}
-                    onPress={() => setViewRoleState(r)}
-                    style={[styles.roleChip, active && styles.roleChipActive]}
-                  >
-                    <Ionicons name={VIEW_ROLE_ICON[r]} size={20}
-                      color={active ? theme.color.onBrand : theme.color.textMuted} />
-                    <Text style={[styles.roleText, active && styles.roleTextActive]}>{VIEW_ROLE_LABEL[r]}</Text>
-                  </Pressable>
-                );
-              })}
-            </View>
             {error ? <Text style={styles.error} testID="login-error">{error}</Text> : null}
           </View>
 
@@ -132,15 +115,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md, color: theme.color.text, fontSize: 20, borderWidth: 1,
     borderColor: theme.color.border,
   },
-  roleRow: { flexDirection: 'row', gap: theme.spacing.sm },
-  roleChip: {
-    flex: 1, height: theme.touch, borderRadius: theme.radius.md,
-    borderWidth: 2, borderColor: theme.color.border, backgroundColor: theme.color.surface2,
-    alignItems: 'center', justifyContent: 'center', gap: 4,
-  },
-  roleChipActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
-  roleText: { color: theme.color.textMuted, fontSize: 12, fontWeight: '700' },
-  roleTextActive: { color: theme.color.onBrand },
   cta: {
     height: 72, borderRadius: theme.radius.md, backgroundColor: theme.color.brand,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.sm,

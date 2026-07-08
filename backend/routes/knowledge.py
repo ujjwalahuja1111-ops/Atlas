@@ -35,6 +35,8 @@ class KnowledgeItemCreate(BaseModel):
     default_duration_days: Optional[float] = None
     checklist_items: list[dict] = []
     document_kind: Optional[str] = None
+    status: str = "draft"
+    applicability: dict = {}
 
 
 class KnowledgeItemUpdate(BaseModel):
@@ -48,6 +50,8 @@ class KnowledgeItemUpdate(BaseModel):
     default_duration_days: Optional[float] = None
     checklist_items: Optional[list[dict]] = None
     document_kind: Optional[str] = None
+    status: Optional[str] = None
+    applicability: Optional[dict] = None
 
 
 class RelationshipCreate(BaseModel):
@@ -62,6 +66,7 @@ async def list_knowledge_items(
     category_id: Optional[str] = None,
     phase_id: Optional[str] = None,
     tag: Optional[str] = None,
+    status: Optional[str] = None,
     q: Optional[str] = None,
     include_archived: bool = False,
     user: dict = Depends(get_current_user),
@@ -69,7 +74,7 @@ async def list_knowledge_items(
     try:
         items = await knowledge_engine.list_items(
             type_=type, category_id=category_id, phase_id=phase_id,
-            tag=tag, q=q, include_archived=include_archived,
+            tag=tag, status=status, q=q, include_archived=include_archived,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -102,6 +107,7 @@ async def create_knowledge_item(req: KnowledgeItemCreate, user: dict = Depends(g
             tags=req.tags, ai_keywords=req.ai_keywords,
             default_duration_days=req.default_duration_days,
             checklist_items=req.checklist_items, document_kind=req.document_kind,
+            status=req.status, applicability=req.applicability,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -164,8 +170,9 @@ async def remove_relationship(item_id: str, relationship_id: str, user: dict = D
 
 @router.get("/knowledge-meta")
 async def knowledge_meta(user: dict = Depends(get_current_user)):
-    """Static vocab for frontend dropdowns (types + curated relationship types)."""
+    """Static vocab for frontend dropdowns (types + curated relationship types + statuses)."""
     return {
         "types": sorted(knowledge_engine.TYPES),
         "relationship_types": sorted(knowledge_engine.KNOWN_RELATIONSHIP_TYPES),
+        "statuses": sorted(knowledge_engine.SETTABLE_STATUSES),
     }

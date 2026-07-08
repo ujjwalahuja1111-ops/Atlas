@@ -28,6 +28,7 @@ async def ensure_indexes() -> None:
     await db.knowledge_items.create_index("category_id")
     await db.knowledge_items.create_index("phase_id")
     await db.knowledge_items.create_index("tags")
+    await db.knowledge_items.create_index("status")
     await db.knowledge_items.create_index("relationships.target_id")
     await db.knowledge_versions.create_index([("item_id", 1), ("version", -1)])
 

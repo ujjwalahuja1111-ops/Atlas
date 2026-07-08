@@ -61,5 +61,14 @@ Voice + photo capture → AI structured events. Phone+name auth. Three roles. Hi
 - No hard-delete for knowledge items (archive only) — `reference_counts()` is designed in but not exposed, mirroring the site hard-delete guard pattern for when it's needed.
 - Relationship `type` is not server-validated against a closed enum (by design, for extensibility) — a typo'd relationship type is stored as-is. Acceptable at V1 scale with a single admin actor; revisit if the vocabulary needs enforcement once other engines start writing relationships.
 
+### Sprint 4 refinement pass (pre-merge review)
+Requested before merge to `main`; still unmerged (feature branch only).
+
+1. **Lifecycle `status`** (`draft | active | deprecated | archived`) added alongside `archived_at` — see ADR-018. New items default to `draft`.
+2. **`applicability`** freeform dict added and reserved for future project-generation filtering by project/building/construction type and region — see ADR-019. Not read by any filter logic yet.
+3. **Relationships** — no changes; generic `relationships[]` shape confirmed as final, reaffirmed rather than restricted to dependencies.
+4. **Sprint 3 workspace-selector cleanup** — the manual login role picker is removed. Login now auto-resolves the backend role and routes directly into the matching workspace via a single centralized mapping in `frontend/src/roles.ts` — see ADR-020. No backend API or auth flow changed.
+5. **Regression** — re-verified: zero pre-existing engine/route files modified (`git diff main -- backend/engines backend/routes` empty outside `knowledge.py`); zero pre-existing frontend screens modified outside `profile.tsx`'s additive nav link (added in the original Sprint 4 pass) and `login.tsx`/`roles.ts` (this pass, scoped exactly to the workspace-selector removal). Engine logic re-verified via the mongomock smoke harness (25 scenarios total across both passes) plus a standalone logic simulation of the new login-routing cache (6 scenarios). All passing.
+
 ## V5 — Future (not started)
 Candidates: Workflow Engine (approvals automation), Learning Engine (AI feedback loop), Documents tab on Site Workspace, multi-blocker stack, and the first real consumer of Construction Knowledge Core (e.g. Scheduling/Baseline reading Activities + dependencies to generate a project plan).

@@ -6,10 +6,16 @@ Validates:
   * Admin-only (management-role) gating on all mutating endpoints; other
     roles get 403 but CAN still read
   * category_id / phase_id referential validation on create + update
-  * Search (?q=) and filter (?type=, ?category_id=, ?phase_id=, ?tag=)
+  * Search (?q=) and filter (?type=, ?category_id=, ?phase_id=, ?tag=, ?status=)
   * Soft archive / unarchive (archived_at), matching the projects/sites
     pattern — archived items excluded from default list, included with
     ?include_archived=true
+  * Lifecycle `status` (draft/active/deprecated/archived): defaults to draft,
+    settable via update to draft/active/deprecated only (archived is
+    rejected — must go through the archive endpoint), archive/unarchive
+    keep status in sync with archived_at
+  * `applicability` freeform dict: stored and returned verbatim, no
+    filtering logic applied to it (reserved extension point)
   * Versioning: every update increments `version` and writes an immutable
     snapshot retrievable via GET /knowledge-items/{id}/versions
   * Generic relationships: add/remove typed edges (`relationships[]`),
@@ -274,6 +280,81 @@ def test_relationships_require_admin(supervisor, admin):
 
 
 # --------------------------------------------------------------------------
+# Lifecycle status (draft/active/deprecated/archived) + applicability
+# --------------------------------------------------------------------------
+def test_status_defaults_to_draft(admin):
+    h = admin["headers"]
+    cat = requests.post(f"{API}/knowledge-items",
+                        json={"type": "category", "name": "Status Default V4"},
+                        headers=h, timeout=20).json()
+    assert cat["status"] == "draft"
+    assert cat["applicability"] == {}
+
+
+def test_status_explicit_at_creation(admin):
+    h = admin["headers"]
+    act = requests.post(f"{API}/knowledge-items", json={
+        "type": "activity", "name": "Status Explicit V4", "status": "active",
+        "applicability": {"project_types": ["residential"], "regions": ["IN-NCR"]},
+    }, headers=h, timeout=20).json()
+    assert act["status"] == "active"
+    assert act["applicability"]["project_types"] == ["residential"]
+
+
+def test_status_rejects_invalid_values(admin):
+    h = admin["headers"]
+    r = requests.post(f"{API}/knowledge-items",
+                      json={"type": "category", "name": "Bad Status V4", "status": "bogus"},
+                      headers=h, timeout=20)
+    assert r.status_code == 400
+
+    r2 = requests.post(f"{API}/knowledge-items",
+                       json={"type": "category", "name": "Pre-archived V4", "status": "archived"},
+                       headers=h, timeout=20)
+    assert r2.status_code == 400, "status=archived must be rejected at creation — use the archive endpoint"
+
+
+def test_status_update_and_archive_sync(admin):
+    h = admin["headers"]
+    cat = requests.post(f"{API}/knowledge-items",
+                        json={"type": "category", "name": "Status Sync V4"},
+                        headers=h, timeout=20).json()
+    assert cat["status"] == "draft"
+
+    promote = requests.patch(f"{API}/knowledge-items/{cat['id']}", json={"status": "active"},
+                             headers=h, timeout=20)
+    assert promote.status_code == 200
+    assert promote.json()["status"] == "active"
+
+    # status=archived rejected via generic update
+    r_bad = requests.patch(f"{API}/knowledge-items/{cat['id']}", json={"status": "archived"},
+                           headers=h, timeout=20)
+    assert r_bad.status_code == 400
+
+    # archive syncs status
+    r_arch = requests.post(f"{API}/knowledge-items/{cat['id']}/archive", headers=h, timeout=20)
+    assert r_arch.json()["status"] == "archived"
+
+    # unarchive resets status to active
+    r_restore = requests.post(f"{API}/knowledge-items/{cat['id']}/unarchive", headers=h, timeout=20)
+    assert r_restore.json()["status"] == "active"
+
+
+def test_status_filter(admin):
+    h = admin["headers"]
+    requests.post(f"{API}/knowledge-items",
+                  json={"type": "category", "name": "Status Filter Draft V4"},
+                  headers=h, timeout=20)
+    requests.post(f"{API}/knowledge-items",
+                  json={"type": "category", "name": "Status Filter Active V4", "status": "active"},
+                  headers=h, timeout=20)
+    r_active = requests.get(f"{API}/knowledge-items?type=category&status=active", headers=h, timeout=20)
+    assert r_active.status_code == 200
+    assert all(i["status"] == "active" for i in r_active.json())
+    assert any(i["name"] == "Status Filter Active V4" for i in r_active.json())
+
+
+# --------------------------------------------------------------------------
 # Meta vocab
 # --------------------------------------------------------------------------
 def test_knowledge_meta(supervisor):
@@ -282,6 +363,8 @@ def test_knowledge_meta(supervisor):
     body = r.json()
     assert "activity" in body["types"]
     assert "depends_on" in body["relationship_types"]
+    assert "active" in body["statuses"]
+    assert "archived" not in body["statuses"], "archived is not a directly-settable status"
 
 
 # --------------------------------------------------------------------------

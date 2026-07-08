@@ -10,7 +10,8 @@ import { getViewRole, type ViewRole } from '@/src/roles';
 import {
   apiGetKnowledgeItem, apiUpdateKnowledgeItem, apiListKnowledgeVersions, apiKnowledgeMeta,
   apiListKnowledgeItems, apiAddKnowledgeRelationship, apiRemoveKnowledgeRelationship,
-  type KnowledgeItem, type KnowledgeVersion, type KnowledgeMeta,
+  SETTABLE_KNOWLEDGE_STATUSES,
+  type KnowledgeItem, type KnowledgeVersion, type KnowledgeMeta, type KnowledgeStatus,
 } from '@/src/knowledge_api';
 
 export default function KnowledgeDetail() {
@@ -22,7 +23,7 @@ export default function KnowledgeDetail() {
   const [meta, setMeta] = useState<KnowledgeMeta | null>(null);
   const [candidates, setCandidates] = useState<KnowledgeItem[]>([]);
   const [loading, setLoading] = useState(true);
-  const [editingField, setEditingField] = useState<{ name: string; description: string } | null>(null);
+  const [editingField, setEditingField] = useState<{ name: string; description: string; status: KnowledgeStatus } | null>(null);
   const [addingRel, setAddingRel] = useState(false);
   const [relType, setRelType] = useState('depends_on');
   const [relTarget, setRelTarget] = useState<KnowledgeItem | null>(null);
@@ -55,7 +56,7 @@ export default function KnowledgeDetail() {
     setBusy(true);
     try {
       const updated = await apiUpdateKnowledgeItem(item.id, {
-        name: editingField.name, description: editingField.description,
+        name: editingField.name, description: editingField.description, status: editingField.status,
       });
       setItem(updated);
       setEditingField(null);
@@ -119,10 +120,10 @@ export default function KnowledgeDetail() {
         </Pressable>
         <View style={{ flex: 1 }}>
           <Text style={styles.h1} numberOfLines={1}>{item.name}</Text>
-          <Text style={styles.h2}>{item.type.replace('_', ' ').toUpperCase()} · v{item.version}</Text>
+          <Text style={styles.h2}>{item.type.replace('_', ' ').toUpperCase()} · v{item.version} · {item.status.toUpperCase()}</Text>
         </View>
         <Pressable testID="knowledge-edit-open"
-          onPress={() => setEditingField({ name: item.name, description: item.description })}
+          onPress={() => setEditingField({ name: item.name, description: item.description, status: item.status })}
           style={styles.iconBtn}>
           <Ionicons name="pencil" size={20} color={theme.color.info} />
         </Pressable>
@@ -223,6 +224,21 @@ export default function KnowledgeDetail() {
             <TextInput testID="knowledge-edit-description" value={editingField?.description} multiline
               style={[styles.input, { height: 80, textAlignVertical: 'top' }]}
               onChangeText={(t) => setEditingField((f) => f && { ...f, description: t })} />
+            <Text style={[styles.label, { marginTop: 10 }]}>Status</Text>
+            <View style={styles.statusRow}>
+              {SETTABLE_KNOWLEDGE_STATUSES.map((s) => {
+                const active = editingField?.status === s;
+                return (
+                  <Pressable key={s} testID={`knowledge-edit-status-${s}`}
+                    onPress={() => setEditingField((f) => f && { ...f, status: s })}
+                    style={[styles.statusChip, active && styles.statusChipActive]}>
+                    <Text style={[styles.statusChipText, active && styles.statusChipTextActive]}>
+                      {s.toUpperCase()}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
             <Pressable testID="knowledge-edit-save" onPress={onSaveEdit} disabled={busy}
               style={[styles.saveBtn, busy && { opacity: 0.5 }]}>
               <Ionicons name="checkmark" size={22} color={theme.color.onBrand} />
@@ -379,6 +395,12 @@ const styles = StyleSheet.create({
   relTypeChipActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
   relTypeChipText: { color: theme.color.brand, fontSize: 12, fontWeight: '800' },
   relTypeChipTextActive: { color: theme.color.onBrand },
+  statusRow: { flexDirection: 'row', gap: 8, marginBottom: theme.spacing.sm },
+  statusChip: { flex: 1, paddingVertical: 10, borderRadius: theme.radius.sm, alignItems: 'center',
+               backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border },
+  statusChipActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  statusChipText: { color: theme.color.brand, fontSize: 11, fontWeight: '900', letterSpacing: 0.5 },
+  statusChipTextActive: { color: theme.color.onBrand },
   saveBtn: { marginTop: theme.spacing.md, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
             gap: 8, height: 52, borderRadius: theme.radius.md, backgroundColor: theme.color.brand },
   saveBtnText: { color: theme.color.onBrand, fontSize: 16, fontWeight: '900', letterSpacing: 1 },

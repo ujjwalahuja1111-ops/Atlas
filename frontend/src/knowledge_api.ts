@@ -24,6 +24,13 @@ export type KnowledgeRelationship = {
 
 export type ChecklistItem = { id: string; text: string };
 
+export type KnowledgeStatus = 'draft' | 'active' | 'deprecated' | 'archived';
+
+// draft/active/deprecated only — 'archived' is a distinct action (archive
+// button), not a status choice a screen should offer directly. Single
+// source of truth shared by the workspace list and detail screens.
+export const SETTABLE_KNOWLEDGE_STATUSES: Exclude<KnowledgeStatus, 'archived'>[] = ['draft', 'active', 'deprecated'];
+
 export type KnowledgeItem = {
   id: string;
   type: KnowledgeType;
@@ -40,6 +47,8 @@ export type KnowledgeItem = {
   checklist_items: ChecklistItem[];
   document_kind: string | null;
   relationships: KnowledgeRelationship[];
+  status: KnowledgeStatus;
+  applicability: Record<string, any>;
   version: number;
   archived_at: string | null;
   created_by_user_id: string; created_by_user_name: string;
@@ -58,7 +67,7 @@ export type KnowledgeVersion = {
   created_at: string;
 };
 
-export type KnowledgeMeta = { types: KnowledgeType[]; relationship_types: string[] };
+export type KnowledgeMeta = { types: KnowledgeType[]; relationship_types: string[]; statuses: KnowledgeStatus[] };
 
 export type KnowledgeItemInput = {
   type: KnowledgeType;
@@ -72,6 +81,8 @@ export type KnowledgeItemInput = {
   default_duration_days?: number | null;
   checklist_items?: ChecklistItem[];
   document_kind?: string | null;
+  status?: KnowledgeStatus;
+  applicability?: Record<string, any>;
 };
 
 export type KnowledgeItemUpdate = Partial<Omit<KnowledgeItemInput, 'type'>>;
@@ -81,6 +92,7 @@ export type KnowledgeListFilters = {
   category_id?: string;
   phase_id?: string;
   tag?: string;
+  status?: KnowledgeStatus;
   q?: string;
   include_archived?: boolean;
 };
@@ -96,6 +108,7 @@ export async function apiListKnowledgeItems(filters: KnowledgeListFilters = {}):
   if (filters.category_id) params.set('category_id', filters.category_id);
   if (filters.phase_id) params.set('phase_id', filters.phase_id);
   if (filters.tag) params.set('tag', filters.tag);
+  if (filters.status) params.set('status', filters.status);
   if (filters.q) params.set('q', filters.q);
   if (filters.include_archived) params.set('include_archived', 'true');
   const qs = params.toString() ? `?${params.toString()}` : '';

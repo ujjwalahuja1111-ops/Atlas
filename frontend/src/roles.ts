@@ -1,11 +1,19 @@
 /**
  * Sprint 3 — Role-based workspaces.
+ * Sprint 4 cleanup — removed the manual workspace selector on login.
  *
  * Frontend-only. Backend roles remain `supervisor | coordinator | management`.
  * We introduce a *view role* stored in AsyncStorage that governs which
  * navigation, screens and data filters the current user sees. The mapping
  * to backend roles is deliberately one-way: view roles derive backend
  * permissions but never contradict them.
+ *
+ * Login used to ask the person to manually pick one of four workspaces
+ * (Client / Supervisor / PM / Admin) and derived the backend role from that
+ * choice. That selector is gone. Login now goes the other direction:
+ * `resolveLoginRole()` / `completeLoginRouting()` (bottom of this file) are
+ * the SINGLE, CENTRALIZED place that maps a backend role to its default
+ * workspace and vice versa — no screen computes this mapping itself.
  */
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Role } from './api';
@@ -27,7 +35,10 @@ export const VIEW_ROLE_ICON: Record<ViewRole, any> = {
   admin: 'shield-checkmark-outline',
 };
 
-/** Backend role each view role authenticates as. */
+/** Backend role each view role authenticates as. Kept for reference/symmetry
+ * with DEFAULT_VIEW_ROLE_FOR below; login no longer reads this directly
+ * (see resolveLoginRole/completeLoginRouting) since the workspace picker
+ * this drove was removed in the Sprint 4 cleanup. */
 export const BACKEND_ROLE_FOR: Record<ViewRole, Role> = {
   client: 'coordinator',   // read-mostly; the frontend hides everything operational
   supervisor: 'supervisor',
@@ -117,4 +128,70 @@ export async function getViewRole(): Promise<ViewRole> {
 
 export async function clearViewRole() {
   await AsyncStorage.removeItem(VIEW_ROLE_KEY);
+}
+
+// ---------------------------------------------------------------------------
+// Sprint 4 cleanup: automatic workspace routing (replaces the Sprint 3
+// manual login selector). This is the ONLY place in the app that maps a
+// backend role to a workspace — screens must not duplicate this mapping.
+// ---------------------------------------------------------------------------
+
+/** Canonical backend role -> default workspace. `coordinator` collapses to
+ * the fuller `pm` workspace: `client` was always a manually-chosen, more
+ * restricted lens over the same backend role (there is no backend signal
+ * that distinguishes a "client" coordinator from a "PM" coordinator), so it
+ * is not something we can auto-detect. `client` remains fully supported in
+ * VIEW_PERMS/TABS_FOR for any future flow that sets it explicitly (e.g. if a
+ * dedicated backend distinction is ever added) — it is just no longer a
+ * login auto-routing target. */
+export const DEFAULT_VIEW_ROLE_FOR: Record<Role, ViewRole> = {
+  supervisor: 'supervisor',
+  coordinator: 'pm',
+  management: 'admin',
+};
+
+const KNOWN_ROLE_PREFIX = 'atlas.known_role.';
+
+/** Last backend role this device saw for a given phone number, so a
+ * returning user is routed straight back into their workspace without
+ * re-selecting anything. Scoped per-phone (not global) since a device may
+ * be shared across people with different phone numbers/roles. */
+async function getKnownRole(phone: string): Promise<Role | null> {
+  const v = await AsyncStorage.getItem(KNOWN_ROLE_PREFIX + phone);
+  return v === 'supervisor' || v === 'coordinator' || v === 'management' ? v : null;
+}
+
+async function setKnownRole(phone: string, role: Role): Promise<void> {
+  await AsyncStorage.setItem(KNOWN_ROLE_PREFIX + phone, role);
+}
+
+/**
+ * Which backend role to authenticate as for this phone number, on this
+ * device. Call BEFORE apiLogin(). The login API always requires a role
+ * (backend contract unchanged — see routes/auth.py `Role = "supervisor"`
+ * default), so a role must be supplied either way; we supply the
+ * previously-seen one for a returning phone number, or the same safe
+ * default the backend itself uses for a brand-new one. This never
+ * overrides an existing account's real role with a guess — it only ever
+ * "guesses" for a phone+device combo we have never seen before, which is
+ * exactly the situation the backend's own default already exists to
+ * handle.
+ */
+export async function resolveLoginRole(phone: string): Promise<Role> {
+  const known = await getKnownRole(phone.trim());
+  return known || 'supervisor';
+}
+
+/**
+ * Call AFTER a successful login with the AUTHORITATIVE role from the login
+ * response (`res.user.role`) — not the guess passed into resolveLoginRole.
+ * Remembers it for next time and resolves + persists the workspace the user
+ * should land in. Returns the resolved workspace purely for callers that
+ * want it (e.g. analytics); screens don't need to branch on it themselves.
+ */
+export async function completeLoginRouting(phone: string, backendRole: Role): Promise<ViewRole> {
+  await setKnownRole(phone.trim(), backendRole);
+  const workspace = DEFAULT_VIEW_ROLE_FOR[backendRole];
+  await setViewRole(workspace);
+  return workspace;
 }

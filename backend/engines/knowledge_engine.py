@@ -28,6 +28,21 @@ Design (mirrors existing Atlas conventions):
   `linked_document`, `linked_material`, `linked_equipment` etc. WITHOUT any
   schema change. No graph traversal / cycle detection is implemented in V1
   (explicitly out of scope — this is a data shape, not a scheduling engine).
+- Lifecycle `status` (draft | active | deprecated | archived) is tracked
+  ALONGSIDE `archived_at`, not instead of it. `archived_at` remains the
+  soft-archive timestamp that drives default list visibility (unchanged
+  mechanic, matches projects/sites). `status` is the richer editorial state:
+  new items default to `draft` so future consumers (e.g. Project Generation)
+  can list only `active` items without seeing work-in-progress definitions.
+  `archive_item`/`unarchive_item` keep both fields in sync (archive sets
+  status="archived"; unarchive resets it to "active") so there is a single
+  place — not two independent toggles — that owns the "is this archived"
+  question.
+- `applicability` is a deliberately unshaped, freeform dict reserved for
+  future project-generation filtering (project types, building types,
+  construction types, regions, ...). V1 stores and returns it verbatim; NO
+  filtering logic reads it yet. Modelled as an open dict rather than
+  hardcoded fields so new applicability axes never require a schema change.
 """
 from __future__ import annotations
 import uuid
@@ -37,6 +52,13 @@ from core.db import db
 
 # ----- vocab -----
 TYPES = {"category", "phase", "activity", "checklist_template", "required_document"}
+
+# Lifecycle status. "archived" is intentionally NOT settable via the generic
+# update path — it only ever gets set (in lockstep with archived_at) by
+# archive_item(), and cleared by unarchive_item(). This keeps one owner for
+# "is this archived" instead of two independently-mutable signals.
+STATUSES = {"draft", "active", "deprecated", "archived"}
+SETTABLE_STATUSES = {"draft", "active", "deprecated"}
 
 # Curated for UI dropdowns / documentation. NOT strictly enforced server-side
 # (see _validate_relationship_type) so future engines can introduce new edge
@@ -58,6 +80,14 @@ def _new_id(prefix: str = "kn_") -> str:
 def _validate_type(type_: str) -> None:
     if type_ not in TYPES:
         raise ValueError(f"Unknown knowledge item type '{type_}'. Must be one of {sorted(TYPES)}")
+
+
+def _validate_status(status: str) -> None:
+    if status not in SETTABLE_STATUSES:
+        raise ValueError(
+            f"Invalid status '{status}'. Must be one of {sorted(SETTABLE_STATUSES)} "
+            f"('archived' is set via the archive/unarchive endpoints, not directly)."
+        )
 
 
 async def _get_raw(item_id: str) -> Optional[dict]:
@@ -84,8 +114,11 @@ async def create_item(
     default_duration_days: Optional[float] = None,
     checklist_items: Optional[list[dict]] = None,
     document_kind: Optional[str] = None,
+    status: str = "draft",
+    applicability: Optional[dict] = None,
 ) -> dict:
     _validate_type(type_)
+    _validate_status(status)
     if not name or not name.strip():
         raise ValueError("name is required")
     if category_id:
@@ -108,6 +141,8 @@ async def create_item(
         "checklist_items": checklist_items or [],  # only meaningful for checklist_template
         "document_kind": document_kind,            # only meaningful for required_document
         "relationships": [],                        # generic typed edges — see module docstring
+        "status": status,                            # draft | active | deprecated (archived via archive_item)
+        "applicability": applicability or {},        # reserved, freeform — see module docstring
         "version": 1,
         "archived_at": None,
         "created_by_user_id": actor["id"],
@@ -131,6 +166,7 @@ async def list_items(
     category_id: Optional[str] = None,
     phase_id: Optional[str] = None,
     tag: Optional[str] = None,
+    status: Optional[str] = None,
     q: Optional[str] = None,
     include_archived: bool = False,
     limit: int = 500,
@@ -145,6 +181,10 @@ async def list_items(
         query["phase_id"] = phase_id
     if tag:
         query["tags"] = tag
+    if status:
+        if status not in STATUSES:
+            raise ValueError(f"Invalid status filter '{status}'. Must be one of {sorted(STATUSES)}")
+        query["status"] = status
     if not include_archived:
         query["archived_at"] = None
     if q:
@@ -220,6 +260,7 @@ async def list_versions(item_id: str) -> list[dict]:
 UPDATABLE_FIELDS = {
     "name", "description", "code", "category_id", "phase_id", "tags",
     "ai_keywords", "default_duration_days", "checklist_items", "document_kind",
+    "status", "applicability",
 }
 
 
@@ -230,6 +271,8 @@ async def update_item(item_id: str, *, actor: dict, updates: dict) -> dict:
         return item
     if "name" in upd and not upd["name"].strip():
         raise ValueError("name cannot be empty")
+    if "status" in upd:
+        _validate_status(upd["status"])
     if "category_id" in upd and upd["category_id"]:
         await _assert_exists(upd["category_id"], expected_type="category")
     if "phase_id" in upd and upd["phase_id"]:
@@ -251,7 +294,8 @@ async def archive_item(item_id: str, *, actor: dict) -> dict:
         return item
     await db.knowledge_items.update_one(
         {"id": item_id},
-        {"$set": {"archived_at": _now(), "updated_by_user_id": actor["id"],
+        {"$set": {"archived_at": _now(), "status": "archived",
+                  "updated_by_user_id": actor["id"],
                   "updated_by_user_name": actor["name"], "updated_at": _now()}},
     )
     return await _get_raw(item_id)
@@ -263,7 +307,8 @@ async def unarchive_item(item_id: str, *, actor: dict) -> dict:
         return item
     await db.knowledge_items.update_one(
         {"id": item_id},
-        {"$set": {"archived_at": None, "updated_by_user_id": actor["id"],
+        {"$set": {"archived_at": None, "status": "active",
+                  "updated_by_user_id": actor["id"],
                   "updated_by_user_name": actor["name"], "updated_at": _now()}},
     )
     return await _get_raw(item_id)
