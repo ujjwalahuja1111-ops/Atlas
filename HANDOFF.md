@@ -729,8 +729,8 @@ Notes:
 * Unified Activity timeline (renames History) rendering edited diffs, voice cards with transcript + AI summary, assignments, duplicates, blockers.
 * Smart cards continue to display Why / What / Who / When / Blocker without opening detail.
 
-### V4 — Construction Knowledge Core (Sprint 4)
-Architecture sprint. Establishes the foundational knowledge layer future Atlas intelligence modules (Project Generation, Baseline, Reality, Construction Intelligence) will build upon, while preserving all existing V1–V3 workflows unchanged.
+### V4 — Construction Knowledge Core (Sprint 4) — Architectural Milestone
+Not a feature release: this establishes the **canonical knowledge layer** that Atlas's next phase of intelligence and automation is built on — **Project Generation, Baseline Engine, Reality Engine (Activity matching), Material Intelligence, Labour Intelligence, Variance Analysis, and Construction Intelligence** will all read from `knowledge_items` rather than each inventing their own vocabulary for what construction work *is*. None of those modules are built in V4 — this sprint is deliberately scoped to the data layer and extension points they will need.
 
 **Construction Knowledge Core**
 * New Engine 6 (`knowledge_engine.py`) — `knowledge_items` as the canonical repository, single collection using a `type` discriminator (category/phase/activity/checklist_template/required_document).
@@ -752,7 +752,9 @@ Architecture sprint. Establishes the foundational knowledge layer future Atlas i
 * Admin-only Construction Knowledge workspace: browse, search, create, edit, archive, restore, Dependency Viewer.
 
 **Workspace Routing**
-* Removed the temporary Sprint 3 workspace selector. Users are now automatically routed into the correct workspace through one centralized backend-role → workspace resolver (`frontend/src/roles.ts`). Current mapping: Supervisor → Supervisor Workspace, Coordinator → Project Manager Workspace, Management → Admin Workspace. No authentication or backend API changes.
+* Removed the temporary Sprint 3 workspace selector. Users are now automatically routed into the correct workspace through one centralized backend-role → workspace resolver (`frontend/src/roles.ts`). Current mapping: Supervisor → Supervisor Workspace, Coordinator → Project Manager Workspace, Management → Admin Workspace.
+
+**Confirmed unchanged:** authentication mechanics, every V1–V3 API request/response contract, and every existing operational workflow (capture, timeline, operations, proposals, projects, sites).
 
 **Known limitations carried forward to V5:** no dependency cycle detection; archive-only deletion model (no hard-delete); relationship types not server-enforced against a closed enum; Coordinator defaults to PM workspace (Client workspace un-auto-routable pending a future permission-driven resolver); `applicability` has no dedicated UI yet; Whisper/GPT-4o proposal generation requires live-preview verification (sandbox-only limitation, not a code gap).
 

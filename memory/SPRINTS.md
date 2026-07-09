@@ -40,8 +40,8 @@ Voice + photo capture → AI structured events. Phone+name auth. Three roles. Hi
 - AI proposal acceptance trusts user edits without re-running GPT — fine for pilot, may revisit in V4.
 - In-process queue worker still single-instance. Future: Redis/Celery — only `intelligence_engine.enqueue()` needs to change.
 
-## V4 — Sprint 4: Construction Knowledge Core
-**Scope:** architecture sprint. Activate the reserved Knowledge Engine (#6) slot with reusable, versioned master-data objects that future Scheduling/BOQ/Baseline/Project-Generation/AI-Recommendation engines will read from. Explicitly NOT a feature sprint — no scheduling, BOQs, progress tracking, material/labour planning, AI behaviour, or project assignment.
+## V4 — Sprint 4: Construction Knowledge Core — Architectural Milestone
+**Scope:** architecture sprint, not a feature sprint. Activates the reserved Knowledge Engine (#6) slot with reusable, versioned master-data objects. This is the canonical knowledge layer Atlas's next phase is built on: **Project Generation, Baseline Engine, Reality Engine (Activity matching), Material Intelligence, Labour Intelligence, Variance Analysis, and Construction Intelligence** will all read from `knowledge_items` instead of each defining their own vocabulary for what construction work *is*. None of those modules are built here — V4 is deliberately scoped to the data layer and extension points they will need (no scheduling, BOQs, progress tracking, material/labour planning, AI behaviour, or project assignment). All Sprint 1–3 workflows and APIs are unchanged.
 
 **Delivered:**
 - New **Knowledge Engine** (Engine #6, `engines/knowledge_engine.py`) — a single collection `knowledge_items`, discriminated by `type`: category / phase / activity / checklist_template / required_document. One generic engine avoids duplicating CRUD/search/archive/versioning logic per type.

@@ -75,7 +75,17 @@ Every Operational Item answers without an extra fetch:
 ## Time Intelligence (computed on read)
 `current_age_hours · time_remaining_hours · days_overdue · time_to_complete_hours · verification_delay_hours`.
 
-## Construction Knowledge Core (V4)
+## Construction Knowledge Core (V4) — Architectural Milestone
+V4 is not a feature release — it establishes the **canonical knowledge layer** the next phase of Atlas is built on. Every module that reasons about *what construction work is* (as opposed to what already happened, which Reality/Memory/Timeline own) will read from `knowledge_items` rather than reinventing its own vocabulary:
+- **Project Generation** — turn a knowledge-defined Activity graph into a real project plan.
+- **Baseline Engine** — schedule dates against `default_duration_days` and `relationships[type=depends_on]`.
+- **Reality Engine (future extension)** — match captured events to canonical Activities via `tags`/`ai_keywords`.
+- **Material Intelligence / Labour Intelligence** — consume `linked_material`/`linked_equipment` relationships once populated.
+- **Variance Analysis** — compare actual progress against knowledge-defined Checklist Templates and Required Documents.
+- **Construction Intelligence** — the AI layer reasoning over all of the above needs one stable vocabulary to reason with; that vocabulary is this collection.
+
+None of those modules are built in V4 — this sprint is deliberately scoped to the data layer and extension points they'll need, not their behaviour.
+
 Single collection `knowledge_items`, discriminated by `type`: `category | phase | activity | checklist_template | required_document`. One generic engine avoids duplicating CRUD/search/archive/versioning logic five times.
 - **Relationships are generic, typed edges** embedded on the item: `relationships: [{id, type, target_id, metadata, created_at}]`. V1 populates `depends_on` (Activity Dependencies) but the shape supports future edge types (`precedes`, `requires`, `references`, `uses`, `inspected_by`, `linked_document`, `linked_material`, `linked_equipment`) without a schema change. No graph traversal / cycle detection in V1 — data shape only.
 - **Lifecycle `status`** (`draft | active | deprecated | archived`) tracked alongside `archived_at`, not instead of it. `archived_at` remains the soft-archive timestamp driving default list visibility (unchanged mechanic, matches projects/sites). `status` is the richer editorial state — new items default to `draft` so future consumers (e.g. Project Generation) can filter to `active` items only, without seeing work-in-progress definitions. `archive_item`/`unarchive_item` keep both fields in sync so there is one owner of "is this archived," not two independent toggles. `status="archived"` is never settable directly through the generic update path — only the archive/unarchive actions set it, in lockstep with `archived_at`.
