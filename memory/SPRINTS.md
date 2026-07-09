@@ -115,5 +115,25 @@ Requested before merge to `main`; still unmerged (feature branch only).
 - No email/SMS notification on approval — the Pending screen has a manual "Check Again" button instead.
 - No password — authentication model unchanged (phone+name, JWT), per "do not redesign authentication."
 
+## V4.2 — Sprint 4.2: Admin Experience
+**Scope:** complete the Admin experience so no administrator needs Git Bash, curl, MongoDB, or browser DevTools to manage Atlas. Extends the User Management foundation from Sprint 4.1 with Search, View Details, and CSV export; adds a new Admin System Information page. One new backend endpoint (`GET /api/admin/system-info`); every other capability reuses existing APIs with zero backend change.
+
+**Delivered:**
+- **User Management completion** — Search (client-side, over the already-fetched, already-filtered list — zero backend change), View user details (a dedicated modal showing every field including the resolved Workspace label via the existing `DEFAULT_VIEW_ROLE_FOR` mapping), CSV export. Approve/Reject/Assign Role/Assign Projects/Activate-Deactivate were already complete from Sprint 4.1 and are unchanged.
+- **CSV export** (`frontend/src/csv.ts`) — cross-platform without any new native dependency: `Blob`+`<a download>` on web, React Native's built-in `Share` API on native. Exports respect the currently active filter and search.
+- **Admin System Information page** (`app/system/index.tsx`, `GET /api/admin/system-info`) — Atlas version, git commit (best-effort `git rev-parse --short HEAD` at server boot, falling back to a `GIT_COMMIT` env var, then `"unknown"`), build date (`BUILD_DATE` env var if set, else server boot time), backend status, database status (a real `db.command("ping")`, not just "the process is running"), server uptime, and live counts (total users, total projects, total sites, pending approvals).
+- Admin-only nav entry on Profile, alongside Construction Knowledge and User Management.
+
+**Backend:** one new file (`routes/admin_system.py`), one new router registration in `server.py`. Mirrors the `_require_admin` pattern from `routes/knowledge.py`/`routes/admin_users.py` rather than inventing a new one. Read-only — never writes to any collection.
+
+**No changes to:** `routes/admin_users.py`, `routes/auth.py`, `core/auth.py`, any Sprint 1-4.1 engine, or any existing endpoint's request/response contract.
+
+**Testing:** `backend/tests/test_atlas_v4_2.py` (11 pytest cases). Additionally verified via engine-level mongomock smoke (count-query correctness) and full-stack HTTP-level smoke against the real FastAPI app (18 scenarios: admin gating, full field-presence check, live-count reflection as data changes). Combined with every prior Sprint 4/4.1 smoke suite re-run: 131 total scenarios, zero regressions.
+
+**Known limitations carried forward:**
+- CSV export on native platforms goes through the OS share sheet rather than a direct file-system write (no `expo-file-system`/`expo-sharing` dependency added — see ADR-024). Functionally complete, slightly less direct than a native "Downloads" save.
+- `git_commit`/`build_date` are best-effort: they reflect whatever's actually available in the deployed process (a `.git` directory, or `GIT_COMMIT`/`BUILD_DATE` env vars). A deploy pipeline that ships neither will show `"unknown"` and the server's own boot time respectively — still accurate, just less precise than a dedicated CI-stamped build manifest.
+- Search is client-side over a list capped at 1000 users server-side (consistent with every other list endpoint in Atlas) — fine at current and near-term scale; would need a server-side `?q=` param if the user base grows past that cap.
+
 ## V5 — Future (not started)
 Candidates: Workflow Engine (approvals automation), Learning Engine (AI feedback loop), Documents tab on Site Workspace, multi-blocker stack, per-project data scoping using `assigned_project_ids`, and the first real consumer of Construction Knowledge Core (e.g. Scheduling/Baseline reading Activities + dependencies to generate a project plan).

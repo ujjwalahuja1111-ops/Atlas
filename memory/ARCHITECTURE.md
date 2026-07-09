@@ -107,6 +107,11 @@ Sites already had complete lifecycle management since Sprint 2 (add/edit/archive
 ## Stabilization fixes (V4.1)
 Knowledge Core: `enrich_many()` batches list-response name resolution into one query (previously one query per item); `find_one_and_update`-based optimistic concurrency on writes, surfacing a 409 (`KnowledgeConflictError`) on a genuine conflict instead of silent last-write-wins; `KnowledgeNotFoundError` (404) is now distinct from a plain validation `ValueError` (400) — see ADR-023. `frontend/src/http.ts` consolidates the duplicated header-building helpers from `api.ts`/`ops_api.ts`/`knowledge_api.ts` and adds `apiFetch()`, a drop-in `fetch` replacement that clears the session and redirects to Login on a 401 from any authenticated endpoint. See `memory/SPRINTS.md`'s V4.1 entry for the full Critical/High/Medium/Low fix list.
 
+## Admin Experience (V4.2)
+Goal: no administrator should need Git Bash, curl, MongoDB, or browser DevTools to manage Atlas. Two additions:
+- **User Management completion** (`app/users/index.tsx`) — Search (client-side over the already-fetched, already-filtered list, zero backend change), View Details (a modal surfacing every field, including the Workspace label computed via the existing `DEFAULT_VIEW_ROLE_FOR` mapping from `roles.ts`), and CSV export (`frontend/src/csv.ts` — see ADR-024 for why it's dependency-free rather than using `expo-file-system`/`expo-sharing`). Approve/Reject/Assign Role/Assign Projects/Activate-Deactivate are unchanged from V4.1.
+- **Admin System Information** (`app/system/index.tsx`, `GET /api/admin/system-info`) — one new, read-only, admin-only endpoint (`routes/admin_system.py`, mirroring the existing `_require_admin` pattern) returning version/git-commit/build-date, backend and database health (a real `db.command("ping")`), server uptime, and live counts (users/projects/sites/pending-approvals).
+
 ## API surface
 
 ### V2 (unchanged)
@@ -121,5 +126,8 @@ Knowledge Core: `enrich_many()` batches list-response name resolution into one q
 ### V4.1 (new)
 `POST /api/auth/register · PATCH /api/me · DELETE /api/projects/{id} · GET /api/admin/users` (+ `approval_status`) `· POST /api/admin/users/{id}/approve · POST /api/admin/users/{id}/reject · POST /api/admin/users/{id}/role · POST /api/admin/users/{id}/projects · POST /api/admin/users/{id}/active`
 
+### V4.2 (new)
+`GET /api/admin/system-info`
+
 ## Backward Compatibility
-V2 and V3 endpoints and response shapes are unchanged. Timeline default behaviour unchanged. No data migration required. V4 is purely additive (new collections, new router) — no existing route, model, or engine was modified. V4.1 is a stabilization + additive-foundation sprint: every V1-V4 endpoint, request/response shape, and permission rule is unchanged; the only behavioural change to an existing code path is `get_current_user` gaining the `is_active` check, which is a no-op for every account that predates V4.1 (the field defaults to active when absent).
+V2 and V3 endpoints and response shapes are unchanged. Timeline default behaviour unchanged. No data migration required. V4 is purely additive (new collections, new router) — no existing route, model, or engine was modified. V4.1 is a stabilization + additive-foundation sprint: every V1-V4 endpoint, request/response shape, and permission rule is unchanged; the only behavioural change to an existing code path is `get_current_user` gaining the `is_active` check, which is a no-op for every account that predates V4.1 (the field defaults to active when absent). V4.2 adds exactly one new, read-only endpoint and zero changes to any existing route, model, or engine — every V1-V4.1 request/response contract is byte-for-byte unchanged.

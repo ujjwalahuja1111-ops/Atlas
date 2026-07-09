@@ -26,6 +26,7 @@ from routes import ai_proposals as ai_proposals_routes
 from routes import operational_center as operational_center_routes
 from routes import knowledge as knowledge_routes
 from routes import admin_users as admin_users_routes
+from routes import admin_system as admin_system_routes
 
 
 logging.basicConfig(
@@ -65,6 +66,7 @@ app.include_router(ai_proposals_routes.router)
 app.include_router(operational_center_routes.router)
 app.include_router(knowledge_routes.router)
 app.include_router(admin_users_routes.router)
+app.include_router(admin_system_routes.router)
 
 
 @app.get("/api/")

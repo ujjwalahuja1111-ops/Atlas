@@ -1,17 +1,18 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal, Alert,
+  View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Modal, Alert, TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { getViewRole, type ViewRole } from '@/src/roles';
+import { getViewRole, DEFAULT_VIEW_ROLE_FOR, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
 import { apiListProjects, type Project, type User, type Role } from '@/src/api';
 import {
   apiListAdminUsers, apiApproveUser, apiRejectUser, apiAssignUserRole,
   apiAssignUserProjects, apiSetUserActive, type ApprovalStatus,
 } from '@/src/admin_users_api';
+import { toCsv, exportCsv } from '@/src/csv';
 
 const FILTERS: { key: ApprovalStatus | 'all'; label: string }[] = [
   { key: 'pending', label: 'PENDING' },
@@ -26,13 +27,15 @@ export default function UserManagementScreen() {
   const router = useRouter();
   const [viewRole, setViewRole] = useState<ViewRole | null>(null);
   const [filter, setFilter] = useState<ApprovalStatus | 'all'>('pending');
+  const [query, setQuery] = useState('');
   const [users, setUsers] = useState<User[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [assigningUser, setAssigningUser] = useState<User | null>(null);
-  const [projectPicker, setProjectPicker] = useState(false);
+  const [detailUser, setDetailUser] = useState<User | null>(null);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => { getViewRole().then(setViewRole); }, []);
 
@@ -55,6 +58,19 @@ export default function UserManagementScreen() {
 
   useEffect(() => { if (viewRole === 'admin') load(); }, [viewRole, load]);
 
+  // Sprint 4.2: Search. Client-side over the already-loaded (and already
+  // status-filtered) list — reuses the existing GET /api/admin/users
+  // response with zero backend change, matching "reuse existing APIs
+  // wherever possible." List sizes here are capped at 1000 server-side,
+  // consistent with every other list endpoint in Atlas.
+  const filteredUsers = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return users;
+    return users.filter((u) =>
+      u.name.toLowerCase().includes(q) || u.phone.toLowerCase().includes(q)
+    );
+  }, [users, query]);
+
   const onApprove = async (u: User) => {
     setBusy(true);
     try { await apiApproveUser(u.id); await load(); }
@@ -71,8 +87,11 @@ export default function UserManagementScreen() {
 
   const onAssignRole = async (u: User, role: Role) => {
     setBusy(true);
-    try { await apiAssignUserRole(u.id, role); await load(); }
-    catch (e: any) { Alert.alert('Assign role failed', String(e?.message || e)); }
+    try {
+      const updated = await apiAssignUserRole(u.id, role);
+      setAssigningUser(updated);
+      await load();
+    } catch (e: any) { Alert.alert('Assign role failed', String(e?.message || e)); }
     finally { setBusy(false); }
   };
 
@@ -97,6 +116,42 @@ export default function UserManagementScreen() {
     finally { setBusy(false); }
   };
 
+  const projectName = (id: string) => projects.find((p) => p.id === id)?.name || id;
+
+  // Sprint 4.2: CSV export. Exports whatever is currently visible (respects
+  // the active filter + search), so "export" always matches what the admin
+  // is looking at.
+  const onExportCsv = async () => {
+    setExporting(true);
+    try {
+      // Rebuild rows with human-readable project names and normalized
+      // values rather than raw ids/booleans, since this is meant to be
+      // opened directly by a person, not re-imported programmatically.
+      const rows = filteredUsers.map((u) => ({
+        name: u.name,
+        phone: u.phone,
+        role: u.role,
+        approval_status: u.approval_status || 'approved',
+        is_active: u.is_active === false ? 'No' : 'Yes',
+        assigned_projects: (u.assigned_project_ids || []).map(projectName).join('; '),
+        created_at: u.created_at,
+      }));
+      const csv = toCsv(rows, [
+        { key: 'name', label: 'Name' },
+        { key: 'phone', label: 'Mobile Number' },
+        { key: 'role', label: 'Role' },
+        { key: 'approval_status', label: 'Approval Status' },
+        { key: 'is_active', label: 'Active' },
+        { key: 'assigned_projects', label: 'Assigned Projects' },
+        { key: 'created_at', label: 'Created At' },
+      ]);
+      const stamp = new Date().toISOString().slice(0, 10);
+      await exportCsv(csv, `atlas-users-${stamp}.csv`);
+    } catch (e: any) {
+      Alert.alert('Export failed', String(e?.message || e));
+    } finally { setExporting(false); }
+  };
+
   if (viewRole === null) {
     return (
       <SafeAreaView style={styles.safe}><View style={styles.center}>
@@ -117,8 +172,6 @@ export default function UserManagementScreen() {
     );
   }
 
-  const projectName = (id: string) => projects.find((p) => p.id === id)?.name || id;
-
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
@@ -129,6 +182,28 @@ export default function UserManagementScreen() {
           <Text style={styles.h1}>USER MANAGEMENT</Text>
           <Text style={styles.h2}>Admin workspace · approvals &amp; access</Text>
         </View>
+        <Pressable testID="users-export-csv" onPress={onExportCsv} disabled={exporting || filteredUsers.length === 0}
+          style={[styles.iconBtn, (exporting || filteredUsers.length === 0) && { opacity: 0.5 }]}>
+          {exporting ? <ActivityIndicator size="small" color={theme.color.brand} /> : (
+            <Ionicons name="download-outline" size={22} color={theme.color.brand} />
+          )}
+        </Pressable>
+      </View>
+
+      <View style={styles.searchBox}>
+        <Ionicons name="search" size={16} color={theme.color.textDim} />
+        <TextInput
+          testID="users-search"
+          value={query} onChangeText={setQuery}
+          placeholder="Search name or phone…"
+          placeholderTextColor={theme.color.textDim}
+          style={styles.searchInput}
+        />
+        {query.length > 0 && (
+          <Pressable testID="users-search-clear" onPress={() => setQuery('')}>
+            <Ionicons name="close-circle" size={18} color={theme.color.textDim} />
+          </Pressable>
+        )}
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.tabsRow}
@@ -152,18 +227,21 @@ export default function UserManagementScreen() {
         <View style={styles.center}><ActivityIndicator size="large" color={theme.color.brand} /></View>
       ) : (
         <ScrollView contentContainerStyle={{ padding: theme.spacing.md, paddingBottom: 80 }}>
-          {users.length === 0 && (
+          {filteredUsers.length === 0 && (
             <View style={styles.empty}>
               <Ionicons name="people-outline" size={56} color={theme.color.brand} />
               <Text style={styles.emptyTitle}>No users here</Text>
-              <Text style={styles.emptyBody}>Nobody matches this filter right now.</Text>
+              <Text style={styles.emptyBody}>
+                {query ? 'No one matches your search.' : 'Nobody matches this filter right now.'}
+              </Text>
             </View>
           )}
-          {users.map((u) => {
+          {filteredUsers.map((u) => {
             const status = u.approval_status || 'approved';
             const active = u.is_active !== false;
             return (
-              <View key={u.id} testID={`user-row-${u.id}`} style={styles.row}>
+              <Pressable key={u.id} testID={`user-row-${u.id}`} style={styles.row}
+                onPress={() => setDetailUser(u)}>
                 <View style={styles.rowHead}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.name} numberOfLines={1}>{u.name}</Text>
@@ -200,6 +278,8 @@ export default function UserManagementScreen() {
                         color={theme.color.error} onPress={() => onReject(u)} disabled={busy} />
                     </>
                   )}
+                  <ActionBtn testID={`user-details-${u.id}`} icon="eye" label="VIEW"
+                    color={theme.color.textMuted} onPress={() => setDetailUser(u)} disabled={busy} />
                   <ActionBtn testID={`user-assign-${u.id}`} icon="options" label="ROLE / PROJECTS"
                     color={theme.color.brand} onPress={() => setAssigningUser(u)} disabled={busy} />
                   {active ? (
@@ -213,7 +293,7 @@ export default function UserManagementScreen() {
                       color={theme.color.success} onPress={() => onSetActive(u, true)} disabled={busy} />
                   )}
                 </View>
-              </View>
+              </Pressable>
             );
           })}
         </ScrollView>
@@ -263,6 +343,38 @@ export default function UserManagementScreen() {
           </View>
         </View>
       </Modal>
+
+      {/* View Details modal */}
+      <Modal visible={!!detailUser} animationType="slide" transparent onRequestClose={() => setDetailUser(null)}>
+        <View style={styles.modalBack}>
+          <View style={styles.modal}>
+            <View style={styles.modalHead}>
+              <Text style={styles.modalTitle}>USER DETAILS</Text>
+              <Pressable onPress={() => setDetailUser(null)}>
+                <Ionicons name="close" size={26} color={theme.color.textDim} />
+              </Pressable>
+            </View>
+            {detailUser && (
+              <ScrollView style={{ maxHeight: 420 }}>
+                <DetailRow label="Name" value={detailUser.name} />
+                <DetailRow label="Mobile Number" value={detailUser.phone} />
+                <DetailRow label="Backend Role" value={detailUser.role} />
+                <DetailRow label="Workspace" value={VIEW_ROLE_LABEL[DEFAULT_VIEW_ROLE_FOR[detailUser.role]]} />
+                <DetailRow label="Approval Status" value={(detailUser.approval_status || 'approved').toUpperCase()} />
+                <DetailRow label="Active" value={detailUser.is_active === false ? 'No' : 'Yes'} />
+                <DetailRow label="Assigned Projects"
+                  value={(detailUser.assigned_project_ids || []).length
+                    ? (detailUser.assigned_project_ids || []).map(projectName).join(', ')
+                    : 'None'} />
+                <DetailRow label="Created" value={new Date(detailUser.created_at).toLocaleString()} />
+              </ScrollView>
+            )}
+            <Pressable testID="user-details-close" onPress={() => setDetailUser(null)} style={styles.closeDetailBtn}>
+              <Text style={styles.closeDetailBtnText}>CLOSE</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -279,6 +391,15 @@ function ActionBtn({ testID, icon, label, color, onPress, disabled }: {
   );
 }
 
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={styles.detailRow}>
+      <Text style={styles.detailLabel}>{label}</Text>
+      <Text style={styles.detailValue}>{value}</Text>
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.color.surface },
   header: { flexDirection: 'row', alignItems: 'center', padding: theme.spacing.md, gap: theme.spacing.sm },
@@ -286,6 +407,11 @@ const styles = StyleSheet.create({
   h2: { color: theme.color.brand, fontSize: 11, fontWeight: '700', marginTop: 2 },
   iconBtn: { width: 44, height: 44, borderRadius: 22, backgroundColor: theme.color.surface2,
             alignItems: 'center', justifyContent: 'center' },
+  searchBox: { flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: theme.spacing.md,
+              marginBottom: theme.spacing.sm, paddingHorizontal: 12, height: 40,
+              borderRadius: theme.radius.md, backgroundColor: theme.color.surface2,
+              borderWidth: 1, borderColor: theme.color.border },
+  searchInput: { flex: 1, color: theme.color.text, fontSize: 14 },
   tabsRow: { flexGrow: 0, marginBottom: theme.spacing.sm },
   tab: { paddingHorizontal: 14, paddingVertical: 8, borderRadius: theme.radius.pill,
         backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border },
@@ -329,4 +455,11 @@ const styles = StyleSheet.create({
   projectRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 12,
                borderBottomWidth: 1, borderBottomColor: theme.color.border },
   projectRowText: { color: theme.color.text, fontSize: 15, fontWeight: '600' },
+  detailRow: { paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: theme.color.border },
+  detailLabel: { color: theme.color.textDim, fontSize: 11, fontWeight: '800', letterSpacing: 0.5 },
+  detailValue: { color: theme.color.text, fontSize: 15, fontWeight: '700', marginTop: 3 },
+  closeDetailBtn: { marginTop: theme.spacing.md, height: 48, borderRadius: theme.radius.md,
+                    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border,
+                    alignItems: 'center', justifyContent: 'center' },
+  closeDetailBtnText: { color: theme.color.text, fontSize: 14, fontWeight: '900', letterSpacing: 1 },
 });

@@ -102,6 +102,11 @@ export default function ProfileScreen() {
             <Text style={styles.knowledgeText}>USER MANAGEMENT</Text>
             <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
           </Pressable>
+          <Pressable testID="open-system-info" onPress={() => router.push('/system')} style={styles.knowledgeBtn}>
+            <Ionicons name="hardware-chip-outline" size={22} color={theme.color.brand} />
+            <Text style={styles.knowledgeText}>SYSTEM INFORMATION</Text>
+            <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+          </Pressable>
         </>
       )}
 

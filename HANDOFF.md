@@ -428,6 +428,12 @@ GET /api/sites/{site_id}/requirements  # living checklist for requirement catego
 | `POST` | `/api/admin/users/{id}/active` | `{is_active}`; **management only**; rejects deactivating your own account (400) |
 | `DELETE` | `/api/projects/{id}` | Hard-delete only if zero sites (archived or active) reference it; 409 with blocking counts otherwise. Mirrors `DELETE /api/sites/{id}` exactly. **management/coordinator only.** |
 
+### 9.9c System Information (V4.2)
+
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/admin/system-info` | **management only**; read-only. Returns `{project_name, version, git_commit, build_date, server_started_at, uptime_seconds, backend_status, database_status, total_users, total_projects, total_sites, pending_approvals}`. `database_status` is a real `db.command("ping")`, not just "the process responded." |
+
 ### 9.10 Response shapes
 
 Examples in the V3.2 test suite (`backend/tests/test_atlas_v3_2.py`) and in the existing
@@ -639,6 +645,7 @@ content-type with extension fallbacks for `wav / mp3 / webm / ogg / m4a`.
 
 | File | Coverage |
 |---|---|
+| `backend/tests/test_atlas_v4_2.py` | Sprint 4.2 Admin Experience: system-info endpoint field presence, admin gating, live-count reflection, regression smoke on Sprint 1-4.1 endpoints and existing User Management routes. 11 cases. |
 | `backend/tests/test_atlas_v4_1.py` | Sprint 4.1 stabilization: Sign Up/Pending Approval workflow, admin User Management (approve/reject/assign role/assign projects/activate-deactivate), self-service `PATCH /api/me`, project `DELETE` with dependency guard, Knowledge Core 404/400/409 distinction, phone validation, regression smoke on Sprint 1-4 endpoints. 20 cases. |
 | `backend/tests/test_atlas_v4.py` | Construction Knowledge Core (V4): CRUD, search/filter, archive/versioning, generic relationships, lifecycle status, admin gating. |
 | `backend/tests/test_atlas_v3_2.py` | Current authoritative V3 suite. 13 cases: multi-intent extraction (≥4 categories from Hinglish utterance), material/labour/equipment detail shape, user directory (no phone leak, role filter), assign+reassign ledger growth, accept-with-assign one-tap, supervisor 403 on accept, V3.1 backward-compat smoke. |
@@ -799,6 +806,15 @@ First stability audit + full remediation pass. Fixed every issue found (1 Critic
 **Confirmed unchanged:** `/api/auth/login`, every V1–V4 API request/response contract, every existing permission rule. The only change to a pre-existing code path is `get_current_user` gaining the `is_active` check — a no-op for every account created before V4.1.
 
 **Deliberate scope boundaries:** no per-project data scoping by `assigned_project_ids` yet (nothing filters queries by it — that's the real "future expansion"); no notification on approval (manual "Check Again" button instead); no password (auth model unchanged per "do not redesign authentication").
+
+### V4.2 — Admin Experience
+Completes the Admin experience so no administrator needs Git Bash, curl, MongoDB, or browser DevTools to manage Atlas day-to-day.
+
+**User Management completion:** Search (client-side over the already-fetched, filtered list — zero backend change), View user details (a modal surfacing every field, including a computed Workspace label), CSV export (`frontend/src/csv.ts` — `Blob`+download on web, the OS share sheet via React Native's built-in `Share` API on native, no new dependency added — see ADR-024). Approve/Reject/Assign Role/Assign Projects/Activate-Deactivate are unchanged from V4.1.
+
+**Admin System Information:** new page (`app/system/index.tsx`) and one new, read-only, admin-only endpoint (`GET /api/admin/system-info`, `routes/admin_system.py`) returning Atlas version, git commit (best-effort, falls back gracefully), build date, backend status, a real database ping, server uptime, and live counts (total users/projects/sites, pending approvals).
+
+**Confirmed unchanged:** every V1–V4.1 API request/response contract, every existing permission rule, `routes/admin_users.py`, `routes/auth.py`, `core/auth.py`. This sprint adds exactly one new backend endpoint; everything else is frontend-only or reuses existing APIs.
 
 ---
 
