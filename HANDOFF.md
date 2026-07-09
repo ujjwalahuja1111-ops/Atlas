@@ -729,6 +729,33 @@ Notes:
 * Unified Activity timeline (renames History) rendering edited diffs, voice cards with transcript + AI summary, assignments, duplicates, blockers.
 * Smart cards continue to display Why / What / Who / When / Blocker without opening detail.
 
+### V4 — Construction Knowledge Core (Sprint 4)
+Architecture sprint. Establishes the foundational knowledge layer future Atlas intelligence modules (Project Generation, Baseline, Reality, Construction Intelligence) will build upon, while preserving all existing V1–V3 workflows unchanged.
+
+**Construction Knowledge Core**
+* New Engine 6 (`knowledge_engine.py`) — `knowledge_items` as the canonical repository, single collection using a `type` discriminator (category/phase/activity/checklist_template/required_document).
+* CRUD, search, filtering, soft-archive, immutable versioning (`knowledge_versions` — every edit snapshots the prior state before applying changes, mirroring the Corrections pattern).
+
+**Knowledge Relationships**
+* Generic `relationships[]` edges (`{id, type, target_id, metadata, created_at}`). Current support for dependencies (`depends_on`); extensible without a schema change to `precedes`, `requires`, `references`, `uses`, `inspected_by`, `linked_document`, `linked_material`, `linked_equipment`.
+
+**Lifecycle**
+* `status`: `draft | active | deprecated | archived`, tracked alongside `archived_at` (which retains its existing soft-archive role). New items default to `draft`.
+
+**Future extension points**
+* `applicability` — reserved, freeform dict for future filtering by project types, building types, construction types, and regions. Not read by any filter logic in V4.
+
+**API**
+* 10 new Knowledge Core endpoints. Management-role write access; read access for all authenticated users.
+
+**Frontend**
+* Admin-only Construction Knowledge workspace: browse, search, create, edit, archive, restore, Dependency Viewer.
+
+**Workspace Routing**
+* Removed the temporary Sprint 3 workspace selector. Users are now automatically routed into the correct workspace through one centralized backend-role → workspace resolver (`frontend/src/roles.ts`). Current mapping: Supervisor → Supervisor Workspace, Coordinator → Project Manager Workspace, Management → Admin Workspace. No authentication or backend API changes.
+
+**Known limitations carried forward to V5:** no dependency cycle detection; archive-only deletion model (no hard-delete); relationship types not server-enforced against a closed enum; Coordinator defaults to PM workspace (Client workspace un-auto-routable pending a future permission-driven resolver); `applicability` has no dedicated UI yet; Whisper/GPT-4o proposal generation requires live-preview verification (sandbox-only limitation, not a code gap).
+
 ---
 
 ## 20. Canonical documents
