@@ -90,14 +90,32 @@ def _validate_status(status: str) -> None:
         )
 
 
+class KnowledgeNotFoundError(ValueError):
+    """Raised specifically when the PRIMARY item identified by a route's
+    {item_id} path parameter doesn't exist, so routes can return 404
+    instead of lumping every ValueError into 400 (Sprint 4.1 stabilization
+    fix — audit finding L6). Subclasses ValueError so any existing `except
+    ValueError` catch site keeps working unchanged; only routes that want
+    the finer distinction need to catch this first.
+
+    NOT raised when _assert_exists is used to validate a *referenced* id
+    from the request body (category_id/phase_id/relationship target_id) —
+    an invalid reference is a 400 (bad request body), not a 404 (the URL's
+    resource not found), even though the underlying check is the same
+    "does this id exist" lookup. See the `as_not_found` parameter below.
+    """
+    pass
+
+
 async def _get_raw(item_id: str) -> Optional[dict]:
     return await db.knowledge_items.find_one({"id": item_id}, {"_id": 0})
 
 
-async def _assert_exists(item_id: str, *, expected_type: Optional[str] = None) -> dict:
+async def _assert_exists(item_id: str, *, expected_type: Optional[str] = None, as_not_found: bool = False) -> dict:
     doc = await _get_raw(item_id)
     if not doc:
-        raise ValueError(f"Referenced knowledge item '{item_id}' does not exist")
+        msg = f"Referenced knowledge item '{item_id}' does not exist"
+        raise KnowledgeNotFoundError(msg) if as_not_found else ValueError(msg)
     if expected_type and doc["type"] != expected_type:
         raise ValueError(f"'{item_id}' is a {doc['type']}, expected {expected_type}")
     return doc
@@ -215,10 +233,34 @@ async def enrich(item: dict) -> dict:
     """Attach human-readable labels for category/phase/relationship targets.
 
     Read-only convenience for the frontend; does not mutate stored data.
+    Single-item version — used by the single-item routes (get/create/update/
+    archive/etc). For list responses, use enrich_many() instead: it batches
+    all name lookups into ONE query regardless of list size (Sprint 4.1
+    stabilization fix — audit finding L3, N+1 query pattern).
     """
     ref_ids = [item.get("category_id"), item.get("phase_id")]
     ref_ids += [r["target_id"] for r in item.get("relationships", [])]
     names = await resolve_names(ref_ids)
+    return _apply_names(item, names)
+
+
+async def enrich_many(items: list[dict]) -> list[dict]:
+    """Batched version of enrich() — one resolve_names() query covering every
+    category_id/phase_id/relationship target across the whole list, instead
+    of one query per item.
+    """
+    if not items:
+        return []
+    ref_ids: list[str] = []
+    for item in items:
+        ref_ids.append(item.get("category_id"))
+        ref_ids.append(item.get("phase_id"))
+        ref_ids += [r["target_id"] for r in item.get("relationships", [])]
+    names = await resolve_names(ref_ids)
+    return [_apply_names(item, names) for item in items]
+
+
+def _apply_names(item: dict, names: dict[str, str]) -> dict:
     out = {**item}
     out["category_name"] = names.get(item.get("category_id"))
     out["phase_name"] = names.get(item.get("phase_id"))
@@ -256,6 +298,16 @@ async def list_versions(item_id: str) -> list[dict]:
     )
 
 
+class KnowledgeConflictError(ValueError):
+    """Raised when a write's optimistic-concurrency check fails — the item
+    was modified by someone else between this caller's read and write
+    (Sprint 4.1 stabilization fix — audit finding: no optimistic concurrency
+    control). Subclasses ValueError for the same backward-compatible-catch
+    reason as KnowledgeNotFoundError above.
+    """
+    pass
+
+
 # ---------------- update ----------------
 UPDATABLE_FIELDS = {
     "name", "description", "code", "category_id", "phase_id", "tags",
@@ -265,7 +317,7 @@ UPDATABLE_FIELDS = {
 
 
 async def update_item(item_id: str, *, actor: dict, updates: dict) -> dict:
-    item = await _assert_exists(item_id)
+    item = await _assert_exists(item_id, as_not_found=True)
     upd = {k: v for k, v in updates.items() if k in UPDATABLE_FIELDS and v is not None}
     if not upd:
         return item
@@ -278,18 +330,30 @@ async def update_item(item_id: str, *, actor: dict, updates: dict) -> dict:
     if "phase_id" in upd and upd["phase_id"]:
         await _assert_exists(upd["phase_id"], expected_type="phase")
 
-    await _snapshot_before_update(item, actor)
     upd["version"] = item["version"] + 1
     upd["updated_at"] = _now()
     upd["updated_by_user_id"] = actor["id"]
     upd["updated_by_user_name"] = actor["name"]
-    await db.knowledge_items.update_one({"id": item_id}, {"$set": upd})
+    # Optimistic concurrency, atomically: only apply if nobody else changed
+    # the version we read, and only ever snapshot the pre-image we ACTUALLY
+    # superseded (find_one_and_update returns the pre-update doc in the same
+    # atomic op, so there's no window where a failed write still leaves an
+    # orphaned "supersedes version N" snapshot behind).
+    before = await db.knowledge_items.find_one_and_update(
+        {"id": item_id, "version": item["version"]}, {"$set": upd},
+        projection={"_id": 0},
+    )
+    if before is None:
+        raise KnowledgeConflictError(
+            "This item was modified by someone else since you loaded it. Please reload and try again."
+        )
+    await _snapshot_before_update(before, actor)
     return await _get_raw(item_id)
 
 
 # ---------------- archive / restore ----------------
 async def archive_item(item_id: str, *, actor: dict) -> dict:
-    item = await _assert_exists(item_id)
+    item = await _assert_exists(item_id, as_not_found=True)
     if item.get("archived_at"):
         return item
     await db.knowledge_items.update_one(
@@ -302,7 +366,7 @@ async def archive_item(item_id: str, *, actor: dict) -> dict:
 
 
 async def unarchive_item(item_id: str, *, actor: dict) -> dict:
-    item = await _assert_exists(item_id)
+    item = await _assert_exists(item_id, as_not_found=True)
     if not item.get("archived_at"):
         return item
     await db.knowledge_items.update_one(
@@ -328,8 +392,8 @@ async def add_relationship(
     item_id: str, *, actor: dict, type_: str, target_id: str, metadata: Optional[dict] = None,
 ) -> dict:
     _validate_relationship_type(type_)
-    item = await _assert_exists(item_id)
-    await _assert_exists(target_id)  # target must be a real knowledge item
+    item = await _assert_exists(item_id, as_not_found=True)
+    await _assert_exists(target_id)  # target must be a real knowledge item — 400 if not, not 404
     if target_id == item_id:
         raise ValueError("An item cannot have a relationship to itself")
 
@@ -342,31 +406,41 @@ async def add_relationship(
         "created_by_user_name": actor["name"],
         "created_at": _now(),
     }
-    await _snapshot_before_update(item, actor)
-    await db.knowledge_items.update_one(
-        {"id": item_id},
+    before = await db.knowledge_items.find_one_and_update(
+        {"id": item_id, "version": item["version"]},
         {
             "$push": {"relationships": rel},
             "$set": {"version": item["version"] + 1, "updated_at": _now(),
                      "updated_by_user_id": actor["id"], "updated_by_user_name": actor["name"]},
         },
+        projection={"_id": 0},
     )
+    if before is None:
+        raise KnowledgeConflictError(
+            "This item was modified by someone else since you loaded it. Please reload and try again."
+        )
+    await _snapshot_before_update(before, actor)
     return await _get_raw(item_id)
 
 
 async def remove_relationship(item_id: str, relationship_id: str, *, actor: dict) -> dict:
-    item = await _assert_exists(item_id)
+    item = await _assert_exists(item_id, as_not_found=True)
     if not any(r["id"] == relationship_id for r in item.get("relationships", [])):
-        raise ValueError("Relationship not found")
-    await _snapshot_before_update(item, actor)
-    await db.knowledge_items.update_one(
-        {"id": item_id},
+        raise KnowledgeNotFoundError("Relationship not found")
+    before = await db.knowledge_items.find_one_and_update(
+        {"id": item_id, "version": item["version"]},
         {
             "$pull": {"relationships": {"id": relationship_id}},
             "$set": {"version": item["version"] + 1, "updated_at": _now(),
                      "updated_by_user_id": actor["id"], "updated_by_user_name": actor["name"]},
         },
+        projection={"_id": 0},
     )
+    if before is None:
+        raise KnowledgeConflictError(
+            "This item was modified by someone else since you loaded it. Please reload and try again."
+        )
+    await _snapshot_before_update(before, actor)
     return await _get_raw(item_id)
 
 

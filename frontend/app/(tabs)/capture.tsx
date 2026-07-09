@@ -13,6 +13,7 @@ import {
 } from 'expo-audio';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
+import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
 import {
   apiCreateEvent, apiListSites, apiListProjects,
   getActiveSite, setActiveSite,
@@ -32,7 +33,10 @@ export default function CaptureScreen() {
   const [status, setStatus] = useState<string>('');
   const [gps, setGps] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
   const [gpsAsked, setGpsAsked] = useState(false);
+  const [viewRole, setViewRole] = useState<ViewRole | null>(null);
   const timerRef = useRef<any>(null);
+
+  useEffect(() => { getViewRole().then(setViewRole); }, []);
 
   useEffect(() => {
     (async () => {
@@ -40,15 +44,22 @@ export default function CaptureScreen() {
         await AudioModule.requestRecordingPermissionsAsync();
         await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
       } catch {}
-      const list = await apiListSites();
-      setSites(list);
-      const projects = await apiListProjects();
-      const pmap: Record<string, Project> = {};
-      for (const p of projects) pmap[p.id] = p;
-      setProjectMap(pmap);
-      const stored = await getActiveSite();
-      const active = stored && list.find((s) => s.id === stored) ? stored : list[0]?.id || null;
-      setSiteId(active);
+      try {
+        const list = await apiListSites();
+        setSites(list);
+        const projects = await apiListProjects();
+        const pmap: Record<string, Project> = {};
+        for (const p of projects) pmap[p.id] = p;
+        setProjectMap(pmap);
+        const stored = await getActiveSite();
+        const active = stored && list.find((s) => s.id === stored) ? stored : list[0]?.id || null;
+        setSiteId(active);
+      } catch (e: any) {
+        // Sprint 4.1 fix (audit H4): surface load failures instead of
+        // silently swallowing them.
+        console.warn(e);
+        setStatus(e?.message || 'Could not load sites. Pull down on Home to retry.');
+      }
     })();
     return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, []);
@@ -118,7 +129,7 @@ export default function CaptureScreen() {
 
   const pickFromGallery = async () => {
     const perm = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (!perm.granted) return;
+    if (!perm.granted) { setStatus('Gallery permission denied'); return; }
     const res = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'], quality: 0.6, allowsMultipleSelection: false,
     });
@@ -146,6 +157,28 @@ export default function CaptureScreen() {
   const activeSite = sites.find((s) => s.id === siteId);
   const activeProject = activeSite ? projectMap[activeSite.project_id] : null;
 
+  // Sprint 4.1 fix (audit H3): this screen previously had zero role
+  // awareness at all — VIEW_PERMS.client.showCapture=false was only ever
+  // enforced by hiding the tab bar icon, not by the screen itself. Any
+  // direct navigation here (e.g. the Home empty-state CTA, before its own
+  // H2 fix) bypassed that entirely. Matches the guard pattern already used
+  // in knowledge/index.tsx and knowledge/[id].tsx.
+  if (viewRole !== null && !VIEW_PERMS[viewRole].showCapture) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <View style={[styles.center, { flex: 1 }]}>
+          <Ionicons name="lock-closed-outline" size={48} color={theme.color.textDim} />
+          <Text style={{ color: theme.color.text, fontSize: 18, fontWeight: '900', marginTop: 8 }}>
+            Capture not available
+          </Text>
+          <Text style={{ color: theme.color.textMuted, marginTop: 4, textAlign: 'center', paddingHorizontal: 24 }}>
+            This workspace doesn't include capturing new site updates.
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.headerRow}>
@@ -157,7 +190,9 @@ export default function CaptureScreen() {
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false}
         style={styles.chipsRow} contentContainerStyle={styles.chipsContent}>
-        {sites.map((s) => {
+        {sites.length === 0 ? (
+          <Text style={styles.noSitesText}>No sites available yet</Text>
+        ) : sites.map((s) => {
           const active = s.id === siteId;
           return (
             <Pressable key={s.id} testID={`capture-site-${s.id}`}
@@ -190,7 +225,7 @@ export default function CaptureScreen() {
         ) : null}
 
         <Text style={styles.statusText} testID="capture-status">
-          {status || (recording ? `${mins}:${secs}` : 'Tap mic to record')}
+          {status || (recording ? `${mins}:${secs}` : sites.length === 0 ? 'No sites available — check back soon' : 'Tap mic to record')}
         </Text>
 
         <Pressable
@@ -264,6 +299,7 @@ const styles = StyleSheet.create({
   chipText: { color: theme.color.textMuted, fontSize: 13, fontWeight: '700' },
   chipTextActive: { color: theme.color.onBrand },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: theme.spacing.lg, gap: theme.spacing.md },
+  noSitesText: { color: theme.color.textDim, fontSize: 13, fontWeight: '600', paddingHorizontal: theme.spacing.md },
   statusText: { color: theme.color.text, fontSize: 20, fontWeight: '700', letterSpacing: 1, textAlign: 'center' },
   micButton: {
     width: 200, height: 200, borderRadius: 100, backgroundColor: theme.color.brand,

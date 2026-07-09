@@ -1,12 +1,6 @@
 // Project Atlas — Construction Knowledge Core (Sprint 4 / V4) API additions
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { authHeaders as headers, jsonHeaders as jheaders, apiFetch } from './http';
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
-const TOKEN_KEY = 'atlas_token';
-async function headers(): Promise<Record<string, string>> {
-  const t = await AsyncStorage.getItem(TOKEN_KEY);
-  return t ? { Authorization: `Bearer ${t}` } : {};
-}
-async function jheaders() { return { 'Content-Type': 'application/json', ...(await headers()) }; }
 
 export type KnowledgeType =
   | 'category' | 'phase' | 'activity' | 'checklist_template' | 'required_document';
@@ -112,65 +106,65 @@ export async function apiListKnowledgeItems(filters: KnowledgeListFilters = {}):
   if (filters.q) params.set('q', filters.q);
   if (filters.include_archived) params.set('include_archived', 'true');
   const qs = params.toString() ? `?${params.toString()}` : '';
-  const r = await fetch(`${BACKEND}/api/knowledge-items${qs}`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items${qs}`, { headers: await headers() });
   return handle(r);
 }
 
 export async function apiGetKnowledgeItem(id: string): Promise<KnowledgeItem> {
-  const r = await fetch(`${BACKEND}/api/knowledge-items/${id}`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items/${id}`, { headers: await headers() });
   return handle(r);
 }
 
 export async function apiCreateKnowledgeItem(input: KnowledgeItemInput): Promise<KnowledgeItem> {
-  const r = await fetch(`${BACKEND}/api/knowledge-items`, {
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items`, {
     method: 'POST', headers: await jheaders(), body: JSON.stringify(input),
   });
   return handle(r);
 }
 
 export async function apiUpdateKnowledgeItem(id: string, input: KnowledgeItemUpdate): Promise<KnowledgeItem> {
-  const r = await fetch(`${BACKEND}/api/knowledge-items/${id}`, {
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items/${id}`, {
     method: 'PATCH', headers: await jheaders(), body: JSON.stringify(input),
   });
   return handle(r);
 }
 
 export async function apiArchiveKnowledgeItem(id: string): Promise<KnowledgeItem> {
-  const r = await fetch(`${BACKEND}/api/knowledge-items/${id}/archive`, {
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items/${id}/archive`, {
     method: 'POST', headers: await headers(),
   });
   return handle(r);
 }
 
 export async function apiUnarchiveKnowledgeItem(id: string): Promise<KnowledgeItem> {
-  const r = await fetch(`${BACKEND}/api/knowledge-items/${id}/unarchive`, {
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items/${id}/unarchive`, {
     method: 'POST', headers: await headers(),
   });
   return handle(r);
 }
 
 export async function apiListKnowledgeVersions(id: string): Promise<KnowledgeVersion[]> {
-  const r = await fetch(`${BACKEND}/api/knowledge-items/${id}/versions`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items/${id}/versions`, { headers: await headers() });
   return handle(r);
 }
 
 export async function apiAddKnowledgeRelationship(
   id: string, input: { type: string; target_id: string; metadata?: Record<string, any> },
 ): Promise<KnowledgeItem> {
-  const r = await fetch(`${BACKEND}/api/knowledge-items/${id}/relationships`, {
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items/${id}/relationships`, {
     method: 'POST', headers: await jheaders(), body: JSON.stringify(input),
   });
   return handle(r);
 }
 
 export async function apiRemoveKnowledgeRelationship(id: string, relationshipId: string): Promise<KnowledgeItem> {
-  const r = await fetch(`${BACKEND}/api/knowledge-items/${id}/relationships/${relationshipId}`, {
+  const r = await apiFetch(`${BACKEND}/api/knowledge-items/${id}/relationships/${relationshipId}`, {
     method: 'DELETE', headers: await headers(),
   });
   return handle(r);
 }
 
 export async function apiKnowledgeMeta(): Promise<KnowledgeMeta> {
-  const r = await fetch(`${BACKEND}/api/knowledge-meta`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/knowledge-meta`, { headers: await headers() });
   return handle(r);
 }

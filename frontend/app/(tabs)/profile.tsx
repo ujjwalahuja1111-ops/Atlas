@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Modal, TextInput, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { clearAuth, loadAuth, type User } from '@/src/api';
+import { clearAuth, loadAuth, saveAuth, apiUpdateMe, type User } from '@/src/api';
 import { clearViewRole, getViewRole, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
 
 const ROLE_LABEL: Record<string, string> = {
@@ -17,6 +17,8 @@ export default function ProfileScreen() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
   const [viewRole, setVR] = useState<ViewRole>('supervisor');
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -30,6 +32,24 @@ export default function ProfileScreen() {
     await clearAuth();
     await clearViewRole();
     router.replace('/login');
+  };
+
+  // Sprint 4.1 fix (audit M4): Profile used to be entirely read-only, and
+  // the only way to fix a typo'd name was re-logging in — which also
+  // silently re-applies whatever role got passed to /auth/login. This uses
+  // the new narrow, self-only PATCH /api/me instead.
+  const saveName = async () => {
+    if (!editingName?.trim() || !user) return;
+    setBusy(true);
+    try {
+      const updated = await apiUpdateMe(editingName.trim());
+      setUser(updated);
+      const { token } = await loadAuth();
+      if (token) await saveAuth(token, updated);
+      setEditingName(null);
+    } catch (e: any) {
+      Alert.alert('Save failed', String(e?.message || e));
+    } finally { setBusy(false); }
   };
 
   if (!user) {
@@ -50,7 +70,12 @@ export default function ProfileScreen() {
         <View style={styles.avatar}>
           <Ionicons name="person" size={56} color={theme.color.onBrand} />
         </View>
-        <Text style={styles.name}>{user.name}</Text>
+        <View style={styles.nameRow}>
+          <Text style={styles.name}>{user.name}</Text>
+          <Pressable testID="edit-name-button" onPress={() => setEditingName(user.name)} style={styles.editNameBtn}>
+            <Ionicons name="pencil" size={16} color={theme.color.brand} />
+          </Pressable>
+        </View>
         <Text style={styles.phone}>{user.phone}</Text>
         <View style={styles.roleTag}>
           <Ionicons name="shield-checkmark" size={16} color={theme.color.onBrand} />
@@ -66,17 +91,48 @@ export default function ProfileScreen() {
       </View>
 
       {viewRole === 'admin' && (
-        <Pressable testID="open-knowledge" onPress={() => router.push('/knowledge')} style={styles.knowledgeBtn}>
-          <Ionicons name="library-outline" size={22} color={theme.color.brand} />
-          <Text style={styles.knowledgeText}>CONSTRUCTION KNOWLEDGE</Text>
-          <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
-        </Pressable>
+        <>
+          <Pressable testID="open-knowledge" onPress={() => router.push('/knowledge')} style={styles.knowledgeBtn}>
+            <Ionicons name="library-outline" size={22} color={theme.color.brand} />
+            <Text style={styles.knowledgeText}>CONSTRUCTION KNOWLEDGE</Text>
+            <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+          </Pressable>
+          <Pressable testID="open-user-management" onPress={() => router.push('/users')} style={styles.knowledgeBtn}>
+            <Ionicons name="people-outline" size={22} color={theme.color.brand} />
+            <Text style={styles.knowledgeText}>USER MANAGEMENT</Text>
+            <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+          </Pressable>
+        </>
       )}
 
       <Pressable testID="logout-button" onPress={logout} style={styles.logoutBtn}>
         <Ionicons name="log-out-outline" size={28} color={theme.color.error} />
         <Text style={styles.logoutText}>LOG OUT</Text>
       </Pressable>
+
+      <Modal visible={editingName !== null} animationType="slide" transparent onRequestClose={() => setEditingName(null)}>
+        <View style={styles.modalBack}>
+          <View style={styles.modal}>
+            <View style={styles.modalHead}>
+              <Text style={styles.modalTitle}>EDIT NAME</Text>
+              <Pressable onPress={() => setEditingName(null)}>
+                <Ionicons name="close" size={26} color={theme.color.textDim} />
+              </Pressable>
+            </View>
+            <TextInput
+              testID="edit-name-input"
+              value={editingName || ''} onChangeText={setEditingName}
+              placeholderTextColor={theme.color.textDim}
+              style={styles.input} autoCapitalize="words"
+            />
+            <Pressable testID="edit-name-save" onPress={saveName} disabled={busy || !editingName?.trim()}
+              style={[styles.saveBtn, (busy || !editingName?.trim()) && { opacity: 0.5 }]}>
+              <Ionicons name="checkmark" size={22} color={theme.color.onBrand} />
+              <Text style={styles.saveBtnText}>SAVE</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -105,7 +161,10 @@ const styles = StyleSheet.create({
     width: 96, height: 96, borderRadius: 48, backgroundColor: theme.color.brand,
     alignItems: 'center', justifyContent: 'center',
   },
+  nameRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   name: { color: theme.color.text, fontSize: 24, fontWeight: '900', letterSpacing: 1 },
+  editNameBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: theme.color.surface3,
+                alignItems: 'center', justifyContent: 'center' },
   phone: { color: theme.color.textMuted, fontSize: 16, fontWeight: '600' },
   roleTag: {
     flexDirection: 'row', alignItems: 'center', gap: 6, backgroundColor: theme.color.brand,
@@ -134,4 +193,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row', gap: theme.spacing.sm,
   },
   logoutText: { color: theme.color.error, fontSize: 18, fontWeight: '900', letterSpacing: 2 },
+  modalBack: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  modal: { backgroundColor: theme.color.surface, borderTopLeftRadius: 18, borderTopRightRadius: 18,
+          padding: theme.spacing.lg, gap: 10 },
+  modalHead: { flexDirection: 'row', alignItems: 'center', marginBottom: theme.spacing.sm },
+  modalTitle: { flex: 1, color: theme.color.brand, fontSize: 14, fontWeight: '900', letterSpacing: 2 },
+  input: { color: theme.color.text, backgroundColor: theme.color.surface2,
+          borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.color.border,
+          paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  saveBtn: { marginTop: theme.spacing.sm, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+            gap: 8, height: 52, borderRadius: theme.radius.md, backgroundColor: theme.color.brand },
+  saveBtnText: { color: theme.color.onBrand, fontSize: 16, fontWeight: '900', letterSpacing: 1 },
 });

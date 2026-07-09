@@ -8,12 +8,21 @@ admin-only, matching the sprint brief ("Frontend: Admin-only").
 "Admin" has no dedicated backend role in Atlas — `frontend/src/roles.ts`
 already maps the admin *view role* onto the existing `management` backend
 role. We mirror that mapping here rather than introducing a new role.
+
+Sprint 4.1 stabilization fixes applied here:
+  - L3: list endpoint uses enrich_many() (one batched query) not a per-item loop.
+  - L5: KnowledgeConflictError -> 409, so a concurrent-edit conflict is
+    distinguishable from a validation error.
+  - L6: KnowledgeNotFoundError -> 404, distinct from a plain ValueError -> 400,
+    so "the item you asked for doesn't exist" is no longer conflated with
+    "your request body was invalid."
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from core.auth import get_current_user
 from engines import knowledge_engine
+from engines.knowledge_engine import KnowledgeNotFoundError, KnowledgeConflictError
 
 router = APIRouter(prefix="/api", tags=["knowledge"])
 
@@ -21,6 +30,18 @@ router = APIRouter(prefix="/api", tags=["knowledge"])
 def _require_admin(user: dict) -> None:
     if user["role"] != "management":
         raise HTTPException(status_code=403, detail="Construction Knowledge Core is admin-only")
+
+
+def _raise_for(e: ValueError) -> None:
+    """Single place mapping engine exceptions to HTTP status codes, so every
+    route handles the three cases (not found / conflict / bad input)
+    identically instead of re-deriving the mapping per route.
+    """
+    if isinstance(e, KnowledgeNotFoundError):
+        raise HTTPException(status_code=404, detail=str(e))
+    if isinstance(e, KnowledgeConflictError):
+        raise HTTPException(status_code=409, detail=str(e))
+    raise HTTPException(status_code=400, detail=str(e))
 
 
 class KnowledgeItemCreate(BaseModel):
@@ -77,8 +98,8 @@ async def list_knowledge_items(
             tag=tag, status=status, q=q, include_archived=include_archived,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return [await knowledge_engine.enrich(i) for i in items]
+        _raise_for(e)
+    return await knowledge_engine.enrich_many(items)
 
 
 @router.get("/knowledge-items/{item_id}")
@@ -110,7 +131,7 @@ async def create_knowledge_item(req: KnowledgeItemCreate, user: dict = Depends(g
             status=req.status, applicability=req.applicability,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _raise_for(e)
     return await knowledge_engine.enrich(item)
 
 
@@ -122,7 +143,7 @@ async def update_knowledge_item(item_id: str, req: KnowledgeItemUpdate, user: di
             item_id, actor=user, updates=req.model_dump(exclude_unset=True),
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _raise_for(e)
     return await knowledge_engine.enrich(item)
 
 
@@ -132,7 +153,7 @@ async def archive_knowledge_item(item_id: str, user: dict = Depends(get_current_
     try:
         item = await knowledge_engine.archive_item(item_id, actor=user)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        _raise_for(e)
     return await knowledge_engine.enrich(item)
 
 
@@ -142,7 +163,7 @@ async def unarchive_knowledge_item(item_id: str, user: dict = Depends(get_curren
     try:
         item = await knowledge_engine.unarchive_item(item_id, actor=user)
     except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        _raise_for(e)
     return await knowledge_engine.enrich(item)
 
 
@@ -154,7 +175,7 @@ async def add_relationship(item_id: str, req: RelationshipCreate, user: dict = D
             item_id, actor=user, type_=req.type, target_id=req.target_id, metadata=req.metadata,
         )
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _raise_for(e)
     return await knowledge_engine.enrich(item)
 
 
@@ -164,7 +185,7 @@ async def remove_relationship(item_id: str, relationship_id: str, user: dict = D
     try:
         item = await knowledge_engine.remove_relationship(item_id, relationship_id, actor=user)
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        _raise_for(e)
     return await knowledge_engine.enrich(item)
 
 

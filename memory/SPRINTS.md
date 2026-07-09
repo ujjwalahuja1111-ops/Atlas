@@ -70,5 +70,50 @@ Requested before merge to `main`; still unmerged (feature branch only).
 4. **Sprint 3 workspace-selector cleanup** — the manual login role picker is removed. Login now auto-resolves the backend role and routes directly into the matching workspace via a single centralized mapping in `frontend/src/roles.ts` — see ADR-020. No backend API or auth flow changed.
 5. **Regression** — re-verified: zero pre-existing engine/route files modified (`git diff main -- backend/engines backend/routes` empty outside `knowledge.py`); zero pre-existing frontend screens modified outside `profile.tsx`'s additive nav link (added in the original Sprint 4 pass) and `login.tsx`/`roles.ts` (this pass, scoped exactly to the workspace-selector removal). Engine logic re-verified via the mongomock smoke harness (25 scenarios total across both passes) plus a standalone logic simulation of the new login-routing cache (6 scenarios). All passing.
 
+## V4.1 — Sprint 4.1: Stabilization & QA Pass
+**Scope:** first stability audit + full-pass remediation. Fixed every Critical/High/Medium/Low item from the Sprint 4.1 stabilization audit, plus two founder-requested foundations: complete Project Lifecycle management and a Sign Up / Pending Approval / User Management foundation. Explicitly not a feature sprint for anything beyond that list — no new engines, no architectural redesign.
+
+**Critical fix:**
+- Operations screen showed a permanent loading spinner for Supervisor and Client roles — the render gate depended on `center` data that's never fetched for those two roles (`showOpsBuckets: false`). Fixed by gating only on `loading`; KPI/multi-bucket UI is now conditionally shown only for roles that have that data.
+
+**High fixes:**
+- Event Detail screen polled the backend every 3s forever (stale-closure bug — a `tick` dependency that was never incremented meant the interval's closure never refreshed). Fixed with a ref that always reflects current `ai_status`, and the interval now explicitly clears itself once resolved.
+- Home screen's empty-state "START CAPTURE" button was shown to every role including Client, whose Capture tab is hidden — now gated behind the same `showCapture` permission.
+- Capture screen had zero role awareness at all (only the tab bar hid it) — now guards itself directly, consistent with the Knowledge screens' pattern.
+- Silent failures on initial data load across most screens (Home, Ops, Projects, Knowledge) — added visible retry banners instead of a spinner/empty-state indistinguishable from "no data."
+- No global session-expiry handling — a new shared `apiFetch()` wrapper (in the new `src/http.ts`) detects 401s and routes back to Login automatically.
+
+**Medium fixes:**
+- Gallery permission denial in Capture gave no feedback (looked like a dead button) — now matches the Camera button's messaging.
+- No empty-state messaging when Capture has zero sites available.
+- `canManageProjects` — Projects (both screens) and Operations derived "can manage" from the raw backend role instead of the `VIEW_PERMS` abstraction everywhere else uses, which would have given the Client workspace full project-management rights the moment it became reachable again. Added `canManageProjects` to `ViewPerms` as the single source of truth.
+- Profile screen was read-only; the only way to fix a typo'd name was re-logging in (which also re-applies whatever role was passed). Added a narrow, self-only `PATCH /api/me`.
+- Basic phone format validation added to login/register (was length-only).
+
+**Low fixes:**
+- Knowledge workspace search now debounces (300ms) instead of firing a request per keystroke; the category/phase picker lists no longer refetch on every search change.
+- Knowledge list endpoint now uses a single batched name-resolution query (`enrich_many`) instead of one query per item.
+- Knowledge relationship-target picker candidates capped/documented as a future pagination point (no behaviour change beyond documentation — full pagination deferred, matches "build foundation" framing already used for `applicability`).
+- Optimistic concurrency added to Knowledge item writes (`update_item`, `add_relationship`, `remove_relationship`) via atomic `find_one_and_update` version-matched filters — a concurrent edit now surfaces a clear 409 instead of silently losing data.
+- Knowledge "not found" vs "bad input" now correctly return 404 vs 400 (`KnowledgeNotFoundError` subclass), and a genuine write conflict returns 409 (`KnowledgeConflictError`).
+- `src/http.ts` consolidates the header-building helpers that were duplicated identically across `api.ts`/`ops_api.ts`/`knowledge_api.ts`.
+- `LogBox.ignoreAllLogs(true)` in the root layout reviewed and deliberately left unchanged — it's intentional production behaviour (prevents a dev-mode redbox from wedging the UI on an icon-font-loading edge case), not a functional defect; flagged as a live-QA methodology note rather than a code fix.
+
+**Project Lifecycle (founder-requested):**
+- Sites already had complete lifecycle management (add/edit/archive/restore/delete-with-dependency-guard) from Sprint 2 — no gap found there.
+- Added the missing piece: `DELETE /api/projects/{id}`, mirroring the existing `DELETE /api/sites/{id}` pattern exactly — hard-delete only when the project has zero sites (archived or active), 409 with blocking counts otherwise. Wired into the Projects workspace UI identically to the existing Site delete button.
+
+**Authentication foundation (founder-requested):**
+- New `POST /api/auth/register` (Sign Up) — creates a brand-new account only, `approval_status="pending"`, `is_active=true`, `assigned_project_ids=[]`. Completely separate from `/api/auth/login`, which is UNCHANGED — every Sprint 1-4 login flow and test credential keeps working exactly as before.
+- New `users` fields (all optional, backward-compatible via `.get(key, <default>)` on every read — no migration needed): `approval_status`, `is_active`, `assigned_project_ids`.
+- `is_active=false` is a hard block enforced in the single shared `get_current_user` auth dependency (401). `approval_status != "approved"` is enforced at the frontend (routes to a new Pending Approval screen instead of the app shell) — this is a deliberate scope boundary: full per-project data scoping by `assigned_project_ids` is NOT implemented (nothing filters projects/sites/events by it yet), matching "build only the foundation required for future expansion."
+- New admin-only routes (`routes/admin_users.py`, mirroring the existing `_require_admin` pattern from `routes/knowledge.py`): list pending/all users, approve, reject, assign role, assign projects, activate/deactivate. An admin cannot deactivate their own account.
+- New User Management screen (`app/users/index.tsx`), reachable from Profile (admin-only nav entry, same pattern as Construction Knowledge).
+
+**Deliberate scope boundaries (documented, not gaps):**
+- No per-project data scoping — `assigned_project_ids` is stored and manageable but doesn't filter any existing query yet.
+- No email/SMS notification on approval — the Pending screen has a manual "Check Again" button instead.
+- No password — authentication model unchanged (phone+name, JWT), per "do not redesign authentication."
+
 ## V5 — Future (not started)
-Candidates: Workflow Engine (approvals automation), Learning Engine (AI feedback loop), Documents tab on Site Workspace, multi-blocker stack, and the first real consumer of Construction Knowledge Core (e.g. Scheduling/Baseline reading Activities + dependencies to generate a project plan).
+Candidates: Workflow Engine (approvals automation), Learning Engine (AI feedback loop), Documents tab on Site Workspace, multi-blocker stack, per-project data scoping using `assigned_project_ids`, and the first real consumer of Construction Knowledge Core (e.g. Scheduling/Baseline reading Activities + dependencies to generate a project plan).

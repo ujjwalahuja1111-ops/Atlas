@@ -252,7 +252,7 @@ POST /api/events  ─►  Reality Engine  ─►  Memory Engine writes events+ra
 
 | Collection | Mutability | Purpose | Key fields |
 |---|---|---|---|
-| `users` | upsert by `phone` | name / role / phone | `id`, `phone`, `name`, `role`, `created_at` |
+| `users` | upsert by `phone` (login) + admin-managed (V4.1) | name / role / phone | `id`, `phone`, `name`, `role`, `created_at`, `approval_status?` (V4.1: pending/approved/rejected, default approved when absent), `is_active?` (V4.1: default true when absent), `assigned_project_ids?` (V4.1: default [] when absent) |
 | `projects` | insert + small upsert | project root | `id`, `name`, `code`, `location`, `image_url`, `created_at`, `archived_at?`, `updated_at?` |
 | `sites` | insert + small upsert | site under project | `id`, `project_id`, `name`, `location`, `image_url`, `created_at` |
 | `events` | **append-only facts**; only `ai_status`, `ai_analysis_id`, `proposals_status`, `proposals_error` markers may change | Construction Events | `id`, `site_id`, `user_id`, `user_name`, `kind`, `text_input`, `audio_asset_id`, `photo_asset_ids`, `gps`, `server_created_at`, `client_created_at`, `app_version`, `ai_status`, `ai_analysis_id`, `proposals_status` |
@@ -413,6 +413,21 @@ GET /api/sites/{site_id}/requirements  # living checklist for requirement catego
 
 `knowledge_items` also carries a reserved `applicability` dict (freeform — project types, building types, construction types, regions, ...) for future project-generation filtering. Not read by any filter logic in V4.
 
+**V4.1 additions:** `PATCH /api/knowledge-items/{id}`, `POST .../relationships`, and `DELETE .../relationships/{id}` now use optimistic concurrency (atomic version-matched write) and return `409` on a genuine conflict instead of silently overwriting. "Item not found" now returns `404` (was `400`) on every mutation, distinct from a validation error.
+
+### 9.9b Authentication & User Management (V4.1)
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/auth/register` | Sign Up — `{phone, name}`; create-only, rejects an existing phone with 400; new account starts `approval_status=pending`, `is_active=true`, `assigned_project_ids=[]`. Separate from and does not affect `/api/auth/login`. |
+| `PATCH` | `/api/me` | Self-service name edit — `{name}` only; never touches role/approval/projects. |
+| `GET` | `/api/admin/users` (+ `approval_status`) | **management only**; list users, optionally filtered |
+| `POST` | `/api/admin/users/{id}/approve` / `/reject` | **management only** |
+| `POST` | `/api/admin/users/{id}/role` | `{role}`; **management only** |
+| `POST` | `/api/admin/users/{id}/projects` | `{project_ids}`; **management only** |
+| `POST` | `/api/admin/users/{id}/active` | `{is_active}`; **management only**; rejects deactivating your own account (400) |
+| `DELETE` | `/api/projects/{id}` | Hard-delete only if zero sites (archived or active) reference it; 409 with blocking counts otherwise. Mirrors `DELETE /api/sites/{id}` exactly. **management/coordinator only.** |
+
 ### 9.10 Response shapes
 
 Examples in the V3.2 test suite (`backend/tests/test_atlas_v3_2.py`) and in the existing
@@ -453,9 +468,17 @@ Examples in the V3.2 test suite (`backend/tests/test_atlas_v3_2.py`) and in the 
 | Transition status (incl. archive/cancel) | ✅ | ✅ | ✅ |
 | Read Construction Knowledge (V4) | ✅ | ✅ | ✅ |
 | Create/edit/archive Construction Knowledge (V4) | ❌ (403) | ❌ (403) | ✅ |
+| Delete project (V4.1, only if zero sites) | ❌ (403) | ✅ | ✅ |
+| Sign Up (V4.1) | n/a — unauthenticated | n/a | n/a |
+| Approve/reject/assign users (V4.1) | ❌ (403) | ❌ (403) | ✅ |
+| Edit own name (`PATCH /api/me`, V4.1) | ✅ | ✅ | ✅ |
+| Use the app at all, if `is_active=false` (V4.1) | ❌ (401, any role) | ❌ (401) | ❌ (401) |
 
 ### Frontend workspace routing (V4 cleanup)
 Sprint 3 added four *view-role* workspaces (Client / Supervisor / PM / Admin) layered on top of the three backend roles, originally chosen via a manual picker on the login screen. That picker is gone. Login now auto-resolves the workspace: `frontend/src/roles.ts` caches the last-known backend role per phone number per device, sends that (or the same `supervisor` default the backend itself uses for a brand-new phone) to the unchanged `POST /api/auth/login`, then routes into the workspace matching the **authoritative** role returned in the response via a single canonical map — `supervisor→supervisor`, `coordinator→pm`, `management→admin`. No backend route, request/response shape, or JWT mechanics changed. `client` remains fully defined in the frontend's permission tables but is no longer reachable via login auto-routing, since no backend signal distinguishes a "client" coordinator from a "PM" coordinator. See `memory/DECISIONS.md` ADR-020.
+
+### Sign Up / Pending Approval (V4.1)
+`POST /api/auth/register` creates a new account with `approval_status=pending`; an Administrator must approve it via the new User Management screen (`app/users/index.tsx`, admin-only nav entry on Profile) before it's routed into a real workspace — until then, both the login flow and the app's boot check route it to `app/pending.tsx` instead. Only `is_active=false` is enforced at the backend (401 from `get_current_user`); `approval_status` is a frontend-only gate by design — see `memory/DECISIONS.md` ADR-022 for why, and its documented boundary (no per-project data scoping yet).
 
 ---
 
@@ -616,13 +639,15 @@ content-type with extension fallbacks for `wav / mp3 / webm / ogg / m4a`.
 
 | File | Coverage |
 |---|---|
-| `backend/tests/test_atlas_v3_2.py` | Current authoritative suite. 13 cases: multi-intent extraction (≥4 categories from Hinglish utterance), material/labour/equipment detail shape, user directory (no phone leak, role filter), assign+reassign ledger growth, accept-with-assign one-tap, supervisor 403 on accept, V3.1 backward-compat smoke. |
+| `backend/tests/test_atlas_v4_1.py` | Sprint 4.1 stabilization: Sign Up/Pending Approval workflow, admin User Management (approve/reject/assign role/assign projects/activate-deactivate), self-service `PATCH /api/me`, project `DELETE` with dependency guard, Knowledge Core 404/400/409 distinction, phone validation, regression smoke on Sprint 1-4 endpoints. 20 cases. |
+| `backend/tests/test_atlas_v4.py` | Construction Knowledge Core (V4): CRUD, search/filter, archive/versioning, generic relationships, lifecycle status, admin gating. |
+| `backend/tests/test_atlas_v3_2.py` | Current authoritative V3 suite. 13 cases: multi-intent extraction (≥4 categories from Hinglish utterance), material/labour/equipment detail shape, user directory (no phone leak, role filter), assign+reassign ledger growth, accept-with-assign one-tap, supervisor 403 on accept, V3.1 backward-compat smoke. |
 | `backend/tests/test_atlas_v2.py` | Legacy V2 regression. |
 | `backend/tests/test_construction.py` | Legacy V1 smoke. |
 
 ```bash
-# Run the V3.2 suite (13/13 expected)
-cd /app && pytest backend/tests/test_atlas_v3_2.py -v
+# Run the V4.1 suite (20/20 expected)
+cd /app && pytest backend/tests/test_atlas_v4_1.py -v
 
 # Run everything
 cd /app && pytest backend/tests -v
@@ -757,6 +782,23 @@ Not a feature release: this establishes the **canonical knowledge layer** that A
 **Confirmed unchanged:** authentication mechanics, every V1–V3 API request/response contract, and every existing operational workflow (capture, timeline, operations, proposals, projects, sites).
 
 **Known limitations carried forward to V5:** no dependency cycle detection; archive-only deletion model (no hard-delete); relationship types not server-enforced against a closed enum; Coordinator defaults to PM workspace (Client workspace un-auto-routable pending a future permission-driven resolver); `applicability` has no dedicated UI yet; Whisper/GPT-4o proposal generation requires live-preview verification (sandbox-only limitation, not a code gap).
+
+### V4.1 — Stabilization & QA Pass
+First stability audit + full remediation pass. Fixed every issue found (1 Critical, 5 High, 5 Medium, 7 Low — see `memory/SPRINTS.md` for the complete list), plus two founder-requested foundations.
+
+**Critical:** Operations screen showed a permanent loading spinner for Supervisor and Client roles (render gate depended on data never fetched for those roles). Fixed.
+
+**High:** Event Detail's infinite background polling (stale-closure bug) fixed with a ref. Home screen's Capture CTA and the Capture screen itself now respect role permissions (previously enforced only by hiding the tab icon). Silent load failures across Home/Ops/Projects/Knowledge now show a retry banner instead of an indistinguishable-from-empty state. New `frontend/src/http.ts` adds global 401 → auto-logout handling.
+
+**Medium/Low:** Gallery permission feedback, empty-sites messaging, `canManageProjects` added to `VIEW_PERMS` (was reading the raw backend role in 3 places), self-service name edit (`PATCH /api/me`), phone format validation, Knowledge search debounce, batched Knowledge list enrichment, optimistic concurrency on Knowledge writes (409 on conflict), 404-vs-400 distinction on Knowledge "not found," consolidated HTTP client helpers.
+
+**Project Lifecycle:** `DELETE /api/projects/{id}` added, mirroring the existing `DELETE /api/sites/{id}` dependency-guard pattern exactly. Sites already had full lifecycle management since Sprint 2.
+
+**Authentication foundation:** New `POST /api/auth/register` (Sign Up) — separate, create-only path; `/api/auth/login` unchanged. New accounts start `approval_status=pending`, `is_active=true`, `assigned_project_ids=[]`. `is_active=false` hard-blocks at `get_current_user` (401); `approval_status` gating is frontend-only (routes to new `app/pending.tsx`). New admin-only `routes/admin_users.py` + `app/users/index.tsx` for approve/reject/assign-role/assign-projects/activate-deactivate.
+
+**Confirmed unchanged:** `/api/auth/login`, every V1–V4 API request/response contract, every existing permission rule. The only change to a pre-existing code path is `get_current_user` gaining the `is_active` check — a no-op for every account created before V4.1.
+
+**Deliberate scope boundaries:** no per-project data scoping by `assigned_project_ids` yet (nothing filters queries by it — that's the real "future expansion"); no notification on approval (manual "Check Again" button instead); no password (auth model unchanged per "do not redesign authentication").
 
 ---
 

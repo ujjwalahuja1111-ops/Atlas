@@ -7,38 +7,52 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
+import { getViewRole, VIEW_PERMS } from '@/src/roles';
 import {
   apiListProjects, apiCreateProject, apiUpdateProject, apiArchiveProject, apiUnarchiveProject,
-  apiListSites, setActiveSite, loadAuth, type Project, type Site, type User,
+  apiDeleteProject, apiListSites, setActiveSite, loadAuth, type Project, type Site, type User,
 } from '@/src/api';
 
 export default function ProjectsScreen() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
+  const [canManage, setCanManage] = useState(false);
   const [projects, setProjects] = useState<Project[]>([]);
   const [sitesByProject, setSitesByProject] = useState<Record<string, Site[]>>({});
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Partial<Project> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
       const auth = await loadAuth();
       setUser(auth.user);
+      const vr = await getViewRole();
+      // Sprint 4.1 fix (audit M3): was `user?.role !== 'supervisor'` — the
+      // raw backend role. Since Client and PM share backend role
+      // `coordinator`, that gave Client full project-management rights,
+      // contradicting its documented "read-mostly" design intent. This is
+      // the same permission abstraction ops.tsx and knowledge screens use.
+      setCanManage(VIEW_PERMS[vr].canManageProjects);
       const ps = await apiListProjects(showArchived);
       setProjects(ps);
       const sites = await apiListSites();
       const map: Record<string, Site[]> = {};
       for (const s of sites) (map[s.project_id] ||= []).push(s);
       setSitesByProject(map);
-    } catch (e) { console.warn(e); }
+    } catch (e: any) {
+      // Sprint 4.1 fix (audit H4): surface load failures instead of
+      // silently swallowing them.
+      console.warn(e);
+      setLoadError(e?.message || 'Could not load projects. Pull to retry.');
+    }
     finally { setLoading(false); }
   }, [showArchived]);
 
   useEffect(() => { load(); }, [load]);
-
-  const canManage = user?.role !== 'supervisor';
 
   const onPickProject = async (p: Project) => {
     if ((p as any).archived_at) return;
@@ -82,6 +96,22 @@ export default function ProjectsScreen() {
     finally { setBusy(false); }
   };
 
+  const onDelete = async (p: Project) => {
+    setBusy(true);
+    try {
+      const res = await apiDeleteProject(p.id);
+      if (!res.deleted && res.refs) {
+        const bits = Object.entries(res.refs)
+          .filter(([, v]) => (v as number) > 0)
+          .map(([k, v]) => `${k}: ${v}`).join(', ');
+        Alert.alert('Cannot delete', `Project has dependent records (${bits}). Archive it instead.`);
+      } else {
+        await load();
+      }
+    } catch (e: any) { Alert.alert('Delete failed', String(e?.message || e)); }
+    finally { setBusy(false); }
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
@@ -105,6 +135,13 @@ export default function ProjectsScreen() {
           <Text style={styles.toggleText}>{showArchived ? 'HIDE ARCHIVED' : 'SHOW ARCHIVED'}</Text>
         </Pressable>
       </View>
+
+      {loadError && (
+        <Pressable testID="projects-load-error" onPress={() => { setLoading(true); load(); }} style={styles.errorBanner}>
+          <Ionicons name="warning" size={16} color={theme.color.error} />
+          <Text style={styles.errorBannerText} numberOfLines={2}>{loadError} Tap to retry.</Text>
+        </Pressable>
+      )}
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator size="large" color={theme.color.brand} /></View>
@@ -146,9 +183,17 @@ export default function ProjectsScreen() {
                       <Ionicons name="pencil" size={18} color={theme.color.info} />
                     </Pressable>
                     {archived ? (
-                      <Pressable testID={`project-unarchive-${p.id}`} onPress={() => onUnarchive(p)} style={styles.actionBtn}>
-                        <Ionicons name="refresh" size={18} color={theme.color.success} />
-                      </Pressable>
+                      <>
+                        <Pressable testID={`project-unarchive-${p.id}`} onPress={() => onUnarchive(p)} style={styles.actionBtn}>
+                          <Ionicons name="refresh" size={18} color={theme.color.success} />
+                        </Pressable>
+                        <Pressable testID={`project-delete-${p.id}`}
+                          onPress={() => Alert.alert('Delete project?', 'This is permanent. Only works if the project has no sites (archived or active).',
+                            [{ text: 'Cancel' }, { text: 'Delete', style: 'destructive', onPress: () => onDelete(p) }])}
+                          style={styles.actionBtn}>
+                          <Ionicons name="trash" size={18} color={theme.color.error} />
+                        </Pressable>
+                      </>
                     ) : (
                       <Pressable testID={`project-archive-${p.id}`}
                         onPress={() => Alert.alert('Archive project?', `Hide "${p.name}" from active list. You can unarchive later.`,
@@ -217,6 +262,12 @@ const styles = StyleSheet.create({
             alignItems: 'center', justifyContent: 'center' },
   primary: { backgroundColor: theme.color.brand },
   toolbar: { flexDirection: 'row', paddingHorizontal: theme.spacing.md, paddingBottom: theme.spacing.sm, gap: 8 },
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.sm, padding: 10, borderRadius: theme.radius.sm,
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.error,
+  },
+  errorBannerText: { flex: 1, color: theme.color.error, fontSize: 12, fontWeight: '700' },
   toggle: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: 12, paddingVertical: 6,
             borderRadius: theme.radius.pill, backgroundColor: theme.color.surface2,
             borderWidth: 1, borderColor: theme.color.border },

@@ -1,4 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+// Sprint 4.1: authHeaders/apiFetch now live in ./http (shared across
+// api.ts/ops_api.ts/knowledge_api.ts — audit finding L7 — and apiFetch adds
+// global session-expiry handling — audit finding H5). Imported under the
+// same local name every existing `await authHeaders()` call site already uses.
+import { authHeaders, apiFetch, resetSessionExpiredGuard } from './http';
 
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
 export const APP_VERSION = '2.0.0';
@@ -11,7 +16,26 @@ export type User = {
   name: string;
   role: Role;
   created_at: string;
+  // Sprint 4.1 — User Management foundation. Optional because pre-existing
+  // accounts (created via plain login before this sprint) never had these
+  // fields written; the backend defaults a missing value to
+  // approved/active/[] on read, and the frontend treats `undefined` the
+  // same way (see isApprovedAndActive() below) so this is purely additive.
+  approval_status?: 'pending' | 'approved' | 'rejected';
+  is_active?: boolean;
+  assigned_project_ids?: string[];
 };
+
+/** True unless the account is explicitly pending/rejected/deactivated.
+ * Missing fields (pre-Sprint-4.1 accounts) default to true, matching the
+ * backend's own backward-compatible default. Single source of truth so no
+ * screen has to re-derive this logic. */
+export function isApprovedAndActive(user: User | null): boolean {
+  if (!user) return false;
+  if (user.approval_status && user.approval_status !== 'approved') return false;
+  if (user.is_active === false) return false;
+  return true;
+}
 
 export type Project = {
   id: string;
@@ -108,6 +132,7 @@ const SITE_KEY = 'atlas_active_site';
 export async function saveAuth(token: string, user: User) {
   await AsyncStorage.setItem(TOKEN_KEY, token);
   await AsyncStorage.setItem(USER_KEY, JSON.stringify(user));
+  resetSessionExpiredGuard();
 }
 export async function loadAuth(): Promise<{ token: string | null; user: User | null }> {
   const token = await AsyncStorage.getItem(TOKEN_KEY);
@@ -118,13 +143,9 @@ export async function clearAuth() {
   await AsyncStorage.removeItem(TOKEN_KEY);
   await AsyncStorage.removeItem(USER_KEY);
 }
-async function authHeaders(): Promise<Record<string, string>> {
-  const token = await AsyncStorage.getItem(TOKEN_KEY);
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
 
 export async function apiLogin(phone: string, name: string, role: Role) {
-  const r = await fetch(`${BACKEND}/api/auth/login`, {
+  const r = await apiFetch(`${BACKEND}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ phone, name, role }),
@@ -133,19 +154,43 @@ export async function apiLogin(phone: string, name: string, role: Role) {
   return (await r.json()) as { token: string; user: User };
 }
 
+/** Sign Up (Sprint 4.1). Creates a brand-new, pending account — distinct
+ * from apiLogin's upsert-on-first-use behaviour. See routes/auth.py
+ * `register` and memory_engine.register_user for the full rationale. */
+export async function apiRegister(phone: string, name: string) {
+  const r = await apiFetch(`${BACKEND}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ phone, name }),
+  });
+  if (!r.ok) throw new Error(await r.text() || 'Sign up failed');
+  return (await r.json()) as { token: string; user: User };
+}
+
 export async function apiSeedDemo() {
-  return fetch(`${BACKEND}/api/projects/seed`, { method: 'POST', headers: await authHeaders() });
+  return apiFetch(`${BACKEND}/api/projects/seed`, { method: 'POST', headers: await authHeaders() });
+}
+
+/** Self-service name edit (Sprint 4.1, audit M4 fix). */
+export async function apiUpdateMe(name: string): Promise<User> {
+  const r = await apiFetch(`${BACKEND}/api/me`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ name }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
 }
 
 export async function apiListProjects(includeArchived = false): Promise<Project[]> {
   const qs = includeArchived ? '?include_archived=true' : '';
-  const r = await fetch(`${BACKEND}/api/projects${qs}`, { headers: await authHeaders() });
+  const r = await apiFetch(`${BACKEND}/api/projects${qs}`, { headers: await authHeaders() });
   if (!r.ok) throw new Error('projects');
   return r.json();
 }
 
 export async function apiCreateProject(input: { name: string; code?: string; location?: string; image_url?: string }): Promise<Project> {
-  const r = await fetch(`${BACKEND}/api/projects`, {
+  const r = await apiFetch(`${BACKEND}/api/projects`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
     body: JSON.stringify(input),
@@ -155,7 +200,7 @@ export async function apiCreateProject(input: { name: string; code?: string; loc
 }
 
 export async function apiUpdateProject(id: string, input: Partial<{ name: string; code: string; location: string; image_url: string }>): Promise<Project> {
-  const r = await fetch(`${BACKEND}/api/projects/${id}`, {
+  const r = await apiFetch(`${BACKEND}/api/projects/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
     body: JSON.stringify(input),
@@ -165,7 +210,7 @@ export async function apiUpdateProject(id: string, input: Partial<{ name: string
 }
 
 export async function apiArchiveProject(id: string): Promise<Project> {
-  const r = await fetch(`${BACKEND}/api/projects/${id}/archive`, {
+  const r = await apiFetch(`${BACKEND}/api/projects/${id}/archive`, {
     method: 'POST', headers: await authHeaders(),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -173,9 +218,21 @@ export async function apiArchiveProject(id: string): Promise<Project> {
 }
 
 export async function apiUnarchiveProject(id: string): Promise<Project> {
-  const r = await fetch(`${BACKEND}/api/projects/${id}/unarchive`, {
+  const r = await apiFetch(`${BACKEND}/api/projects/${id}/unarchive`, {
     method: 'POST', headers: await authHeaders(),
   });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiDeleteProject(id: string): Promise<{ deleted: boolean; refs?: Record<string, number> }> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${id}`, {
+    method: 'DELETE', headers: await authHeaders(),
+  });
+  if (r.status === 409) {
+    const body = await r.json();
+    return { deleted: false, refs: body?.detail?.refs };
+  }
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
@@ -185,13 +242,13 @@ export async function apiListSites(projectId?: string, includeArchived = false):
   if (projectId) params.set('project_id', projectId);
   if (includeArchived) params.set('include_archived', 'true');
   const qs = params.toString() ? `?${params.toString()}` : '';
-  const r = await fetch(`${BACKEND}/api/sites${qs}`, { headers: await authHeaders() });
+  const r = await apiFetch(`${BACKEND}/api/sites${qs}`, { headers: await authHeaders() });
   if (!r.ok) throw new Error('sites');
   return r.json();
 }
 
 export async function apiCreateSite(input: { project_id: string; name: string; location?: string; image_url?: string }): Promise<Site> {
-  const r = await fetch(`${BACKEND}/api/sites`, {
+  const r = await apiFetch(`${BACKEND}/api/sites`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
     body: JSON.stringify(input),
@@ -201,7 +258,7 @@ export async function apiCreateSite(input: { project_id: string; name: string; l
 }
 
 export async function apiUpdateSite(id: string, input: Partial<{ name: string; location: string; image_url: string }>): Promise<Site> {
-  const r = await fetch(`${BACKEND}/api/sites/${id}`, {
+  const r = await apiFetch(`${BACKEND}/api/sites/${id}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
     body: JSON.stringify(input),
@@ -211,7 +268,7 @@ export async function apiUpdateSite(id: string, input: Partial<{ name: string; l
 }
 
 export async function apiArchiveSite(id: string): Promise<Site> {
-  const r = await fetch(`${BACKEND}/api/sites/${id}/archive`, {
+  const r = await apiFetch(`${BACKEND}/api/sites/${id}/archive`, {
     method: 'POST', headers: await authHeaders(),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -219,7 +276,7 @@ export async function apiArchiveSite(id: string): Promise<Site> {
 }
 
 export async function apiUnarchiveSite(id: string): Promise<Site> {
-  const r = await fetch(`${BACKEND}/api/sites/${id}/unarchive`, {
+  const r = await apiFetch(`${BACKEND}/api/sites/${id}/unarchive`, {
     method: 'POST', headers: await authHeaders(),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -227,7 +284,7 @@ export async function apiUnarchiveSite(id: string): Promise<Site> {
 }
 
 export async function apiDeleteSite(id: string): Promise<{ deleted: boolean; refs?: Record<string, number> }> {
-  const r = await fetch(`${BACKEND}/api/sites/${id}`, {
+  const r = await apiFetch(`${BACKEND}/api/sites/${id}`, {
     method: 'DELETE', headers: await authHeaders(),
   });
   if (r.status === 409) {
@@ -239,7 +296,7 @@ export async function apiDeleteSite(id: string): Promise<{ deleted: boolean; ref
 }
 
 export async function apiProjectSummary(projectId: string): Promise<ProjectSummary> {
-  const r = await fetch(`${BACKEND}/api/projects/${projectId}/summary`, {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/summary`, {
     headers: await authHeaders(),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -247,7 +304,7 @@ export async function apiProjectSummary(projectId: string): Promise<ProjectSumma
 }
 
 export async function apiTimeline(siteId: string): Promise<TimelineItem[]> {
-  const r = await fetch(`${BACKEND}/api/timeline?site_id=${encodeURIComponent(siteId)}`, {
+  const r = await apiFetch(`${BACKEND}/api/timeline?site_id=${encodeURIComponent(siteId)}`, {
     headers: await authHeaders(),
   });
   if (!r.ok) throw new Error('timeline');
@@ -255,7 +312,7 @@ export async function apiTimeline(siteId: string): Promise<TimelineItem[]> {
 }
 
 export async function apiGetEvent(id: string): Promise<TimelineItem> {
-  const r = await fetch(`${BACKEND}/api/events/${id}`, { headers: await authHeaders() });
+  const r = await apiFetch(`${BACKEND}/api/events/${id}`, { headers: await authHeaders() });
   if (!r.ok) throw new Error('event');
   return r.json();
 }
@@ -281,7 +338,7 @@ export async function apiCreateEvent(opts: {
     // @ts-ignore RN FormData file shape
     form.append('photos', { uri, name: 'photo.jpg', type: 'image/jpeg' });
   }
-  const r = await fetch(`${BACKEND}/api/events`, {
+  const r = await apiFetch(`${BACKEND}/api/events`, {
     method: 'POST',
     headers: { ...(await authHeaders()) },
     body: form as any,
@@ -294,7 +351,7 @@ export async function apiCreateEvent(opts: {
 }
 
 export async function apiAddCorrection(eventId: string, note: string): Promise<Correction> {
-  const r = await fetch(`${BACKEND}/api/events/${eventId}/corrections`, {
+  const r = await apiFetch(`${BACKEND}/api/events/${eventId}/corrections`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
     body: JSON.stringify({ note }),

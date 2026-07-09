@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { theme } from '@/src/theme';
+import { getViewRole, VIEW_PERMS } from '@/src/roles';
 import {
   apiListSites, apiCreateSite, apiUpdateSite, apiArchiveSite, apiUnarchiveSite, apiDeleteSite,
   apiProjectSummary, apiListProjects, setActiveSite, setActiveProject, loadAuth,
@@ -17,6 +18,7 @@ export default function ProjectDetail() {
   const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const [user, setUser] = useState<User | null>(null);
+  const [canManage, setCanManage] = useState(false);
   const [project, setProject] = useState<Project | null>(null);
   const [summary, setSummary] = useState<ProjectSummary | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
@@ -25,12 +27,16 @@ export default function ProjectDetail() {
   const [refreshing, setRefreshing] = useState(false);
   const [editing, setEditing] = useState<Partial<Site> | null>(null);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
+    setLoadError(null);
     try {
       const auth = await loadAuth();
       setUser(auth.user);
+      const vr = await getViewRole();
+      setCanManage(VIEW_PERMS[vr].canManageProjects);  // Sprint 4.1 fix (audit M3)
       const projs = await apiListProjects(true);
       const p = projs.find((x) => x.id === id) || null;
       setProject(p);
@@ -40,13 +46,16 @@ export default function ProjectDetail() {
       ]);
       setSites(s);
       setSummary(sm);
-    } catch (e) { console.warn(e); }
+    } catch (e: any) {
+      // Sprint 4.1 fix (audit H4): surface load failures instead of
+      // silently swallowing them.
+      console.warn(e);
+      setLoadError(e?.message || 'Could not load this project. Pull to retry.');
+    }
     finally { setLoading(false); setRefreshing(false); }
   }, [id, showArchived]);
 
   useEffect(() => { load(); }, [load]);
-
-  const canManage = user?.role !== 'supervisor';
 
   const onPickSite = async (s: Site) => {
     if ((s as any).archived_at) return;
@@ -125,6 +134,13 @@ export default function ProjectDetail() {
           </Pressable>
         )}
       </View>
+
+      {loadError && (
+        <Pressable testID="project-detail-load-error" onPress={() => { setLoading(true); load(); }} style={styles.errorBanner}>
+          <Ionicons name="warning" size={16} color={theme.color.error} />
+          <Text style={styles.errorBannerText} numberOfLines={2}>{loadError} Tap to retry.</Text>
+        </Pressable>
+      )}
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator size="large" color={theme.color.brand} /></View>
@@ -279,6 +295,12 @@ const styles = StyleSheet.create({
   primary: { backgroundColor: theme.color.brand },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   sectionLabel: { color: theme.color.brand, fontSize: 11, fontWeight: '900', letterSpacing: 2, marginBottom: 8 },
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.sm, padding: 10, borderRadius: theme.radius.sm,
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.error,
+  },
+  errorBannerText: { flex: 1, color: theme.color.error, fontSize: 12, fontWeight: '700' },
   summary: { marginBottom: theme.spacing.md, padding: theme.spacing.md,
              backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
              borderWidth: 1, borderColor: theme.color.border },

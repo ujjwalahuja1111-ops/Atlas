@@ -31,10 +31,12 @@ export default function KnowledgeDetail() {
   const [relNote, setRelNote] = useState('');
   const [showVersions, setShowVersions] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
     setLoading(true);
+    setLoadError(null);
     try {
       const [it, vs, m] = await Promise.all([
         apiGetKnowledgeItem(id), apiListKnowledgeVersions(id), apiKnowledgeMeta(),
@@ -44,7 +46,12 @@ export default function KnowledgeDetail() {
       setMeta(m);
       const others = await apiListKnowledgeItems({});
       setCandidates(others.filter((o) => o.id !== id));
-    } catch (e) { console.warn(e); }
+    } catch (e: any) {
+      // Sprint 4.1 fix (audit H4): surface load failures instead of
+      // silently swallowing them.
+      console.warn(e);
+      setLoadError(e?.message || 'Could not load this item.');
+    }
     finally { setLoading(false); }
   }, [id]);
 
@@ -93,10 +100,24 @@ export default function KnowledgeDetail() {
     finally { setBusy(false); }
   };
 
-  if (viewRole === null || loading || !item) {
+  if (viewRole === null || loading) {
     return (
       <SafeAreaView style={styles.safe}><View style={styles.center}>
         <ActivityIndicator color={theme.color.brand} size="large" />
+      </View></SafeAreaView>
+    );
+  }
+
+  if (!item) {
+    return (
+      <SafeAreaView style={styles.safe}><View style={styles.center}>
+        <Ionicons name="warning" size={48} color={theme.color.error} />
+        <Text style={{ color: theme.color.error, marginTop: 12, textAlign: 'center', paddingHorizontal: 24 }}>
+          {loadError || 'Item not found.'}
+        </Text>
+        <Pressable testID="knowledge-detail-retry" onPress={load} style={{ marginTop: 16 }}>
+          <Text style={{ color: theme.color.brand, fontWeight: '900' }}>TAP TO RETRY</Text>
+        </Pressable>
       </View></SafeAreaView>
     );
   }

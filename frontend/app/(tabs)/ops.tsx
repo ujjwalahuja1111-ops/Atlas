@@ -57,6 +57,7 @@ export default function OpsScreen() {
   });
   const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
   const [users, setUsers] = useState<AssignableUser[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   const loadUsers = useCallback(async () => {
     if (users.length > 0) return users;
@@ -66,6 +67,7 @@ export default function OpsScreen() {
   }, [users]);
 
   const load = useCallback(async () => {
+    setLoadError(null);
     try {
       const auth = await loadAuth();
       setUser(auth.user);
@@ -93,7 +95,13 @@ export default function OpsScreen() {
       if (!p.showOpsBuckets && !p.showProposals) setBucket('mine');
       else if (!p.showOpsBuckets && p.showProposals) setBucket('proposals');
       else if (bucket === 'proposals' && !p.showProposals) setBucket('mine');
-    } catch (e) { console.warn(e); }
+    } catch (e: any) {
+      // Sprint 4.1 fix (audit H4): surface load failures instead of
+      // silently swallowing them — a failed load used to be visually
+      // indistinguishable from "there's genuinely nothing here."
+      console.warn(e);
+      setLoadError(e?.message || 'Could not load Operations. Pull to retry.');
+    }
     finally { setLoading(false); setRefreshing(false); }
   }, [bucket]);
 
@@ -151,48 +159,67 @@ export default function OpsScreen() {
     finally { setProposalBusyId(null); }
   };
 
+  const perms = VIEW_PERMS[viewRole];
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
         <Text style={styles.h1}>OPS</Text>
-        <Text style={styles.h2}>{user?.role === 'supervisor' ? 'My Tasks' : 'Operational Center'}</Text>
+        <Text style={styles.h2}>{viewRole === 'supervisor' ? 'My Tasks' : 'Operational Center'}</Text>
       </View>
 
-      {loading || !center ? (
+      {loading ? (
         <View style={styles.center}><ActivityIndicator color={theme.color.brand} size="large" /></View>
       ) : (
         <>
-          <View style={styles.kpiRow}>
-            {user?.role !== 'supervisor' ? (
-              <Kpi label="PROPOSALS" value={proposals.length} color={theme.color.info} testID="kpi-proposals" />
-            ) : null}
-            <Kpi label="OPEN" value={center.counts.open} color={theme.color.brand} testID="kpi-open" />
-            <Kpi label="OVERDUE" value={center.counts.overdue} color={theme.color.error} testID="kpi-overdue" />
-            <Kpi label="HIGH" value={center.counts.high_priority} color={theme.color.warning} testID="kpi-high" />
-            <Kpi label="VERIFY" value={center.counts.awaiting_verification} color={theme.color.info} testID="kpi-verify" />
-          </View>
+          {loadError && (
+            <Pressable testID="ops-load-error" onPress={() => { setLoading(true); load(); }} style={styles.errorBanner}>
+              <Ionicons name="warning" size={16} color={theme.color.error} />
+              <Text style={styles.errorBannerText} numberOfLines={2}>{loadError} Tap to retry.</Text>
+            </Pressable>
+          )}
+          {/* Sprint 4.1 fix (audit C1): this used to gate on `loading || !center`,
+              but `center` is only ever fetched for roles with showOpsBuckets=true
+              (see load() above) — for supervisor/client it was permanently null,
+              so the entire screen below (including their own `mine`/`proposals`
+              list) never rendered. KPIs + the multi-bucket tab strip are
+              dashboard furniture that only makes sense when center data
+              exists; supervisor/client go straight to their single list. */}
+          {perms.showOpsBuckets && center && (
+            <>
+              <View style={styles.kpiRow}>
+                {perms.showProposals ? (
+                  <Kpi label="PROPOSALS" value={proposals.length} color={theme.color.info} testID="kpi-proposals" />
+                ) : null}
+                <Kpi label="OPEN" value={center.counts.open} color={theme.color.brand} testID="kpi-open" />
+                <Kpi label="OVERDUE" value={center.counts.overdue} color={theme.color.error} testID="kpi-overdue" />
+                <Kpi label="HIGH" value={center.counts.high_priority} color={theme.color.warning} testID="kpi-high" />
+                <Kpi label="VERIFY" value={center.counts.awaiting_verification} color={theme.color.info} testID="kpi-verify" />
+              </View>
 
-          <View style={styles.chipsContainer}>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsContent}>
-              {TABS.filter((b) => user?.role !== 'supervisor' || b !== 'proposals').map((b) => {
-                const active = b === bucket;
-                return (
-                  <Pressable
-                    key={b}
-                    testID={`bucket-${b}`}
-                    onPress={() => setBucket(b)}
-                    style={[styles.chip, active && styles.chipActive]}
-                  >
-                    <Text style={[styles.chipText, active && styles.chipTextActive]}>
-                      {b === 'proposals' ? `PROPOSALS ${proposals.length}` :
-                       b === 'overview' ? 'RECENT' : b === 'high_priority' ? 'HIGH' :
-                       b === 'awaiting' ? 'TO VERIFY' : b === 'mine' ? 'MINE' : b.toUpperCase()}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </ScrollView>
-          </View>
+              <View style={styles.chipsContainer}>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsContent}>
+                  {TABS.filter((b) => perms.showProposals || b !== 'proposals').map((b) => {
+                    const active = b === bucket;
+                    return (
+                      <Pressable
+                        key={b}
+                        testID={`bucket-${b}`}
+                        onPress={() => setBucket(b)}
+                        style={[styles.chip, active && styles.chipActive]}
+                      >
+                        <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                          {b === 'proposals' ? `PROPOSALS ${proposals.length}` :
+                           b === 'overview' ? 'RECENT' : b === 'high_priority' ? 'HIGH' :
+                           b === 'awaiting' ? 'TO VERIFY' : b === 'mine' ? 'MINE' : b.toUpperCase()}
+                        </Text>
+                      </Pressable>
+                    );
+                  })}
+                </ScrollView>
+              </View>
+            </>
+          )}
 
           {bucket === 'proposals' ? (
             <FlatList
@@ -542,6 +569,12 @@ const styles = StyleSheet.create({
   h1: { color: theme.color.text, fontSize: 32, fontWeight: '900', letterSpacing: 2 },
   h2: { color: theme.color.brand, fontSize: 14, fontWeight: '700', marginTop: 2 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: theme.spacing.md,
+    marginTop: theme.spacing.sm, padding: 10, borderRadius: theme.radius.sm,
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.error,
+  },
+  errorBannerText: { flex: 1, color: theme.color.error, fontSize: 12, fontWeight: '700' },
   kpiRow: { flexDirection: 'row', gap: 8, paddingHorizontal: theme.spacing.md, paddingVertical: theme.spacing.sm },
   kpi: {
     flex: 1, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,

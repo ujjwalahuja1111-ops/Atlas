@@ -26,4 +26,12 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
     user = await db.users.find_one({"id": payload["user_id"]}, {"_id": 0})
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+    # Sprint 4.1 — User Management foundation. Existing users predate these
+    # fields entirely; .get(..., True) treats a MISSING is_active as active,
+    # so every pre-Sprint-4.1 account keeps working with zero migration.
+    # Deactivation is the one status that must be a hard, unbypassable block
+    # (unlike "pending approval", which is enforced by the frontend not
+    # routing a pending user into the app shell — see ADR for rationale).
+    if user.get("is_active", True) is False:
+        raise HTTPException(status_code=401, detail="Account deactivated")
     return user

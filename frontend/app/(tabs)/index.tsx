@@ -8,6 +8,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { theme } from '@/src/theme';
+import { getViewRole, VIEW_PERMS } from '@/src/roles';
 import {
   apiListSites, apiListProjects, apiTimeline, apiSeedDemo,
   getActiveSite, setActiveSite,
@@ -44,7 +45,11 @@ export default function TimelineScreen() {
   const [items, setItems] = useState<TimelineItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [canCapture, setCanCapture] = useState(true);
   const pollRef = useRef<any>(null);
+
+  useEffect(() => { getViewRole().then((vr) => setCanCapture(VIEW_PERMS[vr].showCapture)); }, []);
 
   const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
@@ -70,6 +75,7 @@ export default function TimelineScreen() {
   }, []);
 
   const loadAll = useCallback(async () => {
+    setLoadError(null);
     try {
       let s = await apiListSites();
       if (s.length === 0) {
@@ -91,8 +97,11 @@ export default function TimelineScreen() {
       } else {
         setItems([]);
       }
-    } catch (e) {
+    } catch (e: any) {
+      // Sprint 4.1 fix (audit H4): surface load failures instead of
+      // silently swallowing them.
       console.warn(e);
+      setLoadError(e?.message || 'Could not load your timeline. Pull to retry.');
     } finally {
       setLoading(false); setRefreshing(false);
     }
@@ -162,6 +171,13 @@ export default function TimelineScreen() {
         </ScrollView>
       </View>
 
+      {loadError && (
+        <Pressable testID="timeline-load-error" onPress={() => { setLoading(true); loadAll(); }} style={styles.errorBanner}>
+          <Ionicons name="warning" size={16} color={theme.color.error} />
+          <Text style={styles.errorBannerText} numberOfLines={2}>{loadError} Tap to retry.</Text>
+        </Pressable>
+      )}
+
       {loading ? (
         <View style={styles.loader} testID="timeline-loader">
           <ActivityIndicator size="large" color={theme.color.brand} />
@@ -170,12 +186,18 @@ export default function TimelineScreen() {
         <View style={styles.empty} testID="timeline-empty">
           <Ionicons name="mic-circle-outline" size={80} color={theme.color.brand} />
           <Text style={styles.emptyTitle}>No events yet</Text>
-          <Text style={styles.emptyBody}>Tap CAPTURE to record reality.</Text>
-          <Pressable testID="timeline-empty-capture"
-            onPress={() => router.push('/(tabs)/capture')} style={styles.emptyCta}>
-            <Ionicons name="mic" size={28} color={theme.color.onBrand} />
-            <Text style={styles.emptyCtaText}>START CAPTURE</Text>
-          </Pressable>
+          {canCapture ? (
+            <>
+              <Text style={styles.emptyBody}>Tap CAPTURE to record reality.</Text>
+              <Pressable testID="timeline-empty-capture"
+                onPress={() => router.push('/(tabs)/capture')} style={styles.emptyCta}>
+                <Ionicons name="mic" size={28} color={theme.color.onBrand} />
+                <Text style={styles.emptyCtaText}>START CAPTURE</Text>
+              </Pressable>
+            </>
+          ) : (
+            <Text style={styles.emptyBody}>Updates from the site will appear here.</Text>
+          )}
         </View>
       ) : (
         <FlatList
@@ -292,6 +314,12 @@ const styles = StyleSheet.create({
   chipSub: { color: theme.color.textDim, fontSize: 11, fontWeight: '600', marginTop: 1 },
   chipTextActive: { color: theme.color.onBrand },
   loader: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.sm, padding: 10, borderRadius: theme.radius.sm,
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.error,
+  },
+  errorBannerText: { flex: 1, color: theme.color.error, fontSize: 12, fontWeight: '700' },
   empty: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: theme.spacing.xl, gap: theme.spacing.md },
   emptyTitle: { color: theme.color.text, fontSize: 24, fontWeight: '900', letterSpacing: 1 },
   emptyBody: { color: theme.color.textMuted, fontSize: 16, textAlign: 'center' },

@@ -43,7 +43,7 @@
 
 | Collection | Mutability | Purpose |
 |---|---|---|
-| `users` | upsert | name/role/phone |
+| `users` | upsert (login) + admin-managed (V4.1) | name/role/phone; V4.1 adds optional `approval_status` (pending/approved/rejected), `is_active`, `assigned_project_ids` — all default to approved/active/[] when absent, so every pre-V4.1 account needs no migration |
 | `projects`, `sites` | append + small upsert | project→site hierarchy |
 | `events` | append-only facts; **only** `ai_status`/`ai_analysis_id` lifecycle markers may change | Construction Events |
 | `raw_assets` | immutable | audio + photo bytes + SHA-256 |
@@ -98,6 +98,15 @@ Single collection `knowledge_items`, discriminated by `type`: `category | phase 
 ## Workspace Auto-Routing (V4 cleanup)
 Sprint 3 introduced a manual "pick your workspace" selector at login (Client / Supervisor / PM / Admin), which *derived* the backend role sent to `/api/auth/login` from that choice. This has been removed. Login now goes the other direction: the app resolves the correct backend role automatically (a per-phone, per-device cache of the last-known role — see `frontend/src/roles.ts`, `resolveLoginRole`/`completeLoginRouting`), sends that to the unchanged `/api/auth/login` endpoint, and then auto-routes into the workspace matching the **authoritative** role the backend returns via `DEFAULT_VIEW_ROLE_FOR`. This mapping is centralized in one file; no screen computes it independently. `coordinator` collapses to the `pm` workspace by default (there is no backend signal distinguishing a "client" coordinator from a "PM" coordinator — that was always a manual choice, not an auto-detectable fact); `client` remains fully defined in `VIEW_PERMS`/`TABS_FOR` for any future flow that sets it explicitly. No backend API, auth flow, or permission-gating logic changed.
 
+## Sign Up / Pending Approval / User Management (V4.1)
+`POST /api/auth/register` is a separate, create-only path from the unchanged `/api/auth/login` — see ADR-021. New accounts start `approval_status="pending"`, `is_active=true`, `assigned_project_ids=[]`. `is_active=false` is a hard 401 block in `get_current_user` (the single shared auth dependency every route uses); `approval_status` is enforced at the frontend only — a pending/rejected account is routed to `app/pending.tsx` instead of the app shell (see ADR-022). Admin-only management lives in `routes/admin_users.py` (list/approve/reject/assign-role/assign-projects/activate-deactivate), mirroring the `_require_admin` pattern from `routes/knowledge.py`, surfaced via `app/users/index.tsx`. `assigned_project_ids` is stored and admin-manageable but does not yet filter any query — that's the explicit "future expansion" boundary, not an oversight.
+
+## Project Lifecycle (V4.1)
+Sites already had complete lifecycle management since Sprint 2 (add/edit/archive/restore/delete-with-dependency-guard). `DELETE /api/projects/{id}` was the one missing piece, added mirroring `DELETE /api/sites/{id}` exactly: hard-delete only when `project_reference_counts()` (sites under this project, archived or active) is all-zero; 409 with blocking counts otherwise.
+
+## Stabilization fixes (V4.1)
+Knowledge Core: `enrich_many()` batches list-response name resolution into one query (previously one query per item); `find_one_and_update`-based optimistic concurrency on writes, surfacing a 409 (`KnowledgeConflictError`) on a genuine conflict instead of silent last-write-wins; `KnowledgeNotFoundError` (404) is now distinct from a plain validation `ValueError` (400) — see ADR-023. `frontend/src/http.ts` consolidates the duplicated header-building helpers from `api.ts`/`ops_api.ts`/`knowledge_api.ts` and adds `apiFetch()`, a drop-in `fetch` replacement that clears the session and redirects to Login on a 401 from any authenticated endpoint. See `memory/SPRINTS.md`'s V4.1 entry for the full Critical/High/Medium/Low fix list.
+
 ## API surface
 
 ### V2 (unchanged)
@@ -109,5 +118,8 @@ Sprint 3 introduced a manual "pick your workspace" selector at login (Client / S
 ### V4 (new)
 `GET /api/knowledge-items` (+ `type`, `category_id`, `phase_id`, `tag`, `status`, `q`, `include_archived`) `· POST /api/knowledge-items · GET /api/knowledge-items/{id} · PATCH /api/knowledge-items/{id} · POST /api/knowledge-items/{id}/archive · POST /api/knowledge-items/{id}/unarchive · GET /api/knowledge-items/{id}/versions · POST /api/knowledge-items/{id}/relationships · DELETE /api/knowledge-items/{id}/relationships/{relationship_id} · GET /api/knowledge-meta`
 
+### V4.1 (new)
+`POST /api/auth/register · PATCH /api/me · DELETE /api/projects/{id} · GET /api/admin/users` (+ `approval_status`) `· POST /api/admin/users/{id}/approve · POST /api/admin/users/{id}/reject · POST /api/admin/users/{id}/role · POST /api/admin/users/{id}/projects · POST /api/admin/users/{id}/active`
+
 ## Backward Compatibility
-V2 and V3 endpoints and response shapes are unchanged. Timeline default behaviour unchanged. No data migration required. V4 is purely additive (new collections, new router) — no existing route, model, or engine was modified.
+V2 and V3 endpoints and response shapes are unchanged. Timeline default behaviour unchanged. No data migration required. V4 is purely additive (new collections, new router) — no existing route, model, or engine was modified. V4.1 is a stabilization + additive-foundation sprint: every V1-V4 endpoint, request/response shape, and permission rule is unchanged; the only behavioural change to an existing code path is `get_current_user` gaining the `is_active` check, which is a no-op for every account that predates V4.1 (the field defaults to active when absent).

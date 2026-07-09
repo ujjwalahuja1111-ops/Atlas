@@ -1,12 +1,6 @@
 // Project Atlas — Operations (V3) API additions
-import AsyncStorage from '@react-native-async-storage/async-storage';
+import { authHeaders as headers, jsonHeaders as jheaders, apiFetch } from './http';
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
-const TOKEN_KEY = 'atlas_token';
-async function headers(): Promise<Record<string, string>> {
-  const t = await AsyncStorage.getItem(TOKEN_KEY);
-  return t ? { Authorization: `Bearer ${t}` } : {};
-}
-async function jheaders() { return { 'Content-Type': 'application/json', ...(await headers()) }; }
 
 export type OperationalCategory =
   | 'material_requirement' | 'labour_requirement' | 'equipment_requirement'
@@ -94,13 +88,13 @@ export type AssignableUser = { id: string; name: string; role: string };
 
 export async function apiListUsers(role?: string): Promise<AssignableUser[]> {
   const qs = role ? `?role=${encodeURIComponent(role)}` : '';
-  const r = await fetch(`${BACKEND}/api/users${qs}`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/users${qs}`, { headers: await headers() });
   if (!r.ok) throw new Error('users');
   return r.json();
 }
 
 export async function apiAssignItem(id: string, assigned_to_user_id: string, note?: string) {
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}/assign`, {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/assign`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify({ assigned_to_user_id, note }),
   });
@@ -123,19 +117,19 @@ export async function apiListItems(filter: {
 } = {}): Promise<OperationalItem[]> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(filter)) if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
-  const r = await fetch(`${BACKEND}/api/operational-items?${qs.toString()}`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/operational-items?${qs.toString()}`, { headers: await headers() });
   if (!r.ok) throw new Error('items');
   return r.json();
 }
 
 export async function apiGetItem(id: string): Promise<{ item: OperationalItem; history: OperationalEvent[]; evidence: any | null }> {
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}`, { headers: await headers() });
   if (!r.ok) throw new Error('item');
   return r.json();
 }
 
 export async function apiTransitionItem(id: string, to_status: string, note?: string): Promise<OperationalItem> {
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}/transition`, {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/transition`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify({ to_status, note }),
   });
@@ -144,7 +138,7 @@ export async function apiTransitionItem(id: string, to_status: string, note?: st
 }
 
 export async function apiCommentItem(id: string, text: string) {
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}/comments`, {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/comments`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify({ text }),
   });
@@ -153,7 +147,7 @@ export async function apiCommentItem(id: string, text: string) {
 }
 
 export async function apiSetBlocker(id: string, category: string, note?: string) {
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}/blocker`, {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/blocker`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify({ category, note }),
   });
@@ -162,7 +156,7 @@ export async function apiSetBlocker(id: string, category: string, note?: string)
 }
 
 export async function apiClearBlocker(id: string) {
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}/blocker`, {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/blocker`, {
     method: 'DELETE', headers: await headers(),
   });
   if (!r.ok) throw new Error(await r.text());
@@ -171,13 +165,13 @@ export async function apiClearBlocker(id: string) {
 
 export async function apiOperationalCenter(site_id?: string): Promise<OperationalCenter> {
   const qs = site_id ? `?site_id=${encodeURIComponent(site_id)}` : '';
-  const r = await fetch(`${BACKEND}/api/operational-center${qs}`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/operational-center${qs}`, { headers: await headers() });
   if (!r.ok) throw new Error('center');
   return r.json();
 }
 
 export async function apiSiteRequirements(site_id: string) {
-  const r = await fetch(`${BACKEND}/api/sites/${site_id}/requirements`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/sites/${site_id}/requirements`, { headers: await headers() });
   if (!r.ok) throw new Error('requirements');
   return r.json();
 }
@@ -185,7 +179,7 @@ export async function apiSiteRequirements(site_id: string) {
 export async function apiListProposals(filter: { event_id?: string; site_id?: string; status?: string } = {}): Promise<AiProposal[]> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(filter)) if (v) qs.set(k, String(v));
-  const r = await fetch(`${BACKEND}/api/ai-proposals?${qs.toString()}`, { headers: await headers() });
+  const r = await apiFetch(`${BACKEND}/api/ai-proposals?${qs.toString()}`, { headers: await headers() });
   if (!r.ok) throw new Error('proposals');
   return r.json();
 }
@@ -197,7 +191,7 @@ export type AcceptProposalInput = Partial<Pick<AiProposal, 'title' | 'descriptio
 };
 
 export async function apiAcceptProposal(id: string, edits: AcceptProposalInput = {}) {
-  const r = await fetch(`${BACKEND}/api/ai-proposals/${id}/accept`, {
+  const r = await apiFetch(`${BACKEND}/api/ai-proposals/${id}/accept`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify(edits),
   });
@@ -206,7 +200,7 @@ export async function apiAcceptProposal(id: string, edits: AcceptProposalInput =
 }
 
 export async function apiRejectProposal(id: string, reason?: string) {
-  const r = await fetch(`${BACKEND}/api/ai-proposals/${id}/reject`, {
+  const r = await apiFetch(`${BACKEND}/api/ai-proposals/${id}/reject`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify({ reason }),
   });
@@ -226,7 +220,7 @@ export type EditItemInput = Partial<{
 }>;
 
 export async function apiEditItem(id: string, edits: EditItemInput): Promise<OperationalItem> {
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}`, {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}`, {
     method: 'PATCH', headers: await jheaders(),
     body: JSON.stringify(edits),
   });
@@ -240,7 +234,7 @@ export async function apiVoiceUpdate(id: string, audioUri: string): Promise<{
   const form = new FormData();
   // @ts-ignore RN FormData file shape
   form.append('audio', { uri: audioUri, name: 'voice.m4a', type: 'audio/m4a' });
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}/voice-update`, {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/voice-update`, {
     method: 'POST', headers: await headers(), body: form as any,
   });
   if (!r.ok) throw new Error(await r.text());
@@ -248,7 +242,7 @@ export async function apiVoiceUpdate(id: string, audioUri: string): Promise<{
 }
 
 export async function apiMarkDuplicate(id: string, duplicate_of_item_id: string, note?: string) {
-  const r = await fetch(`${BACKEND}/api/operational-items/${id}/duplicate`, {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/duplicate`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify({ duplicate_of_item_id, note }),
   });

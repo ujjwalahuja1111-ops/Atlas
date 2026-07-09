@@ -85,6 +85,27 @@ async def unarchive_project(project_id: str, user: dict = Depends(get_current_us
     return await memory_engine.unarchive_project(project_id)
 
 
+@router.delete("/projects/{project_id}")
+async def delete_project(project_id: str, user: dict = Depends(get_current_user)):
+    """Hard-delete only if the project has no dependent sites (archived or
+    not). Returns 409 with the blocking counts otherwise; the UI should
+    offer archive as the fallback path. Mirrors DELETE /sites/{id} exactly.
+    """
+    if user["role"] == "supervisor":
+        raise HTTPException(status_code=403, detail="Supervisors cannot delete projects")
+    existing = await memory_engine.get_project(project_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Project not found")
+    refs = await memory_engine.project_reference_counts(project_id)
+    if any(refs.values()):
+        raise HTTPException(status_code=409, detail={
+            "message": "Project has dependent sites — archive instead.",
+            "refs": refs,
+        })
+    ok = await memory_engine.delete_project(project_id)
+    return {"deleted": ok, "id": project_id}
+
+
 @router.get("/sites")
 async def list_sites(project_id: Optional[str] = None,
                      include_archived: bool = False,

@@ -7,11 +7,14 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '@/src/theme';
-import { apiLogin, saveAuth, apiSeedDemo } from '@/src/api';
+import { apiLogin, apiRegister, saveAuth, apiSeedDemo, isApprovedAndActive } from '@/src/api';
 import { resolveLoginRole, completeLoginRouting } from '@/src/roles';
+
+type Mode = 'login' | 'signup';
 
 export default function LoginScreen() {
   const router = useRouter();
+  const [mode, setMode] = useState<Mode>('login');
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
   const [loading, setLoading] = useState(false);
@@ -24,6 +27,18 @@ export default function LoginScreen() {
     }
     setLoading(true); setError('');
     try {
+      if (mode === 'signup') {
+        // Sprint 4.1: Sign Up creates a brand-new, pending account with no
+        // role or project access — an Administrator must approve it via
+        // User Management before it can do anything. We still save the
+        // session (so /api/me works) but route to the Pending Approval
+        // screen instead of the normal workspace.
+        const res = await apiRegister(phone.trim(), name.trim());
+        await saveAuth(res.token, res.user);
+        router.replace('/pending');
+        return;
+      }
+
       // Sprint 4 cleanup: no manual workspace picker. We resolve which
       // backend role to authenticate as (returning phone number on this
       // device -> its last-known role; brand-new phone -> the same safe
@@ -33,11 +48,21 @@ export default function LoginScreen() {
       const guessedRole = await resolveLoginRole(phone.trim());
       const res = await apiLogin(phone.trim(), name.trim(), guessedRole);
       await saveAuth(res.token, res.user);
+
+      // Sprint 4.1: an account can be pending/rejected/deactivated even via
+      // the plain login path (e.g. they registered earlier and haven't been
+      // approved yet, or were deactivated after being approved). Route them
+      // to the Pending screen instead of a workspace either way.
+      if (!isApprovedAndActive(res.user)) {
+        router.replace('/pending');
+        return;
+      }
+
       await completeLoginRouting(phone.trim(), res.user.role);
       apiSeedDemo().catch(() => {});
       router.replace('/(tabs)');
     } catch (e: any) {
-      setError(e?.message || 'Login failed');
+      setError(e?.message || (mode === 'signup' ? 'Sign up failed' : 'Login failed'));
     } finally { setLoading(false); }
   };
 
@@ -61,6 +86,17 @@ export default function LoginScreen() {
           </View>
 
           <View style={styles.form}>
+            <View style={styles.modeRow}>
+              <Pressable testID="mode-login" onPress={() => { setMode('login'); setError(''); }}
+                style={[styles.modeChip, mode === 'login' && styles.modeChipActive]}>
+                <Text style={[styles.modeChipText, mode === 'login' && styles.modeChipTextActive]}>LOG IN</Text>
+              </Pressable>
+              <Pressable testID="mode-signup" onPress={() => { setMode('signup'); setError(''); }}
+                style={[styles.modeChip, mode === 'signup' && styles.modeChipActive]}>
+                <Text style={[styles.modeChipText, mode === 'signup' && styles.modeChipTextActive]}>SIGN UP</Text>
+              </Pressable>
+            </View>
+
             <Text style={styles.label}>Your Name</Text>
             <TextInput
               testID="login-name-input"
@@ -75,6 +111,13 @@ export default function LoginScreen() {
               placeholder="98765 43210" placeholderTextColor={theme.color.textDim}
               keyboardType="phone-pad" style={styles.input}
             />
+            {mode === 'signup' && (
+              <Text style={styles.hint}>
+                Your account will be created with no access yet. An Administrator
+                needs to approve it and assign your role and project before you
+                can use Atlas.
+              </Text>
+            )}
             {error ? <Text style={styles.error} testID="login-error">{error}</Text> : null}
           </View>
 
@@ -87,7 +130,7 @@ export default function LoginScreen() {
           >
             {loading ? <ActivityIndicator color={theme.color.onBrand} /> : (
               <>
-                <Text style={styles.ctaText}>CONTINUE</Text>
+                <Text style={styles.ctaText}>{mode === 'signup' ? 'SIGN UP' : 'CONTINUE'}</Text>
                 <Ionicons name="arrow-forward" size={28} color={theme.color.onBrand} />
               </>
             )}
@@ -109,12 +152,21 @@ const styles = StyleSheet.create({
   brand: { color: theme.color.text, fontSize: 56, fontWeight: '900', letterSpacing: 4 },
   tagline: { color: theme.color.brand, fontSize: 16, fontWeight: '700', marginTop: 4, letterSpacing: 2 },
   form: { gap: theme.spacing.sm },
+  modeRow: { flexDirection: 'row', gap: 8, marginBottom: theme.spacing.sm },
+  modeChip: {
+    flex: 1, height: 44, borderRadius: theme.radius.md, alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border,
+  },
+  modeChipActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  modeChipText: { color: theme.color.textMuted, fontSize: 13, fontWeight: '900', letterSpacing: 1 },
+  modeChipTextActive: { color: theme.color.onBrand },
   label: { color: theme.color.textMuted, fontSize: 14, fontWeight: '700', marginTop: theme.spacing.sm, letterSpacing: 1 },
   input: {
     height: theme.touch, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
     paddingHorizontal: theme.spacing.md, color: theme.color.text, fontSize: 20, borderWidth: 1,
     borderColor: theme.color.border,
   },
+  hint: { color: theme.color.textDim, fontSize: 12, marginTop: 8, lineHeight: 18 },
   cta: {
     height: 72, borderRadius: theme.radius.md, backgroundColor: theme.color.brand,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.sm,

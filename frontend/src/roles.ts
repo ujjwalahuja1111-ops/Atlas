@@ -53,6 +53,15 @@ export type ViewPerms = {
   showDashboards: boolean;
   showOpsBuckets: boolean;
   showCapture: boolean;
+  /** Sprint 4.1 fix (audit M3): whether this workspace can create/edit/
+   * archive/delete projects & sites. Previously projects/index.tsx,
+   * projects/[id].tsx, and ops.tsx each derived this from the raw backend
+   * role (`user.role !== 'supervisor'`) instead of this abstraction —
+   * harmless today since Client and PM share backend role `coordinator`,
+   * but it meant a read-mostly Client workspace would get full management
+   * rights the moment it became reachable again. This is the single source
+   * of truth now. */
+  canManageProjects: boolean;
   /** When set, proposals list is filtered to this category only. */
   proposalCategoryFilter?: string;
   /** When set, ops list filters to this category only. */
@@ -68,22 +77,22 @@ export type ViewPerms = {
 export const VIEW_PERMS: Record<ViewRole, ViewPerms> = {
   client: {
     showProposals: true, showAssignments: false, showDashboards: false, showOpsBuckets: false,
-    showCapture: false, proposalCategoryFilter: 'client_approval',
+    showCapture: false, canManageProjects: false, proposalCategoryFilter: 'client_approval',
     homeLabel: 'PROJECT UPDATES', opsLabel: 'APPROVALS',
   },
   supervisor: {
     showProposals: false, showAssignments: true, showDashboards: false, showOpsBuckets: false,
-    showCapture: true, onlyMyItems: true,
+    showCapture: true, canManageProjects: false, onlyMyItems: true,
     homeLabel: 'TODAY', opsLabel: 'ISSUES',
   },
   pm: {
     showProposals: true, showAssignments: true, showDashboards: true, showOpsBuckets: true,
-    showCapture: true,
+    showCapture: true, canManageProjects: true,
     homeLabel: 'DASHBOARD', opsLabel: 'OPERATIONS',
   },
   admin: {
     showProposals: true, showAssignments: true, showDashboards: true, showOpsBuckets: true,
-    showCapture: true,
+    showCapture: true, canManageProjects: true,
     homeLabel: 'DASHBOARD', opsLabel: 'OPERATIONS',
   },
 };

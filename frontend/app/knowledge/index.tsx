@@ -48,30 +48,57 @@ export default function KnowledgeWorkspace() {
   const [categories, setCategories] = useState<KnowledgeItem[]>([]);
   const [phases, setPhases] = useState<KnowledgeItem[]>([]);
   const [query, setQuery] = useState('');
+  // Sprint 4.1 fix (audit L2): debounce search input so typing doesn't
+  // trigger a network request on every keystroke.
+  const [debouncedQuery, setDebouncedQuery] = useState('');
   const [showArchived, setShowArchived] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState<Partial<KnowledgeItemInput> | null>(null);
   const [busy, setBusy] = useState(false);
   const [pickerFor, setPickerFor] = useState<'category_id' | 'phase_id' | null>(null);
 
   useEffect(() => { getViewRole().then(setViewRole); }, []);
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedQuery(query), 300);
+    return () => clearTimeout(t);
+  }, [query]);
+
   const load = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
-      const [list, cats, phs] = await Promise.all([
-        apiListKnowledgeItems({ type, q: query || undefined, include_archived: showArchived }),
+      const list = await apiListKnowledgeItems({ type, q: debouncedQuery || undefined, include_archived: showArchived });
+      setItems(list);
+    } catch (e: any) {
+      // Sprint 4.1 fix (audit H4): surface load failures instead of
+      // silently swallowing them.
+      console.warn(e);
+      setLoadError(e?.message || 'Could not load Construction Knowledge. Tap to retry.');
+    }
+    finally { setLoading(false); }
+  }, [type, debouncedQuery, showArchived]);
+
+  // Sprint 4.1 fix: categories/phases (used only for the activity picker
+  // fields) no longer refetch on every keystroke — they only change when a
+  // category/phase itself is created elsewhere, so loading them once per
+  // admin session is enough. Previously load() refetched all three lists
+  // together on every debounced-search-worthy change, including ones that
+  // only affected the activity/checklist/document list, not the pickers.
+  const loadPickerLists = useCallback(async () => {
+    try {
+      const [cats, phs] = await Promise.all([
         apiListKnowledgeItems({ type: 'category' }),
         apiListKnowledgeItems({ type: 'phase' }),
       ]);
-      setItems(list);
       setCategories(cats);
       setPhases(phs);
     } catch (e) { console.warn(e); }
-    finally { setLoading(false); }
-  }, [type, query, showArchived]);
+  }, []);
 
-  useEffect(() => { if (viewRole === 'admin') load(); }, [viewRole, load]);
+  useEffect(() => { if (viewRole === 'admin') { load(); loadPickerLists(); } }, [viewRole, load, loadPickerLists]);
+
 
   const onSave = async () => {
     if (!editing || !editing.name?.trim()) return;
@@ -92,7 +119,7 @@ export default function KnowledgeWorkspace() {
         status: editing.status || 'draft',
       });
       setEditing(null);
-      await load();
+      await load(); await loadPickerLists();
     } catch (e: any) {
       Alert.alert('Save failed', String(e?.message || e));
     } finally { setBusy(false); }
@@ -100,14 +127,14 @@ export default function KnowledgeWorkspace() {
 
   const onArchive = async (item: KnowledgeItem) => {
     setBusy(true);
-    try { await apiArchiveKnowledgeItem(item.id); await load(); }
+    try { await apiArchiveKnowledgeItem(item.id); await load(); await loadPickerLists(); }
     catch (e: any) { Alert.alert('Archive failed', String(e?.message || e)); }
     finally { setBusy(false); }
   };
 
   const onUnarchive = async (item: KnowledgeItem) => {
     setBusy(true);
-    try { await apiUnarchiveKnowledgeItem(item.id); await load(); }
+    try { await apiUnarchiveKnowledgeItem(item.id); await load(); await loadPickerLists(); }
     catch (e: any) { Alert.alert('Unarchive failed', String(e?.message || e)); }
     finally { setBusy(false); }
   };
@@ -184,6 +211,13 @@ export default function KnowledgeWorkspace() {
           <Ionicons name={showArchived ? 'archive' : 'archive-outline'} size={16} color={theme.color.brand} />
         </Pressable>
       </View>
+
+      {loadError && (
+        <Pressable testID="knowledge-load-error" onPress={load} style={styles.errorBanner}>
+          <Ionicons name="warning" size={16} color={theme.color.error} />
+          <Text style={styles.errorBannerText} numberOfLines={2}>{loadError} Tap to retry.</Text>
+        </Pressable>
+      )}
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator size="large" color={theme.color.brand} /></View>
@@ -407,6 +441,12 @@ const styles = StyleSheet.create({
   toggle: { width: 40, height: 40, borderRadius: theme.radius.md, alignItems: 'center', justifyContent: 'center',
            backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, padding: theme.spacing.lg },
+  errorBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.sm, padding: 10, borderRadius: theme.radius.sm,
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.error,
+  },
+  errorBannerText: { flex: 1, color: theme.color.error, fontSize: 12, fontWeight: '700' },
   empty: { alignItems: 'center', padding: theme.spacing.xl, gap: theme.spacing.sm },
   emptyTitle: { color: theme.color.text, fontSize: 18, fontWeight: '900', letterSpacing: 1, marginTop: 8 },
   emptyBody: { color: theme.color.textMuted, textAlign: 'center' },

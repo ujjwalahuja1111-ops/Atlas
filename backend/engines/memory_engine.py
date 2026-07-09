@@ -52,6 +52,103 @@ async def upsert_user(phone: str, name: str, role: str) -> dict:
     return await _insert(db.users, doc)
 
 
+# ---------------- users: Sprint 4.1 registration + admin management ----------------
+# `upsert_user` above (used by the existing /api/auth/login) is UNCHANGED and
+# keeps its exact pre-Sprint-4.1 behaviour: an existing account's role/name
+# are updated on every login, a brand-new phone is auto-provisioned as an
+# immediately-usable account. That preserves every Sprint 1-4 login flow and
+# test credential verbatim.
+#
+# Registration ("Sign Up" on the login screen) is a NEW, separate path with
+# different semantics: it only ever creates a brand-new account, and that
+# account starts locked out of real access (`approval_status="pending"`)
+# until an Administrator explicitly approves it via the User Management
+# screen. The two paths never overlap — register_user() refuses to touch an
+# existing phone number rather than reusing upsert_user's merge behaviour,
+# so "Sign Up" can never silently reactivate or reset someone else's account.
+#
+# Fields below are all NEW and OPTIONAL on the `users` document. Every read
+# site defaults a missing field via `.get(key, <backward-compatible value>)`
+# so every account created before this sprint (via plain login) is treated
+# as already-approved and active — no migration script needed.
+APPROVAL_STATUSES = {"pending", "approved", "rejected"}
+
+
+async def register_user(phone: str, name: str) -> dict:
+    """Sign Up. Creates a brand-new, pending, unassigned account. Raises
+    ValueError if the phone number already has an account — registration
+    is create-only, never a merge (that's what /api/auth/login is for).
+    """
+    existing = await db.users.find_one({"phone": phone}, {"_id": 0})
+    if existing:
+        raise ValueError("An account with this phone number already exists. Please log in instead.")
+    doc = {
+        "id": _new_id(),
+        "phone": phone,
+        "name": name,
+        "role": "supervisor",  # placeholder only — irrelevant until approved; admin assigns the real role
+        "approval_status": "pending",
+        "is_active": True,
+        "assigned_project_ids": [],
+        "created_at": _now(),
+    }
+    return await _insert(db.users, doc)
+
+
+async def list_users_admin(approval_status: Optional[str] = None) -> list[dict]:
+    q: dict = {}
+    if approval_status:
+        q["approval_status"] = approval_status
+    docs = await db.users.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
+    # Backfill defaults for pre-Sprint-4.1 accounts so the admin UI always
+    # sees a consistent shape without needing a migration.
+    for d in docs:
+        d.setdefault("approval_status", "approved")
+        d.setdefault("is_active", True)
+        d.setdefault("assigned_project_ids", [])
+    return docs
+
+
+async def get_user(user_id: str) -> Optional[dict]:
+    d = await db.users.find_one({"id": user_id}, {"_id": 0})
+    if d:
+        d.setdefault("approval_status", "approved")
+        d.setdefault("is_active", True)
+        d.setdefault("assigned_project_ids", [])
+    return d
+
+
+async def set_user_approval(user_id: str, approval_status: str) -> Optional[dict]:
+    if approval_status not in APPROVAL_STATUSES:
+        raise ValueError(f"Invalid approval_status '{approval_status}'. Must be one of {sorted(APPROVAL_STATUSES)}")
+    await db.users.update_one({"id": user_id}, {"$set": {"approval_status": approval_status, "updated_at": _now()}})
+    return await get_user(user_id)
+
+
+async def set_user_role(user_id: str, role: str) -> Optional[dict]:
+    await db.users.update_one({"id": user_id}, {"$set": {"role": role, "updated_at": _now()}})
+    return await get_user(user_id)
+
+
+async def set_user_projects(user_id: str, project_ids: list[str]) -> Optional[dict]:
+    await db.users.update_one({"id": user_id}, {"$set": {"assigned_project_ids": project_ids, "updated_at": _now()}})
+    return await get_user(user_id)
+
+
+async def set_user_active(user_id: str, is_active: bool) -> Optional[dict]:
+    await db.users.update_one({"id": user_id}, {"$set": {"is_active": is_active, "updated_at": _now()}})
+    return await get_user(user_id)
+
+
+async def update_own_name(user_id: str, name: str) -> Optional[dict]:
+    """Self-service name edit (Sprint 4.1 stabilization fix — audit M4: the
+    old flow's only way to fix a typo'd name was re-logging in, which also
+    silently re-applies whatever role was passed to /auth/login. This is a
+    narrow, self-only update — no role/approval/project fields touched."""
+    await db.users.update_one({"id": user_id}, {"$set": {"name": name, "updated_at": _now()}})
+    return await get_user(user_id)
+
+
 # ---------------- projects + sites ----------------
 async def list_projects(include_archived: bool = False) -> list[dict]:
     q: dict = {} if include_archived else {"archived_at": None}
@@ -96,6 +193,26 @@ async def unarchive_project(project_id: str) -> Optional[dict]:
         {"$set": {"archived_at": None}},
     )
     return await get_project(project_id)
+
+
+async def project_reference_counts(project_id: str) -> dict:
+    """Counts of dependent records — used to decide if a project can be
+    hard-deleted. Mirrors site_reference_counts(): a project's only direct
+    dependents are its sites (which themselves guard their own deletion
+    against events/operational_items/ai_proposals), so a project is safe to
+    delete only when it has zero sites left, archived or not — an archived
+    site is still dependent data that must not be silently orphaned by
+    deleting its parent project.
+    """
+    return {
+        "sites": await db.sites.count_documents({"project_id": project_id}),
+    }
+
+
+async def delete_project(project_id: str) -> bool:
+    """Hard delete a project. Caller MUST check project_reference_counts() first."""
+    r = await db.projects.delete_one({"id": project_id})
+    return r.deleted_count > 0
 
 
 async def list_sites(project_id: Optional[str] = None,

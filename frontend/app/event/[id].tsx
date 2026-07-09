@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image as ExpoImage } from 'expo-image';
@@ -26,7 +26,15 @@ export default function EventDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [item, setItem] = useState<TimelineItem | null>(null);
-  const [tick, setTick] = useState(0);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // Sprint 4.1 fix (audit H1): the interval below used to read `item` from
+  // a closure captured once at effect-creation time — since the effect's
+  // dependency array never actually changed (the old `tick` state was never
+  // incremented anywhere), that closure stayed frozen at `item === null`
+  // forever, so `!item` was permanently true and the poll never stopped,
+  // even long after ai_status resolved. A ref sidesteps the stale-closure
+  // problem entirely: the interval always reads the CURRENT status.
+  const aiStatusRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -34,17 +42,34 @@ export default function EventDetail() {
     const load = async () => {
       try {
         const i = await apiGetEvent(id);
-        if (!cancelled) setItem(i);
-      } catch {}
+        if (cancelled) return;
+        setItem(i);
+        setLoadError(null);
+        aiStatusRef.current = i.event.ai_status;
+      } catch (e: any) {
+        if (!cancelled) setLoadError(e?.message || 'Could not load this event.');
+      }
     };
     load();
-    // If still pending, poll every 3s
     const t = setInterval(() => {
-      if (item?.event.ai_status === 'pending' || !item) load();
+      if (aiStatusRef.current === 'pending' || aiStatusRef.current === null) load();
+      else clearInterval(t);
     }, 3000);
     return () => { cancelled = true; clearInterval(t); };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, tick]);
+  }, [id]);
+
+  if (loadError && !item) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.center}>
+          <Ionicons name="warning" size={48} color={theme.color.error} />
+          <Text style={{ color: theme.color.error, marginTop: 12, textAlign: 'center', paddingHorizontal: 24 }}>
+            {loadError}
+          </Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   if (!item) {
     return (
