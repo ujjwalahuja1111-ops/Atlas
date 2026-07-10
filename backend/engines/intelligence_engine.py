@@ -232,6 +232,15 @@ async def _worker_loop() -> None:
 
 async def start_worker() -> None:
     global _worker_task, _openai_client, _prompt_version
+    if not EMERGENT_LLM_KEY:
+        # Sprint 5.0.2 — Optional AI Worker (Local Development). No AI API
+        # key configured: skip starting the worker entirely rather than
+        # letting OpenAI(api_key="") raise at construction and crash
+        # backend startup. Nothing below this point runs — AI stays fully
+        # intact and becomes available automatically on the next startup
+        # once a valid key is configured; no code path here was changed.
+        logger.info("AI worker disabled - no API key configured.")
+        return
     _openai_client = OpenAI(api_key=EMERGENT_LLM_KEY, base_url=EMERGENT_BASE_URL)
     _prompt_version = await memory_engine.get_or_create_prompt_version(
         name=PROMPT_NAME,
