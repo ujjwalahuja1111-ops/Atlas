@@ -415,18 +415,20 @@ GET /api/sites/{site_id}/requirements  # living checklist for requirement catego
 
 **V4.1 additions:** `PATCH /api/knowledge-items/{id}`, `POST .../relationships`, and `DELETE .../relationships/{id}` now use optimistic concurrency (atomic version-matched write) and return `409` on a genuine conflict instead of silently overwriting. "Item not found" now returns `404` (was `400`) on every mutation, distinct from a validation error.
 
-### 9.9b Authentication & User Management (V4.1)
+### 9.9b Authentication & User Management (V4.1, extended V4.3)
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/auth/register` | Sign Up — `{phone, name}`; create-only, rejects an existing phone with 400; new account starts `approval_status=pending`, `is_active=true`, `assigned_project_ids=[]`. Separate from and does not affect `/api/auth/login`. |
-| `PATCH` | `/api/me` | Self-service name edit — `{name}` only; never touches role/approval/projects. |
+| `POST` | `/api/auth/register` | Sign Up — `{phone, name, requested_workspace?}`; create-only, rejects an existing phone with 400; new account starts `approval_status=pending`, `is_active=true`, `assigned_project_ids=[]`, `workspace=null`, `scope_projects=true`. `requested_workspace` (V4.3, "User Type") is informational only — never auto-applied to `workspace`. Separate from and does not affect `/api/auth/login`. |
+| `PATCH` | `/api/me` | Self-service name edit — `{name}` only; never touches role/approval/workspace/projects. |
 | `GET` | `/api/admin/users` (+ `approval_status`) | **management only**; list users, optionally filtered |
 | `POST` | `/api/admin/users/{id}/approve` / `/reject` | **management only** |
-| `POST` | `/api/admin/users/{id}/role` | `{role}`; **management only** |
+| `POST` | `/api/admin/users/{id}/role` | `{role}`; **management only**; V4.3: clears an incompatible stored `workspace` if the new role no longer supports it |
+| `POST` | `/api/admin/users/{id}/workspace` | **V4.3** — `{workspace}`; **management only**; validated against the account's current role (400 if incompatible — see `WORKSPACE_ROLE_MAP`) |
 | `POST` | `/api/admin/users/{id}/projects` | `{project_ids}`; **management only** |
 | `POST` | `/api/admin/users/{id}/active` | `{is_active}`; **management only**; rejects deactivating your own account (400) |
 | `DELETE` | `/api/projects/{id}` | Hard-delete only if zero sites (archived or active) reference it; 409 with blocking counts otherwise. Mirrors `DELETE /api/sites/{id}` exactly. **management/coordinator only.** |
+| `GET` | `/api/projects`, `GET /api/sites` | **V4.3**: response shape unchanged; result set is filtered to `assigned_project_ids` for accounts with `scope_projects=true` (new Sign Ups only — every pre-V4.3 account is unaffected). Management role is always unrestricted. |
 
 ### 9.9c System Information (V4.2)
 
@@ -479,6 +481,8 @@ Examples in the V3.2 test suite (`backend/tests/test_atlas_v3_2.py`) and in the 
 | Approve/reject/assign users (V4.1) | ❌ (403) | ❌ (403) | ✅ |
 | Edit own name (`PATCH /api/me`, V4.1) | ✅ | ✅ | ✅ |
 | Use the app at all, if `is_active=false` (V4.1) | ❌ (401, any role) | ❌ (401) | ❌ (401) |
+| Assign a user's Workspace (V4.3) | ❌ (403) | ❌ (403) | ✅ |
+| Project/site visibility (V4.3) | All if `scope_projects` unset (default); else only `assigned_project_ids` | Same as Supervisor | **Always unrestricted, unconditionally** |
 
 ### Frontend workspace routing (V4 cleanup)
 Sprint 3 added four *view-role* workspaces (Client / Supervisor / PM / Admin) layered on top of the three backend roles, originally chosen via a manual picker on the login screen. That picker is gone. Login now auto-resolves the workspace: `frontend/src/roles.ts` caches the last-known backend role per phone number per device, sends that (or the same `supervisor` default the backend itself uses for a brand-new phone) to the unchanged `POST /api/auth/login`, then routes into the workspace matching the **authoritative** role returned in the response via a single canonical map — `supervisor→supervisor`, `coordinator→pm`, `management→admin`. No backend route, request/response shape, or JWT mechanics changed. `client` remains fully defined in the frontend's permission tables but is no longer reachable via login auto-routing, since no backend signal distinguishes a "client" coordinator from a "PM" coordinator. See `memory/DECISIONS.md` ADR-020.
@@ -645,6 +649,7 @@ content-type with extension fallbacks for `wav / mp3 / webm / ogg / m4a`.
 
 | File | Coverage |
 |---|---|
+| `backend/tests/test_atlas_v4_3.py` | Sprint 4.3 Identity & Access Foundation: Sign Up User Type, no-access-until-assigned, workspace assignment + role-compatibility validation, project/site scoping, admin unrestricted access, legacy-account migration safety, regression smoke. 16 cases. |
 | `backend/tests/test_atlas_v4_2.py` | Sprint 4.2 Admin Experience: system-info endpoint field presence, admin gating, live-count reflection, regression smoke on Sprint 1-4.1 endpoints and existing User Management routes. 11 cases. |
 | `backend/tests/test_atlas_v4_1.py` | Sprint 4.1 stabilization: Sign Up/Pending Approval workflow, admin User Management (approve/reject/assign role/assign projects/activate-deactivate), self-service `PATCH /api/me`, project `DELETE` with dependency guard, Knowledge Core 404/400/409 distinction, phone validation, regression smoke on Sprint 1-4 endpoints. 20 cases. |
 | `backend/tests/test_atlas_v4.py` | Construction Knowledge Core (V4): CRUD, search/filter, archive/versioning, generic relationships, lifecycle status, admin gating. |
@@ -805,7 +810,7 @@ First stability audit + full remediation pass. Fixed every issue found (1 Critic
 
 **Confirmed unchanged:** `/api/auth/login`, every V1–V4 API request/response contract, every existing permission rule. The only change to a pre-existing code path is `get_current_user` gaining the `is_active` check — a no-op for every account created before V4.1.
 
-**Deliberate scope boundaries:** no per-project data scoping by `assigned_project_ids` yet (nothing filters queries by it — that's the real "future expansion"); no notification on approval (manual "Check Again" button instead); no password (auth model unchanged per "do not redesign authentication").
+**Deliberate scope boundaries:** no per-project data scoping by `assigned_project_ids` yet (nothing filters queries by it — that's the real "future expansion," closed in V4.3 below); no notification on approval (manual "Check Again" button instead); no password (auth model unchanged per "do not redesign authentication").
 
 ### V4.2 — Admin Experience
 Completes the Admin experience so no administrator needs Git Bash, curl, MongoDB, or browser DevTools to manage Atlas day-to-day.
@@ -815,6 +820,21 @@ Completes the Admin experience so no administrator needs Git Bash, curl, MongoDB
 **Admin System Information:** new page (`app/system/index.tsx`) and one new, read-only, admin-only endpoint (`GET /api/admin/system-info`, `routes/admin_system.py`) returning Atlas version, git commit (best-effort, falls back gracefully), build date, backend status, a real database ping, server uptime, and live counts (total users/projects/sites, pending approvals).
 
 **Confirmed unchanged:** every V1–V4.1 API request/response contract, every existing permission rule, `routes/admin_users.py`, `routes/auth.py`, `core/auth.py`. This sprint adds exactly one new backend endpoint; everything else is frontend-only or reuses existing APIs.
+
+### V4.3 — Identity & Access Foundation
+Completes the user identity model. Two new, independent, optional `users` fields.
+
+**Sign Up collects User Type:** the Sign Up form now asks Name, Mobile Number, and User Type (Client/Supervisor/Project Manager/Admin) — stored as `requested_workspace`, purely informational, shown to the admin during approval, **never auto-applied**. This is what makes "Sign Up collects User Type" and "no workspace until assigned" both true simultaneously.
+
+**Admin can assign Workspace:** new, independent from Role (Permission Level) and Project(s). `workspace` (client/supervisor/pm/admin) is validated against the account's current role via `WORKSPACE_ROLE_MAP` — a supervisor can only be the `supervisor` workspace, a coordinator can be `client` OR `pm` (this is what finally makes the Client workspace reachable — previously impossible, see ADR-020), management can only be `admin`. Changing role away from a compatible workspace clears the stale value rather than leaving an inconsistent combination. New `POST /api/admin/users/{id}/workspace`.
+
+**Users only see assigned projects:** `GET /api/projects`/`GET /api/sites` now filter to `assigned_project_ids` for accounts with the new `scope_projects=true` flag. **Admin (management role) is always unrestricted**, unconditionally. Every account that predates this sprint has `scope_projects` absent → defaults `false` (unrestricted, identical to today) — only new Sign Ups get scoped by default. This is the safe migration mechanism; see ADR-025.
+
+**Confirmed unchanged:** `/api/auth/login`'s contract, every V1–V4.2 API request/response shape (scoped endpoints return the same shape, just a conditionally narrower result set), every existing permission rule, `core/auth.py`'s `get_current_user`. `routes/admin_users.py`'s existing approve/reject/role/projects/active actions are untouched — this sprint only adds the workspace action alongside them. Sprint 4.2's Admin System Information page and User Management Search/View Details/CSV export are all unaffected — this sprint reconciles cleanly with all of it (see `memory/SPRINTS.md`'s V4.3 entry for the merge detail).
+
+**Migration:** no migration script exists or is needed. Every new field defaults to its pre-Sprint-4.3 equivalent behaviour when absent — verified explicitly in `backend/tests/test_atlas_v4_3.py`'s legacy-account tests.
+
+**Deliberate scope boundaries:** only the two list endpoints are scoped — deeper by-ID access (project summary, site requirements) is not, to keep the change minimal; a future pass could close this. No dedicated "approved but no workspace yet" blocking screen — an approved-but-unassigned account safely falls back to its role's default workspace while seeing zero projects (functionally inert, not exposed).
 
 ---
 

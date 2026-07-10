@@ -34,7 +34,7 @@ export default function PendingApprovalScreen() {
         const fresh: User = await r.json();
         setUser(fresh);
         if (isApprovedAndActive(fresh)) {
-          await completeLoginRouting(fresh.phone, fresh.role);
+          await completeLoginRouting(fresh.phone, fresh);
           router.replace('/(tabs)');
           return;
         }

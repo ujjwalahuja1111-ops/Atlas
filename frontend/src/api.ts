@@ -24,6 +24,19 @@ export type User = {
   approval_status?: 'pending' | 'approved' | 'rejected';
   is_active?: boolean;
   assigned_project_ids?: string[];
+  // Sprint 4.3 — Identity & Access Foundation. `workspace` is the
+  // admin-assigned UI experience, independent of the automatic role-based
+  // derivation in roles.ts (which remains the fallback when this is
+  // absent — see completeLoginRouting). `requested_workspace` is the "User
+  // Type" collected at Sign Up: purely informational, shown to the admin,
+  // never auto-applied. `scope_projects` gates whether this account's
+  // project/site visibility is limited to `assigned_project_ids` — absent
+  // (every pre-Sprint-4.3 account) means unrestricted, unchanged from
+  // today; the frontend never needs to read this directly, it only shapes
+  // what the backend's list endpoints return.
+  workspace?: 'client' | 'supervisor' | 'pm' | 'admin' | null;
+  requested_workspace?: 'client' | 'supervisor' | 'pm' | 'admin' | null;
+  scope_projects?: boolean;
 };
 
 /** True unless the account is explicitly pending/rejected/deactivated.
@@ -154,14 +167,20 @@ export async function apiLogin(phone: string, name: string, role: Role) {
   return (await r.json()) as { token: string; user: User };
 }
 
-/** Sign Up (Sprint 4.1). Creates a brand-new, pending account — distinct
- * from apiLogin's upsert-on-first-use behaviour. See routes/auth.py
- * `register` and memory_engine.register_user for the full rationale. */
-export async function apiRegister(phone: string, name: string) {
+/** Sign Up (Sprint 4.1, extended Sprint 4.3 with "User Type" /
+ * requested_workspace). Creates a brand-new, pending account — distinct
+ * from apiLogin's upsert-on-first-use behaviour. `requestedWorkspace` is
+ * purely informational (shown to the admin, never auto-applied — see
+ * memory_engine.register_user). See routes/auth.py `register` for the
+ * full rationale. */
+export async function apiRegister(
+  phone: string, name: string,
+  requestedWorkspace?: 'client' | 'supervisor' | 'pm' | 'admin',
+) {
   const r = await apiFetch(`${BACKEND}/api/auth/register`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phone, name }),
+    body: JSON.stringify({ phone, name, requested_workspace: requestedWorkspace }),
   });
   if (!r.ok) throw new Error(await r.text() || 'Sign up failed');
   return (await r.json()) as { token: string; user: User };

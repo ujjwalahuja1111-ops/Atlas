@@ -38,6 +38,16 @@ export async function apiAssignUserRole(id: string, role: Role): Promise<User> {
   return handle(r);
 }
 
+/** Sprint 4.3 — Identity & Access Foundation. Assign the admin-controlled
+ * UI workspace. The backend validates it's compatible with the account's
+ * current role (assign a compatible role first if this 400s). */
+export async function apiAssignUserWorkspace(id: string, workspace: 'client' | 'supervisor' | 'pm' | 'admin'): Promise<User> {
+  const r = await apiFetch(`${BACKEND}/api/admin/users/${id}/workspace`, {
+    method: 'POST', headers: await jsonHeaders(), body: JSON.stringify({ workspace }),
+  });
+  return handle(r);
+}
+
 export async function apiAssignUserProjects(id: string, projectIds: string[]): Promise<User> {
   const r = await apiFetch(`${BACKEND}/api/admin/users/${id}/projects`, {
     method: 'POST', headers: await jsonHeaders(), body: JSON.stringify({ project_ids: projectIds }),

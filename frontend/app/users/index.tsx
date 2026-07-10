@@ -6,11 +6,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { getViewRole, DEFAULT_VIEW_ROLE_FOR, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
+import { getViewRole, DEFAULT_VIEW_ROLE_FOR, VIEW_ROLE_LABEL, WORKSPACE_OPTIONS_FOR_ROLE, type ViewRole } from '@/src/roles';
 import { apiListProjects, type Project, type User, type Role } from '@/src/api';
 import {
   apiListAdminUsers, apiApproveUser, apiRejectUser, apiAssignUserRole,
-  apiAssignUserProjects, apiSetUserActive, type ApprovalStatus,
+  apiAssignUserWorkspace, apiAssignUserProjects, apiSetUserActive, type ApprovalStatus,
 } from '@/src/admin_users_api';
 import { toCsv, exportCsv } from '@/src/csv';
 
@@ -92,6 +92,16 @@ export default function UserManagementScreen() {
       setAssigningUser(updated);
       await load();
     } catch (e: any) { Alert.alert('Assign role failed', String(e?.message || e)); }
+    finally { setBusy(false); }
+  };
+
+  const onAssignWorkspace = async (u: User, workspace: ViewRole) => {
+    setBusy(true);
+    try {
+      const updated = await apiAssignUserWorkspace(u.id, workspace);
+      setAssigningUser(updated);
+      await load();
+    } catch (e: any) { Alert.alert('Assign workspace failed', String(e?.message || e)); }
     finally { setBusy(false); }
   };
 
@@ -245,7 +255,15 @@ export default function UserManagementScreen() {
                 <View style={styles.rowHead}>
                   <View style={{ flex: 1 }}>
                     <Text style={styles.name} numberOfLines={1}>{u.name}</Text>
-                    <Text style={styles.meta}>{u.phone} · {u.role}</Text>
+                    <Text style={styles.meta}>
+                      {u.phone} · {u.role}
+                      {u.workspace ? ` · ${VIEW_ROLE_LABEL[u.workspace]}` : ''}
+                    </Text>
+                    {status === 'pending' && u.requested_workspace && (
+                      <Text style={styles.requestedLine}>
+                        Requested: {VIEW_ROLE_LABEL[u.requested_workspace]}
+                      </Text>
+                    )}
                   </View>
                   <View style={[styles.statusBadge, {
                     borderColor: status === 'pending' ? theme.color.info
@@ -280,7 +298,7 @@ export default function UserManagementScreen() {
                   )}
                   <ActionBtn testID={`user-details-${u.id}`} icon="eye" label="VIEW"
                     color={theme.color.textMuted} onPress={() => setDetailUser(u)} disabled={busy} />
-                  <ActionBtn testID={`user-assign-${u.id}`} icon="options" label="ROLE / PROJECTS"
+                  <ActionBtn testID={`user-assign-${u.id}`} icon="options" label="ROLE / ACCESS"
                     color={theme.color.brand} onPress={() => setAssigningUser(u)} disabled={busy} />
                   {active ? (
                     <ActionBtn testID={`user-deactivate-${u.id}`} icon="power" label="DEACTIVATE"
@@ -310,7 +328,7 @@ export default function UserManagementScreen() {
               </Pressable>
             </View>
 
-            <Text style={styles.label}>Role</Text>
+            <Text style={styles.label}>Role (Permission Level)</Text>
             <View style={styles.roleRow}>
               {ROLE_OPTIONS.map((r) => {
                 const isActive = assigningUser?.role === r;
@@ -323,6 +341,30 @@ export default function UserManagementScreen() {
                 );
               })}
             </View>
+
+            <Text style={[styles.label, { marginTop: 14 }]}>Workspace</Text>
+            {assigningUser?.requested_workspace && !assigningUser.workspace && (
+              <Text style={styles.requestedHint}>
+                Requested at Sign Up: {VIEW_ROLE_LABEL[assigningUser.requested_workspace]}
+              </Text>
+            )}
+            <View style={styles.roleRow}>
+              {assigningUser && WORKSPACE_OPTIONS_FOR_ROLE[assigningUser.role].map((w) => {
+                const isActive = assigningUser?.workspace === w;
+                return (
+                  <Pressable key={w} testID={`user-workspace-${w}`}
+                    onPress={() => assigningUser && onAssignWorkspace(assigningUser, w)}
+                    style={[styles.roleChip, isActive && styles.roleChipActive]}>
+                    <Text style={[styles.roleChipText, isActive && styles.roleChipTextActive]}>
+                      {VIEW_ROLE_LABEL[w].toUpperCase()}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {assigningUser && WORKSPACE_OPTIONS_FOR_ROLE[assigningUser.role].length === 0 && (
+              <Text style={styles.emptyBody}>No workspace options for this role.</Text>
+            )}
 
             <Text style={[styles.label, { marginTop: 14 }]}>Projects</Text>
             <ScrollView style={{ maxHeight: 260 }}>
@@ -359,7 +401,9 @@ export default function UserManagementScreen() {
                 <DetailRow label="Name" value={detailUser.name} />
                 <DetailRow label="Mobile Number" value={detailUser.phone} />
                 <DetailRow label="Backend Role" value={detailUser.role} />
-                <DetailRow label="Workspace" value={VIEW_ROLE_LABEL[DEFAULT_VIEW_ROLE_FOR[detailUser.role]]} />
+                <DetailRow label="Workspace"
+                  value={VIEW_ROLE_LABEL[detailUser.workspace || DEFAULT_VIEW_ROLE_FOR[detailUser.role]]
+                    + (detailUser.workspace ? '' : ' (default)')} />
                 <DetailRow label="Approval Status" value={(detailUser.approval_status || 'approved').toUpperCase()} />
                 <DetailRow label="Active" value={detailUser.is_active === false ? 'No' : 'Yes'} />
                 <DetailRow label="Assigned Projects"
@@ -433,6 +477,8 @@ const styles = StyleSheet.create({
   rowHead: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   name: { color: theme.color.text, fontSize: 16, fontWeight: '800' },
   meta: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
+  requestedLine: { color: theme.color.info, fontSize: 11, marginTop: 2, fontWeight: '600' },
+  requestedHint: { color: theme.color.info, fontSize: 11, marginBottom: 6 },
   statusBadge: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, borderWidth: 1 },
   statusBadgeText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
   projectsLine: { color: theme.color.textDim, fontSize: 12 },

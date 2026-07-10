@@ -73,15 +73,45 @@ async def upsert_user(phone: str, name: str, role: str) -> dict:
 # as already-approved and active — no migration script needed.
 APPROVAL_STATUSES = {"pending", "approved", "rejected"}
 
+# Sprint 4.3 — Identity & Access Foundation.
+# `workspace` is the admin-assigned UI experience (client/supervisor/pm/
+# admin) — a NEW, EXPLICIT field, distinct from the derived mapping
+# frontend/src/roles.ts has always used (DEFAULT_VIEW_ROLE_FOR[role]).
+# WORKSPACE_ROLE_MAP is the same conceptual pairing that mapping already
+# encodes; a workspace can only be assigned if it's compatible with the
+# account's current backend role, so it's never possible to end up with
+# (e.g.) workspace="admin" on a non-management account, which would show
+# Admin navigation while every admin-gated backend call still 403s.
+WORKSPACES = {"client", "supervisor", "pm", "admin"}
+WORKSPACE_ROLE_MAP: dict[str, set[str]] = {
+    "supervisor": {"supervisor"},
+    "coordinator": {"client", "pm"},
+    "management": {"admin"},
+}
 
-async def register_user(phone: str, name: str) -> dict:
+
+async def register_user(phone: str, name: str, requested_workspace: Optional[str] = None) -> dict:
     """Sign Up. Creates a brand-new, pending, unassigned account. Raises
     ValueError if the phone number already has an account — registration
     is create-only, never a merge (that's what /api/auth/login is for).
+
+    `requested_workspace` (Sprint 4.3 — "User Type" on the Sign Up form)
+    is purely informational: it's shown to the Administrator to help them
+    decide, but is NEVER auto-applied to the real `workspace` field, which
+    starts unset. This is what makes "no workspace until assigned" literally
+    true even though Sign Up now collects a workspace preference.
+
+    `scope_projects=True` is what makes "no project access, no site access"
+    literally true: list_projects()/list_sites() only apply this
+    restriction to accounts with this flag set, so it can be introduced
+    without touching any account that existed before this sprint (see
+    _is_project_scoped's docstring).
     """
     existing = await db.users.find_one({"phone": phone}, {"_id": 0})
     if existing:
         raise ValueError("An account with this phone number already exists. Please log in instead.")
+    if requested_workspace and requested_workspace not in WORKSPACES:
+        raise ValueError(f"Invalid requested_workspace '{requested_workspace}'. Must be one of {sorted(WORKSPACES)}")
     doc = {
         "id": _new_id(),
         "phone": phone,
@@ -90,9 +120,25 @@ async def register_user(phone: str, name: str) -> dict:
         "approval_status": "pending",
         "is_active": True,
         "assigned_project_ids": [],
+        "workspace": None,
+        "requested_workspace": requested_workspace,
+        "scope_projects": True,
         "created_at": _now(),
     }
     return await _insert(db.users, doc)
+
+
+def _backfill_user_defaults(d: dict) -> dict:
+    """Single place applying every Sprint 4.1/4.3 backward-compatible
+    default, so list_users_admin/get_user can't drift out of sync with
+    each other."""
+    d.setdefault("approval_status", "approved")
+    d.setdefault("is_active", True)
+    d.setdefault("assigned_project_ids", [])
+    d.setdefault("workspace", None)
+    d.setdefault("requested_workspace", None)
+    d.setdefault("scope_projects", False)
+    return d
 
 
 async def list_users_admin(approval_status: Optional[str] = None) -> list[dict]:
@@ -100,22 +146,12 @@ async def list_users_admin(approval_status: Optional[str] = None) -> list[dict]:
     if approval_status:
         q["approval_status"] = approval_status
     docs = await db.users.find(q, {"_id": 0}).sort("created_at", -1).to_list(1000)
-    # Backfill defaults for pre-Sprint-4.1 accounts so the admin UI always
-    # sees a consistent shape without needing a migration.
-    for d in docs:
-        d.setdefault("approval_status", "approved")
-        d.setdefault("is_active", True)
-        d.setdefault("assigned_project_ids", [])
-    return docs
+    return [_backfill_user_defaults(d) for d in docs]
 
 
 async def get_user(user_id: str) -> Optional[dict]:
     d = await db.users.find_one({"id": user_id}, {"_id": 0})
-    if d:
-        d.setdefault("approval_status", "approved")
-        d.setdefault("is_active", True)
-        d.setdefault("assigned_project_ids", [])
-    return d
+    return _backfill_user_defaults(d) if d else None
 
 
 async def set_user_approval(user_id: str, approval_status: str) -> Optional[dict]:
@@ -126,7 +162,35 @@ async def set_user_approval(user_id: str, approval_status: str) -> Optional[dict
 
 
 async def set_user_role(user_id: str, role: str) -> Optional[dict]:
-    await db.users.update_one({"id": user_id}, {"$set": {"role": role, "updated_at": _now()}})
+    upd = {"role": role, "updated_at": _now()}
+    # Sprint 4.3: if the currently-stored workspace is no longer valid for
+    # the new role (e.g. role changed away from management while
+    # workspace="admin"), clear it rather than leave an inconsistent
+    # combination in place — the admin must explicitly re-assign a
+    # compatible workspace. Cheaper and safer than trying to guess a new one.
+    current = await get_user(user_id)
+    if current and current.get("workspace") and current["workspace"] not in WORKSPACE_ROLE_MAP.get(role, set()):
+        upd["workspace"] = None
+    await db.users.update_one({"id": user_id}, {"$set": upd})
+    return await get_user(user_id)
+
+
+async def set_user_workspace(user_id: str, workspace: str) -> Optional[dict]:
+    """Admin-assigns the UI workspace (Sprint 4.3). Validated against the
+    account's CURRENT role via WORKSPACE_ROLE_MAP — assign role first if
+    the desired workspace isn't yet compatible."""
+    if workspace not in WORKSPACES:
+        raise ValueError(f"Invalid workspace '{workspace}'. Must be one of {sorted(WORKSPACES)}")
+    current = await get_user(user_id)
+    if not current:
+        return None
+    role = current.get("role")
+    if workspace not in WORKSPACE_ROLE_MAP.get(role, set()):
+        raise ValueError(
+            f"Workspace '{workspace}' is not compatible with role '{role}'. "
+            f"Compatible workspaces for this role: {sorted(WORKSPACE_ROLE_MAP.get(role, set()))}"
+        )
+    await db.users.update_one({"id": user_id}, {"$set": {"workspace": workspace, "updated_at": _now()}})
     return await get_user(user_id)
 
 
@@ -150,8 +214,30 @@ async def update_own_name(user_id: str, name: str) -> Optional[dict]:
 
 
 # ---------------- projects + sites ----------------
-async def list_projects(include_archived: bool = False) -> list[dict]:
+def _is_project_scoped(user: dict) -> bool:
+    """True if this user's project/site visibility should be limited to
+    their assigned_project_ids (Sprint 4.3 — Identity & Access Foundation).
+
+    Admin (management role) is always unrestricted — "Admin has
+    unrestricted access" is unconditional, independent of any stored flag.
+
+    Every account that predates this feature has no `scope_projects` field
+    at all and defaults to False (unrestricted) — a deliberate migration
+    safeguard, not an oversight: retroactively scoping existing accounts
+    would break Sprint 1-4.2 capture/timeline/ops workflows for every
+    current user, none of whom have ever had project assignment as a
+    concept. Only accounts created via register_user() from this sprint
+    onward are scoped by default (see register_user below).
+    """
+    if user.get("role") == "management":
+        return False
+    return bool(user.get("scope_projects", False))
+
+
+async def list_projects(include_archived: bool = False, *, user: Optional[dict] = None) -> list[dict]:
     q: dict = {} if include_archived else {"archived_at": None}
+    if user and _is_project_scoped(user):
+        q["id"] = {"$in": user.get("assigned_project_ids", [])}
     return await db.projects.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 
@@ -216,10 +302,19 @@ async def delete_project(project_id: str) -> bool:
 
 
 async def list_sites(project_id: Optional[str] = None,
-                     include_archived: bool = False) -> list[dict]:
+                     include_archived: bool = False, *, user: Optional[dict] = None) -> list[dict]:
     q: dict = {"project_id": project_id} if project_id else {}
     if not include_archived:
         q["archived_at"] = None
+    if user and _is_project_scoped(user):
+        allowed = set(user.get("assigned_project_ids", []))
+        if project_id:
+            # Asked for a specific project's sites but not assigned to it —
+            # same effect as the project not existing for this caller.
+            if project_id not in allowed:
+                return []
+        else:
+            q["project_id"] = {"$in": list(allowed)}
     return await db.sites.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
 
 

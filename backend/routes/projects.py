@@ -38,7 +38,7 @@ class SiteUpdate(BaseModel):
 @router.get("/projects")
 async def list_projects(include_archived: bool = False,
                         user: dict = Depends(get_current_user)):
-    return await memory_engine.list_projects(include_archived=include_archived)
+    return await memory_engine.list_projects(include_archived=include_archived, user=user)
 
 
 @router.post("/projects")
@@ -110,7 +110,7 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
 async def list_sites(project_id: Optional[str] = None,
                      include_archived: bool = False,
                      user: dict = Depends(get_current_user)):
-    return await memory_engine.list_sites(project_id, include_archived=include_archived)
+    return await memory_engine.list_sites(project_id, include_archived=include_archived, user=user)
 
 
 @router.post("/sites")

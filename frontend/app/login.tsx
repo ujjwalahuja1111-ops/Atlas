@@ -8,15 +8,22 @@ import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '@/src/theme';
 import { apiLogin, apiRegister, saveAuth, apiSeedDemo, isApprovedAndActive } from '@/src/api';
-import { resolveLoginRole, completeLoginRouting } from '@/src/roles';
+import { resolveLoginRole, completeLoginRouting, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
 
 type Mode = 'login' | 'signup';
+
+// Sprint 4.3 — "User Type" collected at Sign Up. Every value here is a
+// ViewRole so it lines up 1:1 with the admin-assignable Workspace options
+// (Client / Supervisor / Project Manager / Admin) — this is purely a
+// REQUEST though; see the hint text below and apiRegister's docstring.
+const USER_TYPES: ViewRole[] = ['client', 'supervisor', 'pm', 'admin'];
 
 export default function LoginScreen() {
   const router = useRouter();
   const [mode, setMode] = useState<Mode>('login');
   const [phone, setPhone] = useState('');
   const [name, setName] = useState('');
+  const [userType, setUserType] = useState<ViewRole>('supervisor');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -32,8 +39,10 @@ export default function LoginScreen() {
         // role or project access — an Administrator must approve it via
         // User Management before it can do anything. We still save the
         // session (so /api/me works) but route to the Pending Approval
-        // screen instead of the normal workspace.
-        const res = await apiRegister(phone.trim(), name.trim());
+        // screen instead of the normal workspace. Sprint 4.3: `userType`
+        // is sent as `requested_workspace` — purely a hint for the admin,
+        // never auto-applied (see apiRegister's docstring).
+        const res = await apiRegister(phone.trim(), name.trim(), userType);
         await saveAuth(res.token, res.user);
         router.replace('/pending');
         return;
@@ -58,7 +67,7 @@ export default function LoginScreen() {
         return;
       }
 
-      await completeLoginRouting(phone.trim(), res.user.role);
+      await completeLoginRouting(phone.trim(), res.user);
       apiSeedDemo().catch(() => {});
       router.replace('/(tabs)');
     } catch (e: any) {
@@ -112,11 +121,25 @@ export default function LoginScreen() {
               keyboardType="phone-pad" style={styles.input}
             />
             {mode === 'signup' && (
-              <Text style={styles.hint}>
-                Your account will be created with no access yet. An Administrator
-                needs to approve it and assign your role and project before you
-                can use Atlas.
-              </Text>
+              <>
+                <Text style={styles.label}>User Type</Text>
+                <View style={styles.typeRow}>
+                  {USER_TYPES.map((t) => (
+                    <Pressable key={t} testID={`signup-type-${t}`} onPress={() => setUserType(t)}
+                      style={[styles.typeChip, userType === t && styles.typeChipActive]}>
+                      <Text style={[styles.typeChipText, userType === t && styles.typeChipTextActive]}>
+                        {VIEW_ROLE_LABEL[t]}
+                      </Text>
+                    </Pressable>
+                  ))}
+                </View>
+                <Text style={styles.hint}>
+                  Your account will be created with no access yet. An Administrator
+                  needs to approve it and assign your workspace, role, and project
+                  before you can use Atlas. User Type is just a request — the
+                  Administrator makes the final decision.
+                </Text>
+              </>
             )}
             {error ? <Text style={styles.error} testID="login-error">{error}</Text> : null}
           </View>
@@ -167,6 +190,15 @@ const styles = StyleSheet.create({
     borderColor: theme.color.border,
   },
   hint: { color: theme.color.textDim, fontSize: 12, marginTop: 8, lineHeight: 18 },
+  typeRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  typeChip: {
+    flexGrow: 1, minWidth: '47%', height: 44, borderRadius: theme.radius.md,
+    alignItems: 'center', justifyContent: 'center',
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border,
+  },
+  typeChipActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  typeChipText: { color: theme.color.textMuted, fontSize: 13, fontWeight: '900', letterSpacing: 0.5 },
+  typeChipTextActive: { color: theme.color.onBrand },
   cta: {
     height: 72, borderRadius: theme.radius.md, backgroundColor: theme.color.brand,
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.sm,

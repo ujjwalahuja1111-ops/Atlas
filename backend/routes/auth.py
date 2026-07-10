@@ -1,13 +1,14 @@
 """Auth routes."""
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
-from typing import Literal
+from typing import Literal, Optional
 from core.auth import create_token, get_current_user
 from engines import memory_engine
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
 Role = Literal["supervisor", "coordinator", "management"]
+Workspace = Literal["client", "supervisor", "pm", "admin"]
 
 
 def _clean_phone(raw: str) -> str:
@@ -39,23 +40,31 @@ async def login(req: LoginRequest):
 class RegisterRequest(BaseModel):
     phone: str
     name: str
+    # Sprint 4.3 — "User Type" on the Sign Up form. Purely informational
+    # (shown to the Administrator to help them decide); never auto-applied
+    # to the real, admin-controlled `workspace` field. See memory_engine.
+    # register_user's docstring for why this doesn't contradict "no
+    # workspace until assigned."
+    requested_workspace: Optional[Workspace] = None
 
 
 @router.post("/auth/register")
 async def register(req: RegisterRequest):
-    """Sign Up (Sprint 4.1). Creates a NEW, pending, unassigned account —
-    distinct from /auth/login's upsert-on-first-use behaviour. The person
-    still gets a token back (so the app can identify them and show a
-    Pending Approval screen with their name), but they have no role
-    assignment or project access worth anything until an Administrator
-    approves them via the User Management screen. See memory_engine.
-    register_user for the full rationale.
+    """Sign Up (Sprint 4.1, extended Sprint 4.3). Creates a NEW, pending,
+    unassigned account — distinct from /auth/login's upsert-on-first-use
+    behaviour. The person still gets a token back (so the app can identify
+    them and show a Pending Approval screen with their name), but they have
+    no role, workspace, or project access worth anything until an
+    Administrator approves them via the User Management screen. See
+    memory_engine.register_user for the full rationale.
     """
     phone = _clean_phone(req.phone)
     if not req.name.strip():
         raise HTTPException(status_code=400, detail="Name is required")
     try:
-        user = await memory_engine.register_user(phone=phone, name=req.name.strip())
+        user = await memory_engine.register_user(
+            phone=phone, name=req.name.strip(), requested_workspace=req.requested_workspace,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     return {"token": create_token(user["id"]), "user": user}

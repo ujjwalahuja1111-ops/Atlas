@@ -159,6 +159,21 @@ export const DEFAULT_VIEW_ROLE_FOR: Record<Role, ViewRole> = {
   management: 'admin',
 };
 
+/**
+ * Sprint 4.3 — Identity & Access Foundation. Which workspace options are
+ * valid to assign for a given backend role — mirrors
+ * `backend/engines/memory_engine.py`'s `WORKSPACE_ROLE_MAP` exactly. Used
+ * by the User Management "assign workspace" UI to only offer compatible
+ * choices; the backend independently re-validates this on every request
+ * (never trust client-side validation alone), so this is a UX convenience,
+ * not the actual enforcement boundary.
+ */
+export const WORKSPACE_OPTIONS_FOR_ROLE: Record<Role, ViewRole[]> = {
+  supervisor: ['supervisor'],
+  coordinator: ['client', 'pm'],
+  management: ['admin'],
+};
+
 const KNOWN_ROLE_PREFIX = 'atlas.known_role.';
 
 /** Last backend role this device saw for a given phone number, so a
@@ -192,15 +207,26 @@ export async function resolveLoginRole(phone: string): Promise<Role> {
 }
 
 /**
- * Call AFTER a successful login with the AUTHORITATIVE role from the login
- * response (`res.user.role`) — not the guess passed into resolveLoginRole.
- * Remembers it for next time and resolves + persists the workspace the user
- * should land in. Returns the resolved workspace purely for callers that
- * want it (e.g. analytics); screens don't need to branch on it themselves.
+ * Call AFTER a successful login with the AUTHORITATIVE user object from the
+ * login response (`res.user`) — not the guess passed into resolveLoginRole.
+ * Remembers the role for next time and resolves + persists the workspace
+ * the user should land in.
+ *
+ * Sprint 4.3 — Identity & Access Foundation: an Administrator can now
+ * explicitly assign a workspace (`user.workspace`) that's independent of
+ * the automatic role->workspace derivation below. If present, it wins. If
+ * absent — every account that predates this feature, and any new account
+ * an admin hasn't explicitly assigned a workspace to yet — falls back to
+ * the exact same DEFAULT_VIEW_ROLE_FOR derivation used since Sprint 4,
+ * so this is fully backward compatible with zero behaviour change for
+ * every existing account.
  */
-export async function completeLoginRouting(phone: string, backendRole: Role): Promise<ViewRole> {
-  await setKnownRole(phone.trim(), backendRole);
-  const workspace = DEFAULT_VIEW_ROLE_FOR[backendRole];
+export async function completeLoginRouting(
+  phone: string,
+  user: { role: Role; workspace?: ViewRole | null },
+): Promise<ViewRole> {
+  await setKnownRole(phone.trim(), user.role);
+  const workspace = user.workspace || DEFAULT_VIEW_ROLE_FOR[user.role];
   await setViewRole(workspace);
   return workspace;
 }
