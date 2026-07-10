@@ -9,9 +9,10 @@
 | 3 | Intelligence | `engines/intelligence_engine.py` | Async worker; Whisper + GPT-4o; Evidence + Prompt versioning; emits AI Proposals | ✅ V2 + V3 |
 | 4 | Timeline | `engines/timeline_engine.py` | Chronological projection over events + analyses + corrections (+ ops via `include=ops`) | ✅ V2 + V3 |
 | 5 | **Operations** | `engines/operations_engine.py` | Operational Items lifecycle, CQRS projection over ledger, Health derivation, AI Proposal acceptance | ✅ **V3** |
-| 6 | **Knowledge** | `engines/knowledge_engine.py` | Construction Knowledge Core — reusable master definitions (Category/Phase/Activity/Checklist Template/Required Document), generic typed relationships, versioning, soft-archive | ✅ **V4** |
-| 7 | Workflow | *(reserved)* | Future approvals automation | reserved |
+| 6 | **Knowledge** | `engines/knowledge_engine.py` | Construction Knowledge Core — reusable master definitions (Category/Phase/Activity/Checklist Template/Required Document/**Workflow Template**), generic typed relationships, versioning, soft-archive. V5 extended Activities with `trade`/`unit`/`requires_inspection` and added the computed `compute_unlocks()` reverse-lookup — zero change to CRUD/search/versioning machinery. | ✅ **V4**, extended **V5** |
+| 7 | Workflow (approvals automation) | *(reserved)* | Future approvals automation — NOT the same thing as the Construction Workflow Engine below; naming collision noted, this slot remains unbuilt | reserved |
 | 8 | Learning | *(reserved — `ai_feedback`)* | Closes the loop from human corrections back into models | reserved |
+| 9 | **Construction Workflow** | `engines/workflow_engine.py` | Generates project-scoped activity instances from Workflow Templates (Knowledge Core); tracks dependency-respecting status (not_started/ready/in_progress/blocked/completed). No scheduling, no AI, no resource/cost calculations. | ✅ **V5** |
 
 ## V3 Diagram
 
@@ -54,8 +55,9 @@
 | `operational_events` | **append-only ledger** | every lifecycle/comment/blocker/escalation event |
 | `operational_items` | derived projection (rebuildable) | cheap current-state read |
 | `ai_feedback`* | reserved | future Learning Engine |
-| `knowledge_items` | soft-archive + versioned | Construction Knowledge Core master data, one collection discriminated by `type` (category/phase/activity/checklist_template/required_document); tracks lifecycle `status` (draft/active/deprecated/archived) alongside `archived_at`, and a reserved freeform `applicability` dict for future project-generation filtering |
+| `knowledge_items` | soft-archive + versioned | Construction Knowledge Core master data, one collection discriminated by `type` (category/phase/activity/checklist_template/required_document/**workflow_template**, V5); tracks lifecycle `status` (draft/active/deprecated/archived) alongside `archived_at`; `applicability` (freeform dict, reserved Sprint 4) and Activity-only fields `trade`/`unit`/`requires_inspection` (V5) |
 | `knowledge_versions` | **append-only** | immutable pre-edit snapshots of `knowledge_items`, mirroring the `corrections` pattern |
+| `workflow_activities` | mutable, project-scoped | **V5.** Project-scoped, denormalized instances of Activity Library items generated from a Workflow Template — deliberately separate from `knowledge_items` (global reference data) — see ADR-028. Tracks `status` (not_started/ready/in_progress/blocked/completed) and `depends_on_activity_ids` (sibling instance ids within the same project). |
 
 ## Evidence Model
 Every `ai_analyses.evidence[]` entry: `{kind, asset_id?, sha256?, value?}` referencing audio/photo/text artefacts. Every `operational_items.inherited_evidence_event_id` links back to the originating Construction Event so all evidence is reachable in one hop.
@@ -118,6 +120,15 @@ Two new, independent, optional `users` fields complete the identity model:
 - **`scope_projects`** — gates whether `GET /api/projects`/`GET /api/sites` filter to `assigned_project_ids`. Defaults `false` (unrestricted, today's behaviour) for every account; only `register_user()` sets it `true`. Management role is always unrestricted regardless. See ADR-025 for why this is a dedicated flag rather than inferred from other fields.
 - **`requested_workspace`** ("User Type" at Sign Up) is informational only — shown to the admin, never auto-applied — which is what lets Sign Up collect a workspace preference while "no workspace until assigned" stays literally true.
 
+## Construction Workflow Engine (V5)
+The first real consumer of the Construction Knowledge Core (Sprint 4), proving out exactly what that architecture was built for:
+- **Activity Library** — `knowledge_items` (`type="activity"`) gains `trade`/`unit`/`requires_inspection`. "Active" reuses `status=="active"`, not a new field.
+- **Relationships** — Sprint 4's generic `relationships[]` absorbed almost everything as pure data (Depends On, Required Documents, Checklist Template, Materials, Equipment all pre-existed). Only two new type strings: `linked_labour` and `includes_activity`. "Unlocks" is a computed reverse-lookup (`compute_unlocks`), never stored, to avoid two sources of truth for one fact.
+- **Workflow Templates** — `workflow_template` is a sixth `knowledge_items` type; a template's ordered activity list is just more `includes_activity` relationships (`metadata.order` for sequence). Zero new endpoints for template CRUD — see ADR-027.
+- **Generation** — new `engines/workflow_engine.py` + `workflow_activities` collection (project-scoped, denormalized instances, deliberately separate from `knowledge_items` — see ADR-028). `generate_workflow()` translates a template's activities + their `depends_on` relationships into project-scoped instances and concrete sibling-instance dependency ids. One-time per project (no regenerate/merge).
+- **Status** — `not_started | ready | in_progress | blocked | completed`. `in_progress`/`completed` blocked (409) unless all dependencies are `completed`. Completing an activity cascades: dependents auto-promote `not_started → ready`. Sprint 4.3's project-scoping is reused for workflow visibility.
+- **Out of scope, confirmed not built:** scheduling (no dates/calendar/critical path), AI, resource/cost calculations, notifications, dashboards.
+
 ## API surface
 
 ### V2 (unchanged)
@@ -138,5 +149,8 @@ Two new, independent, optional `users` fields complete the identity model:
 ### V4.3 (new)
 `POST /api/admin/users/{id}/workspace` — the only new endpoint. `POST /api/auth/register` gains an optional `requested_workspace` field (request-body extension, not a new endpoint). `GET /api/projects` and `GET /api/sites` gain scoped filtering behind the `scope_projects` flag — same endpoints, same response shape, conditionally narrower result set.
 
+### V5 (new)
+`POST /api/projects/{id}/workflow/generate · GET /api/projects/{id}/workflow · POST /api/workflow-activities/{id}/status · GET /api/workflow-meta · POST /api/workflow-templates/seed-defaults`. No new Knowledge Core endpoints — Workflow Templates are served entirely by the existing V4 knowledge-items routes.
+
 ## Backward Compatibility
-V2 and V3 endpoints and response shapes are unchanged. Timeline default behaviour unchanged. No data migration required. V4 is purely additive (new collections, new router) — no existing route, model, or engine was modified. V4.1 is a stabilization + additive-foundation sprint: every V1-V4 endpoint, request/response shape, and permission rule is unchanged; the only behavioural change to an existing code path is `get_current_user` gaining the `is_active` check, which is a no-op for every account that predates V4.1 (the field defaults to active when absent). V4.2 adds exactly one new, read-only endpoint and zero changes to any existing route, model, or engine — every V1-V4.1 request/response contract is byte-for-byte unchanged. V4.3 adds one new endpoint and two new optional fields; `GET /api/projects`/`GET /api/sites` response shapes are unchanged, only the result set is conditionally narrower, and only for accounts explicitly opted into the new model (`scope_projects=true`) — every account that existed before this sprint sees identical results to before, verified explicitly in `test_atlas_v4_3.py`.
+V2 and V3 endpoints and response shapes are unchanged. Timeline default behaviour unchanged. No data migration required. V4 is purely additive (new collections, new router) — no existing route, model, or engine was modified. V4.1 is a stabilization + additive-foundation sprint: every V1-V4 endpoint, request/response shape, and permission rule is unchanged; the only behavioural change to an existing code path is `get_current_user` gaining the `is_active` check, which is a no-op for every account that predates V4.1 (the field defaults to active when absent). V4.2 adds exactly one new, read-only endpoint and zero changes to any existing route, model, or engine — every V1-V4.1 request/response contract is byte-for-byte unchanged. V4.3 adds one new endpoint and two new optional fields; `GET /api/projects`/`GET /api/sites` response shapes are unchanged, only the result set is conditionally narrower, and only for accounts explicitly opted into the new model (`scope_projects=true`) — every account that existed before this sprint sees identical results to before, verified explicitly in `test_atlas_v4_3.py`. V5 adds one new collection, one new engine, five new endpoints, and three new optional fields on `knowledge_items` — every V1-V4.3 endpoint, request/response shape, and permission rule is unchanged; `knowledge_items` documents of any type other than `activity`/`workflow_template` are completely unaffected.

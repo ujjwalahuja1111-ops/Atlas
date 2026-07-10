@@ -211,7 +211,7 @@ Full pinned tree lives in `package.json` + `yarn.lock`.
 
 > Authoritative diagram + collection map: see `/memory/ARCHITECTURE.md`.
 
-Six engines, each single-purpose:
+Seven engines, each single-purpose:
 
 | # | Engine | Responsibility |
 |---|---|---|
@@ -220,9 +220,10 @@ Six engines, each single-purpose:
 | 3 | **Intelligence** (`intelligence_engine.py`) | Async `asyncio.Queue` worker started by FastAPI lifespan. Whisper → GPT-4o → `ai_analyses` (with explicit evidence + prompt_version_id) → `ai_proposals`. Idempotent. Includes V3.2.2 recovery for analyzed-without-proposals orphans. |
 | 4 | **Timeline** (`timeline_engine.py`) | Read-only chronological projection over `events + ai_analyses + corrections`. Opt-in merge of operational events via `?include=ops`. |
 | 5 | **Operations** (`operations_engine.py`) | CQRS: `operational_events` is the append-only ledger; `operational_items` is a derived projection (rebuildable). Owns lifecycle transitions, blocker management, health derivation, time intelligence, AI proposal acceptance, V3.3 edits, voice updates, duplicate marking. |
-| 6 | **Knowledge** (`knowledge_engine.py`) | Construction Knowledge Core (V4). One collection `knowledge_items` discriminated by `type` (category/phase/activity/checklist_template/required_document). Generic typed `relationships[]` edges, versioning via `knowledge_versions` snapshots, soft-archive. Admin-only mutations. |
+| 6 | **Knowledge** (`knowledge_engine.py`) | Construction Knowledge Core (V4, extended V5). One collection `knowledge_items` discriminated by `type` (category/phase/activity/checklist_template/required_document/**workflow_template**). Generic typed `relationships[]` edges, versioning via `knowledge_versions` snapshots, soft-archive. Admin-only mutations. V5 added Activity-only fields (`trade`/`unit`/`requires_inspection`) and the computed `compute_unlocks()` reverse-lookup. |
+| 9 | **Construction Workflow** (`workflow_engine.py`) | **V5.** Generates project-scoped activity instances (`workflow_activities`) from a Workflow Template + the Activity Library; tracks dependency-respecting status. No scheduling, no AI. |
 
-Engines 7–8 (Workflow / Learning) remain reserved; `ai_feedback` collection placeholder exists.
+Engines 7–8 (Workflow-approvals / Learning) remain reserved; `ai_feedback` collection placeholder exists. Engine 9 (Construction Workflow) is unrelated to the reserved Engine 7 slot — different concept, same "Workflow" word; see `memory/SPRINTS.md`'s V5 entry for the disambiguation.
 
 ### Request → write → projection flow
 
@@ -266,6 +267,7 @@ POST /api/events  ─►  Reality Engine  ─►  Memory Engine writes events+ra
 | `ai_feedback`* | reserved | future Learning Engine | — |
 | `knowledge_items` | soft-archive + versioned | Construction Knowledge Core (V4) master data | `id`, `type`, `name`, `description`, `code`, `category_id?`, `phase_id?`, `tags[]`, `ai_keywords[]`, `default_duration_days?`, `checklist_items[]`, `document_kind?`, `relationships[]`, `version`, `archived_at?`, `created_by_*`, `updated_by_*`, `created_at`, `updated_at` |
 | `knowledge_versions` | **append-only** | immutable pre-edit snapshots of `knowledge_items`, mirrors `corrections` pattern | `id`, `item_id`, `item_type`, `version`, `snapshot`, `changed_by_*`, `created_at` |
+| `workflow_activities` | mutable, project-scoped | **V5.** Project-scoped, denormalized activity instances generated from a Workflow Template | `id`, `project_id`, `knowledge_activity_id`, `template_id`, `template_name`, `name`, `description`, `category_id`, `phase_id`, `trade`, `unit`, `default_duration_days`, `requires_inspection`, `order`, `status`, `depends_on_activity_ids`, `created_at`, `updated_at`, `status_updated_*` |
 
 `*` = reserved, not yet written by any code path.
 
@@ -435,6 +437,18 @@ GET /api/sites/{site_id}/requirements  # living checklist for requirement catego
 | Method | Path | Notes |
 |---|---|---|
 | `GET` | `/api/admin/system-info` | **management only**; read-only. Returns `{project_name, version, git_commit, build_date, server_started_at, uptime_seconds, backend_status, database_status, total_users, total_projects, total_sites, pending_approvals}`. `database_status` is a real `db.command("ping")`, not just "the process responded." |
+
+### 9.9d Construction Workflow Engine (V5)
+
+| Method | Path | Notes |
+|---|---|---|
+| `POST` | `/api/projects/{id}/workflow/generate` | `{template_id}`; generates a project's workflow from a Workflow Template. **management/coordinator only** (mirrors project-management gating). 400 if the project already has a workflow (one-time generation, no regenerate). |
+| `GET` | `/api/projects/{id}/workflow` | List a project's `workflow_activities`, enriched with `depends_on: [{id, name, status}]`. Open to all authenticated roles; Sprint 4.3 project-scoping applies (404 if a scoped caller isn't assigned to this project). |
+| `POST` | `/api/workflow-activities/{id}/status` | `{status}` — one of `not_started/ready/in_progress/blocked/completed`. Open to all authenticated roles. 409 if setting `in_progress`/`completed` while a dependency isn't yet `completed`. Completing an activity cascades: dependents with all deps now satisfied auto-promote `not_started → ready`. |
+| `GET` | `/api/workflow-meta` | Status vocabulary for the frontend, matching the `GET /api/knowledge-meta` convention. |
+| `POST` | `/api/workflow-templates/seed-defaults` | **management only**; idempotently creates the five named starter templates (Villa/Residential/Commercial/Interior/Renovation) as empty shells. Mirrors `POST /api/projects/seed`'s shape. |
+
+Workflow Templates themselves have **no dedicated endpoints** — they're `knowledge_items` with `type=workflow_template`, fully served by the existing §9.9a Knowledge Core routes (list/create/update/archive/relationships all work unchanged).
 
 ### 9.10 Response shapes
 
@@ -649,6 +663,7 @@ content-type with extension fallbacks for `wav / mp3 / webm / ogg / m4a`.
 
 | File | Coverage |
 |---|---|
+| `backend/tests/test_atlas_v5.py` | Sprint 5 Construction Workflow Engine: Activity Library fields, relationship types (linked_labour, includes_activity, computed Unlocks), Workflow Templates via existing Knowledge endpoints, idempotent template seeding, Project Creation → Generate Workflow end-to-end, dependency-respecting status transitions + completion cascade, regression smoke on Sprint 1-4.3. 14 cases. |
 | `backend/tests/test_atlas_v4_3.py` | Sprint 4.3 Identity & Access Foundation: Sign Up User Type, no-access-until-assigned, workspace assignment + role-compatibility validation, project/site scoping, admin unrestricted access, legacy-account migration safety, regression smoke. 16 cases. |
 | `backend/tests/test_atlas_v4_2.py` | Sprint 4.2 Admin Experience: system-info endpoint field presence, admin gating, live-count reflection, regression smoke on Sprint 1-4.1 endpoints and existing User Management routes. 11 cases. |
 | `backend/tests/test_atlas_v4_1.py` | Sprint 4.1 stabilization: Sign Up/Pending Approval workflow, admin User Management (approve/reject/assign role/assign projects/activate-deactivate), self-service `PATCH /api/me`, project `DELETE` with dependency guard, Knowledge Core 404/400/409 distinction, phone validation, regression smoke on Sprint 1-4 endpoints. 20 cases. |
@@ -835,6 +850,25 @@ Completes the user identity model. Two new, independent, optional `users` fields
 **Migration:** no migration script exists or is needed. Every new field defaults to its pre-Sprint-4.3 equivalent behaviour when absent — verified explicitly in `backend/tests/test_atlas_v4_3.py`'s legacy-account tests.
 
 **Deliberate scope boundaries:** only the two list endpoints are scoped — deeper by-ID access (project summary, site requirements) is not, to keep the change minimal; a future pass could close this. No dedicated "approved but no workspace yet" blocking screen — an approved-but-unassigned account safely falls back to its role's default workspace while seeing zero projects (functionally inert, not exposed).
+
+### V5 — Construction Workflow Engine
+The first Construction Engine, built directly on the Construction Knowledge Core (V4) — extends it, does not redesign it.
+
+**Activity Library:** `knowledge_items` (`type=activity`) gains `trade`/`unit`/`requires_inspection`. Category/Phase/Description/Applicability/Duration already existed. "Active" reuses `status=="active"` — no new boolean.
+
+**Relationships:** Depends On, Required Documents, Checklist Template, Materials, Equipment were all already-reserved Sprint 4 relationship types needing zero change. Only `linked_labour` (the one placeholder Sprint 4 hadn't pre-declared) and `includes_activity` (Workflow Template → Activity Library) are genuinely new. "Unlocks" is a computed reverse-lookup (`compute_unlocks`), never a second stored relationship.
+
+**Workflow Templates** (Villa/Residential/Commercial/Interior/Renovation): `workflow_template` is a sixth `knowledge_items` type — zero new endpoints, the existing Knowledge Core routes serve it entirely. New idempotent `POST /api/workflow-templates/seed-defaults` creates the five named shells; an admin populates each with real activities via the existing, reused relationship UI.
+
+**Project Creation → Generate Workflow:** new `engines/workflow_engine.py` + `workflow_activities` collection (project-scoped, denormalized instances — deliberately separate from the global `knowledge_items`). `generate_workflow()` translates a template's activities and their dependencies into project-scoped instances. One-time per project.
+
+**Activity Status:** `not_started | ready | in_progress | blocked | completed`. `in_progress`/`completed` blocked (409) unless every dependency is `completed`. Completing an activity cascades: dependents auto-promote to `ready`. Sprint 4.3's project-scoping is reused for workflow visibility.
+
+**Workflow Viewer:** new `app/workflow/[id].tsx` — simple list grouped by phase, no Gantt, no dates. "Generate Workflow" trigger + template picker added to Project Detail. Knowledge workspace gains a Workflow Templates tab and the three new Activity fields — the new relationship-type chips appear automatically via the already-dynamic `GET /api/knowledge-meta`.
+
+**Confirmed unchanged:** every V1–V4.3 endpoint, request/response shape, and permission rule. Zero changes to any engine/route outside `knowledge_engine.py`/`routes/knowledge.py` (both purely additive) and the two new files.
+
+**Out of scope, confirmed not built:** scheduling, AI, resource/cost calculations, notifications, dashboards.
 
 ---
 
