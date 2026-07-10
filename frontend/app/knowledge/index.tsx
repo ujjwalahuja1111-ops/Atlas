@@ -20,6 +20,7 @@ const TYPE_TABS: { key: KnowledgeType; label: string; icon: any }[] = [
   { key: 'activity', label: 'ACTIVITIES', icon: 'hammer' },
   { key: 'checklist_template', label: 'CHECKLISTS', icon: 'checkbox' },
   { key: 'required_document', label: 'DOCUMENTS', icon: 'document-text' },
+  { key: 'workflow_template', label: 'WORKFLOW TEMPLATES', icon: 'git-network' },
 ];
 
 // draft/active/deprecated only — 'archived' is a distinct action (archive
@@ -117,6 +118,9 @@ export default function KnowledgeWorkspace() {
         checklist_items: editing.checklist_items || [],
         document_kind: editing.document_kind || null,
         status: editing.status || 'draft',
+        trade: editing.trade || null,
+        unit: editing.unit || null,
+        requires_inspection: !!editing.requires_inspection,
       });
       setEditing(null);
       await load(); await loadPickerLists();
@@ -244,6 +248,7 @@ export default function KnowledgeWorkspace() {
                     {item.code ? `${item.code} · ` : ''}v{item.version}
                     {item.category_name ? ` · ${item.category_name}` : ''}
                     {item.phase_name ? ` · ${item.phase_name}` : ''}
+                    {item.trade ? ` · ${item.trade}` : ''}
                     {item.tags?.length ? ` · ${item.tags.join(', ')}` : ''}
                   </Text>
                   <View style={{ flexDirection: 'row', gap: 6, marginTop: 4 }}>
@@ -327,9 +332,24 @@ export default function KnowledgeWorkspace() {
               onChangeText={(t) => setEditing({ ...(editing || {}), ai_keywords: csv(t) })} />
 
             {showDuration && (
-              <Field label="Default Duration (days)" value={editing?.default_duration_days?.toString() || ''}
-                testID="knowledge-input-duration" keyboardType="numeric"
-                onChangeText={(t) => setEditing({ ...(editing || {}), default_duration_days: t ? Number(t) : null })} />
+              <>
+                <Field label="Default Duration (days)" value={editing?.default_duration_days?.toString() || ''}
+                  testID="knowledge-input-duration" keyboardType="numeric"
+                  onChangeText={(t) => setEditing({ ...(editing || {}), default_duration_days: t ? Number(t) : null })} />
+                <Field label="Trade (e.g. Civil, Electrical, Plumbing)" value={editing?.trade || ''}
+                  testID="knowledge-input-trade"
+                  onChangeText={(t) => setEditing({ ...(editing || {}), trade: t })} />
+                <Field label="Unit (e.g. sqm, cum, each, lumpsum)" value={editing?.unit || ''}
+                  testID="knowledge-input-unit"
+                  onChangeText={(t) => setEditing({ ...(editing || {}), unit: t })} />
+                <Pressable testID="knowledge-input-requires-inspection"
+                  onPress={() => setEditing({ ...(editing || {}), requires_inspection: !editing?.requires_inspection })}
+                  style={styles.checkboxRow}>
+                  <Ionicons name={editing?.requires_inspection ? 'checkbox' : 'square-outline'} size={22}
+                    color={editing?.requires_inspection ? theme.color.brand : theme.color.textDim} />
+                  <Text style={styles.checkboxLabel}>Inspection Required</Text>
+                </Pressable>
+              </>
             )}
 
             {showChecklist && (
@@ -480,6 +500,9 @@ const styles = StyleSheet.create({
   input: { color: theme.color.text, backgroundColor: theme.color.surface2,
           borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.color.border,
           paddingHorizontal: 12, paddingVertical: 10, fontSize: 15 },
+  checkboxRow: { flexDirection: 'row', alignItems: 'center', gap: 10,
+                paddingVertical: 10, marginBottom: theme.spacing.sm },
+  checkboxLabel: { color: theme.color.text, fontSize: 14, fontWeight: '700' },
   pickerField: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
                 backgroundColor: theme.color.surface2, borderRadius: theme.radius.sm,
                 borderWidth: 1, borderColor: theme.color.border, paddingHorizontal: 12, height: 44 },

@@ -58,6 +58,10 @@ class KnowledgeItemCreate(BaseModel):
     document_kind: Optional[str] = None
     status: str = "draft"
     applicability: dict = {}
+    # Sprint 5 — Activity Library fields, meaningful only for type="activity"
+    trade: Optional[str] = None
+    unit: Optional[str] = None
+    requires_inspection: bool = False
 
 
 class KnowledgeItemUpdate(BaseModel):
@@ -73,6 +77,9 @@ class KnowledgeItemUpdate(BaseModel):
     document_kind: Optional[str] = None
     status: Optional[str] = None
     applicability: Optional[dict] = None
+    trade: Optional[str] = None
+    unit: Optional[str] = None
+    requires_inspection: Optional[bool] = None
 
 
 class RelationshipCreate(BaseModel):
@@ -129,6 +136,7 @@ async def create_knowledge_item(req: KnowledgeItemCreate, user: dict = Depends(g
             default_duration_days=req.default_duration_days,
             checklist_items=req.checklist_items, document_kind=req.document_kind,
             status=req.status, applicability=req.applicability,
+            trade=req.trade, unit=req.unit, requires_inspection=req.requires_inspection,
         )
     except ValueError as e:
         _raise_for(e)

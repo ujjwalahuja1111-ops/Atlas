@@ -13,6 +13,8 @@ import {
   apiProjectSummary, apiListProjects, setActiveSite, setActiveProject, loadAuth,
   type Site, type Project, type ProjectSummary, type User,
 } from '@/src/api';
+import { apiListKnowledgeItems, type KnowledgeItem } from '@/src/knowledge_api';
+import { apiGetWorkflow, apiGenerateWorkflow, type WorkflowActivity } from '@/src/workflow_api';
 
 export default function ProjectDetail() {
   const router = useRouter();
@@ -28,6 +30,11 @@ export default function ProjectDetail() {
   const [editing, setEditing] = useState<Partial<Site> | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // Sprint 5 — Construction Workflow Engine
+  const [workflowCount, setWorkflowCount] = useState<number | null>(null);
+  const [templates, setTemplates] = useState<KnowledgeItem[]>([]);
+  const [pickingTemplate, setPickingTemplate] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -40,12 +47,14 @@ export default function ProjectDetail() {
       const projs = await apiListProjects(true);
       const p = projs.find((x) => x.id === id) || null;
       setProject(p);
-      const [s, sm] = await Promise.all([
+      const [s, sm, wf] = await Promise.all([
         apiListSites(id, showArchived),
         apiProjectSummary(id).catch(() => null),
+        apiGetWorkflow(id).catch(() => []),
       ]);
       setSites(s);
       setSummary(sm);
+      setWorkflowCount(wf.length);
     } catch (e: any) {
       // Sprint 4.1 fix (audit H4): surface load failures instead of
       // silently swallowing them.
@@ -116,6 +125,31 @@ export default function ProjectDetail() {
     finally { setBusy(false); }
   };
 
+  // Sprint 5 — Construction Workflow Engine
+  const onOpenTemplatePicker = async () => {
+    setBusy(true);
+    try {
+      const list = await apiListKnowledgeItems({ type: 'workflow_template' });
+      setTemplates(list);
+      setPickingTemplate(true);
+    } catch (e: any) {
+      Alert.alert('Could not load workflow templates', String(e?.message || e));
+    } finally { setBusy(false); }
+  };
+
+  const onGenerateWorkflow = async (templateId: string) => {
+    if (!id) return;
+    setGenerating(true);
+    try {
+      await apiGenerateWorkflow(id, templateId);
+      setPickingTemplate(false);
+      await load();
+      router.push(`/workflow/${id}`);
+    } catch (e: any) {
+      Alert.alert('Could not generate workflow', String(e?.message || e));
+    } finally { setGenerating(false); }
+  };
+
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
@@ -168,6 +202,25 @@ export default function ProjectDetail() {
               </View>
             </View>
           )}
+
+          {/* Sprint 5 — Construction Workflow */}
+          <View style={styles.workflowCard}>
+            <Text style={styles.sectionLabel}>CONSTRUCTION WORKFLOW</Text>
+            {workflowCount === null ? null : workflowCount > 0 ? (
+              <Pressable testID="view-workflow" onPress={() => router.push(`/workflow/${id}`)} style={styles.workflowBtn}>
+                <Ionicons name="git-network" size={20} color={theme.color.brand} />
+                <Text style={styles.workflowBtnText}>VIEW WORKFLOW ({workflowCount} activities)</Text>
+                <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+              </Pressable>
+            ) : canManage ? (
+              <Pressable testID="generate-workflow" onPress={onOpenTemplatePicker} disabled={busy} style={styles.workflowBtn}>
+                <Ionicons name="add-circle-outline" size={20} color={theme.color.brand} />
+                <Text style={styles.workflowBtnText}>GENERATE WORKFLOW FROM TEMPLATE</Text>
+              </Pressable>
+            ) : (
+              <Text style={styles.emptyBody}>No workflow generated yet.</Text>
+            )}
+          </View>
 
           {/* Sites section */}
           <View style={styles.sitesHead}>
@@ -254,6 +307,39 @@ export default function ProjectDetail() {
           </View>
         </View>
       </Modal>
+
+      {/* Sprint 5 — Workflow Template picker */}
+      <Modal visible={pickingTemplate} animationType="slide" transparent onRequestClose={() => setPickingTemplate(false)}>
+        <View style={styles.modalBack}>
+          <View style={styles.modal}>
+            <View style={styles.modalHead}>
+              <Text style={styles.modalTitle}>SELECT A WORKFLOW TEMPLATE</Text>
+              <Pressable onPress={() => setPickingTemplate(false)}>
+                <Ionicons name="close" size={26} color={theme.color.textDim} />
+              </Pressable>
+            </View>
+            <ScrollView style={{ maxHeight: 400 }}>
+              {templates.length === 0 && (
+                <Text style={styles.emptyBody}>
+                  No workflow templates exist yet. Create one in Construction Knowledge first.
+                </Text>
+              )}
+              {templates.map((t) => (
+                <Pressable key={t.id} testID={`template-option-${t.id}`}
+                  onPress={() => onGenerateWorkflow(t.id)} disabled={generating}
+                  style={styles.templateOption}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.templateOptionText}>{t.name}</Text>
+                    {t.description ? <Text style={styles.templateOptionSub} numberOfLines={2}>{t.description}</Text> : null}
+                  </View>
+                  {generating ? <ActivityIndicator size="small" color={theme.color.brand} />
+                    : <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />}
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -304,6 +390,16 @@ const styles = StyleSheet.create({
   summary: { marginBottom: theme.spacing.md, padding: theme.spacing.md,
              backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
              borderWidth: 1, borderColor: theme.color.border },
+  workflowCard: { marginBottom: theme.spacing.md, padding: theme.spacing.md,
+                 backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
+                 borderWidth: 1, borderColor: theme.color.border },
+  workflowBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, height: 48,
+                paddingHorizontal: 4 },
+  workflowBtnText: { flex: 1, color: theme.color.text, fontSize: 13, fontWeight: '800' },
+  templateOption: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 14,
+                    borderBottomWidth: 1, borderBottomColor: theme.color.border },
+  templateOptionText: { color: theme.color.text, fontSize: 16, fontWeight: '700' },
+  templateOptionSub: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
   summaryRow: { flexDirection: 'row', gap: 10, marginBottom: 8 },
   tile: { flex: 1, backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, padding: 12 },
   tileHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },

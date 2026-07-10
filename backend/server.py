@@ -27,6 +27,7 @@ from routes import operational_center as operational_center_routes
 from routes import knowledge as knowledge_routes
 from routes import admin_users as admin_users_routes
 from routes import admin_system as admin_system_routes
+from routes import workflow as workflow_routes
 
 
 logging.basicConfig(
@@ -67,6 +68,7 @@ app.include_router(operational_center_routes.router)
 app.include_router(knowledge_routes.router)
 app.include_router(admin_users_routes.router)
 app.include_router(admin_system_routes.router)
+app.include_router(workflow_routes.router)
 
 
 @app.get("/api/")

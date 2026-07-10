@@ -1,4 +1,5 @@
-"""Knowledge Engine — Engine 6 (Sprint 4: Construction Knowledge Core).
+"""Knowledge Engine — Engine 6 (Sprint 4: Construction Knowledge Core;
+extended Sprint 5: Construction Workflow Engine).
 
 Activates the slot reserved in ARCHITECTURE.md / PRD.md ("Knowledge — reserved
 — Construction Ontology"). This is deliberately an *architecture* sprint: it
@@ -11,9 +12,12 @@ definitions and generic extension points for later engines to hang off.
 Design (mirrors existing Atlas conventions):
 - ONE collection `knowledge_items`, discriminated by `type`:
     category | phase | activity | checklist_template | required_document
+    | workflow_template (Sprint 5)
   A single collection avoids duplicating near-identical CRUD/search/archive/
-  versioning logic five times (ADR precedent: operational_items is one
-  collection covering 11 categories, not 11 collections).
+  versioning logic five (now six) times (ADR precedent: operational_items is
+  one collection covering 11 categories, not 11 collections). Sprint 5's
+  Workflow Templates are exactly this pattern extended by one more type —
+  see the Sprint 5 section below.
 - Soft-archive via `archived_at`, exactly like projects/sites (ADR: no new
   archive paradigm).
 - Versioning via immutable snapshots in `knowledge_versions`, mirroring the
@@ -22,27 +26,59 @@ Design (mirrors existing Atlas conventions):
   current state + an incrementing `version` int for cheap reads.
 - Relationships are a GENERIC, typed edge list embedded on the item:
     relationships: [{id, type, target_id, metadata, created_at}]
-  V1 only *populates* `depends_on` (Activity Dependencies, per sprint scope),
-  but the shape is intentionally generic so future sprints can add
-  `precedes`, `requires`, `references`, `uses`, `inspected_by`,
-  `linked_document`, `linked_material`, `linked_equipment` etc. WITHOUT any
-  schema change. No graph traversal / cycle detection is implemented in V1
-  (explicitly out of scope — this is a data shape, not a scheduling engine).
+  Sprint 4 populated `depends_on` (Activity Dependencies); the shape was
+  explicitly built to grow without a schema change, and Sprint 5 proves
+  that out: `linked_material`, `linked_equipment`, `linked_document`, and
+  the generic `uses` (for checklist templates) already existed and needed
+  ZERO changes. Only two genuinely new edge type strings were needed —
+  `linked_labour` (Labour was the one placeholder type Sprint 4 hadn't
+  pre-declared) and `includes_activity` (a Workflow Template's ordered
+  reference to Activity Library items — see below). No graph traversal /
+  cycle detection is implemented (explicitly out of scope — this is a data
+  shape, not a scheduling engine; project-level dependency *evaluation* is
+  a separate, narrower concern owned by `workflow_engine.py`).
 - Lifecycle `status` (draft | active | deprecated | archived) is tracked
   ALONGSIDE `archived_at`, not instead of it. `archived_at` remains the
   soft-archive timestamp that drives default list visibility (unchanged
   mechanic, matches projects/sites). `status` is the richer editorial state:
   new items default to `draft` so future consumers (e.g. Project Generation)
   can list only `active` items without seeing work-in-progress definitions.
+  Sprint 5 reuses `status == "active"` directly as the Activity Library's
+  "Active" flag — no separate boolean field, per "no duplicated logic."
   `archive_item`/`unarchive_item` keep both fields in sync (archive sets
   status="archived"; unarchive resets it to "active") so there is a single
   place — not two independent toggles — that owns the "is this archived"
   question.
 - `applicability` is a deliberately unshaped, freeform dict reserved for
   future project-generation filtering (project types, building types,
-  construction types, regions, ...). V1 stores and returns it verbatim; NO
-  filtering logic reads it yet. Modelled as an open dict rather than
-  hardcoded fields so new applicability axes never require a schema change.
+  construction types, regions, ...). Sprint 4 stored and returned it
+  verbatim with no filtering logic reading it yet; Sprint 5's Activity
+  Library is the first real consumer this was reserved for — Activities
+  carry `applicability` describing which project/building types they're
+  relevant to (still not enforced/filtered automatically anywhere — that
+  remains a documented future step, not built here).
+
+Sprint 5 — Construction Workflow Engine additions to THIS file:
+- Three new fields, meaningful only for `type="activity"` (mirroring how
+  `document_kind` is only meaningful for `required_document` — same
+  established pattern, not a new one): `trade` (string), `unit` (string,
+  e.g. "sqm"/"each"/"lumpsum"), `requires_inspection` (bool).
+- `workflow_template` added to `TYPES`. A template's ordered reference to
+  Activity Library items is — deliberately — not a new field or
+  mechanism, just more `includes_activity` relationships (see above),
+  with the activity's position captured in `metadata.order`. "Templates
+  reference Activity Library items only" falls out for free: `_assert_exists`
+  already guarantees a relationship's `target_id` is a real knowledge item.
+- `compute_unlocks()` — a read-only, computed (never stored) reverse-lookup
+  of "which activities have a `depends_on` relationship pointing at me."
+  This is the Activity Library's "Unlocks" concept. It is deliberately NOT
+  a second stored relationship alongside `depends_on`, which would be two
+  sources of truth for one fact and could drift — "no duplicated logic"
+  applies to data, not just code.
+
+None of the above required any change to CRUD, search, versioning,
+archive, or relationship mechanics — Sprint 4's generic design absorbed
+Sprint 5's requirements as pure data, exactly as intended.
 """
 from __future__ import annotations
 import uuid
@@ -51,7 +87,7 @@ from typing import Optional, Iterable
 from core.db import db
 
 # ----- vocab -----
-TYPES = {"category", "phase", "activity", "checklist_template", "required_document"}
+TYPES = {"category", "phase", "activity", "checklist_template", "required_document", "workflow_template"}
 
 # Lifecycle status. "archived" is intentionally NOT settable via the generic
 # update path — it only ever gets set (in lockstep with archived_at) by
@@ -63,9 +99,12 @@ SETTABLE_STATUSES = {"draft", "active", "deprecated"}
 # Curated for UI dropdowns / documentation. NOT strictly enforced server-side
 # (see _validate_relationship_type) so future engines can introduce new edge
 # types without a migration — extensibility over completeness, per brief.
+# Sprint 5 adds `linked_labour` (Materials/Equipment/Documents already
+# existed) and `includes_activity` (Workflow Template -> Activity Library).
 KNOWN_RELATIONSHIP_TYPES = {
     "depends_on", "precedes", "requires", "references",
     "uses", "inspected_by", "linked_document", "linked_material", "linked_equipment",
+    "linked_labour", "includes_activity",
 }
 
 
@@ -134,6 +173,9 @@ async def create_item(
     document_kind: Optional[str] = None,
     status: str = "draft",
     applicability: Optional[dict] = None,
+    trade: Optional[str] = None,
+    unit: Optional[str] = None,
+    requires_inspection: bool = False,
 ) -> dict:
     _validate_type(type_)
     _validate_status(status)
@@ -158,6 +200,9 @@ async def create_item(
         "default_duration_days": default_duration_days,
         "checklist_items": checklist_items or [],  # only meaningful for checklist_template
         "document_kind": document_kind,            # only meaningful for required_document
+        "trade": trade,                             # Sprint 5, only meaningful for activity
+        "unit": unit,                               # Sprint 5, only meaningful for activity
+        "requires_inspection": bool(requires_inspection),  # Sprint 5, only meaningful for activity
         "relationships": [],                        # generic typed edges — see module docstring
         "status": status,                            # draft | active | deprecated (archived via archive_item)
         "applicability": applicability or {},        # reserved, freeform — see module docstring
@@ -241,7 +286,10 @@ async def enrich(item: dict) -> dict:
     ref_ids = [item.get("category_id"), item.get("phase_id")]
     ref_ids += [r["target_id"] for r in item.get("relationships", [])]
     names = await resolve_names(ref_ids)
-    return _apply_names(item, names)
+    out = _apply_names(item, names)
+    if item.get("type") == "activity":
+        out["unlocks"] = await compute_unlocks(item["id"])
+    return out
 
 
 async def enrich_many(items: list[dict]) -> list[dict]:
@@ -257,7 +305,46 @@ async def enrich_many(items: list[dict]) -> list[dict]:
         ref_ids.append(item.get("phase_id"))
         ref_ids += [r["target_id"] for r in item.get("relationships", [])]
     names = await resolve_names(ref_ids)
-    return [_apply_names(item, names) for item in items]
+    out = [_apply_names(item, names) for item in items]
+    activity_ids = [item["id"] for item in items if item.get("type") == "activity"]
+    if activity_ids:
+        unlocks_map = await compute_unlocks_many(activity_ids)
+        for o in out:
+            if o.get("type") == "activity":
+                o["unlocks"] = unlocks_map.get(o["id"], [])
+    return out
+
+
+async def compute_unlocks(activity_id: str) -> list[dict]:
+    """Sprint 5 — the Activity Library's "Unlocks" concept: which OTHER
+    activities have a `depends_on` relationship pointing at this one.
+    Deliberately computed via reverse lookup, never stored — storing it
+    as a second relationship alongside `depends_on` would be two sources
+    of truth for one fact (see module docstring). Cheap at V1 scale (one
+    indexed query on `relationships.target_id`, already indexed since
+    Sprint 4 — see core/db.py).
+    """
+    docs = await db.knowledge_items.find(
+        {"relationships": {"$elemMatch": {"type": "depends_on", "target_id": activity_id}}},
+        {"_id": 0, "id": 1, "name": 1},
+    ).to_list(200)
+    return [{"id": d["id"], "name": d["name"]} for d in docs]
+
+
+async def compute_unlocks_many(activity_ids: list[str]) -> dict[str, list[dict]]:
+    """Batched compute_unlocks() — one query covering every activity in the
+    list, mirroring enrich_many()'s N+1 fix for the same reason (Sprint 4.1
+    audit finding L3)."""
+    docs = await db.knowledge_items.find(
+        {"relationships": {"$elemMatch": {"type": "depends_on", "target_id": {"$in": activity_ids}}}},
+        {"_id": 0, "id": 1, "name": 1, "relationships": 1},
+    ).to_list(500)
+    out: dict[str, list[dict]] = {aid: [] for aid in activity_ids}
+    for d in docs:
+        for r in d.get("relationships", []):
+            if r["type"] == "depends_on" and r["target_id"] in out:
+                out[r["target_id"]].append({"id": d["id"], "name": d["name"]})
+    return out
 
 
 def _apply_names(item: dict, names: dict[str, str]) -> dict:
@@ -312,7 +399,7 @@ class KnowledgeConflictError(ValueError):
 UPDATABLE_FIELDS = {
     "name", "description", "code", "category_id", "phase_id", "tags",
     "ai_keywords", "default_duration_days", "checklist_items", "document_kind",
-    "status", "applicability",
+    "status", "applicability", "trade", "unit", "requires_inspection",
 }
 
 

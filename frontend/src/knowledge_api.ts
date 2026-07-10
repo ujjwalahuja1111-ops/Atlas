@@ -3,7 +3,8 @@ import { authHeaders as headers, jsonHeaders as jheaders, apiFetch } from './htt
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export type KnowledgeType =
-  | 'category' | 'phase' | 'activity' | 'checklist_template' | 'required_document';
+  | 'category' | 'phase' | 'activity' | 'checklist_template' | 'required_document'
+  | 'workflow_template';
 
 export type KnowledgeRelationship = {
   id: string;
@@ -25,6 +26,8 @@ export type KnowledgeStatus = 'draft' | 'active' | 'deprecated' | 'archived';
 // source of truth shared by the workspace list and detail screens.
 export const SETTABLE_KNOWLEDGE_STATUSES: Exclude<KnowledgeStatus, 'archived'>[] = ['draft', 'active', 'deprecated'];
 
+export type UnlockedActivity = { id: string; name: string };
+
 export type KnowledgeItem = {
   id: string;
   type: KnowledgeType;
@@ -40,6 +43,12 @@ export type KnowledgeItem = {
   default_duration_days: number | null;
   checklist_items: ChecklistItem[];
   document_kind: string | null;
+  // Sprint 5 — Activity Library fields, meaningful only for type="activity"
+  trade: string | null;
+  unit: string | null;
+  requires_inspection: boolean;
+  // Sprint 5 — computed (never stored), only present on type="activity" responses
+  unlocks?: UnlockedActivity[];
   relationships: KnowledgeRelationship[];
   status: KnowledgeStatus;
   applicability: Record<string, any>;
@@ -77,6 +86,9 @@ export type KnowledgeItemInput = {
   document_kind?: string | null;
   status?: KnowledgeStatus;
   applicability?: Record<string, any>;
+  trade?: string | null;
+  unit?: string | null;
+  requires_inspection?: boolean;
 };
 
 export type KnowledgeItemUpdate = Partial<Omit<KnowledgeItemInput, 'type'>>;

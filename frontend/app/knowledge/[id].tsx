@@ -164,6 +164,9 @@ export default function KnowledgeDetail() {
           {item.category_name && <Row label="Category" value={item.category_name} />}
           {item.phase_name && <Row label="Phase" value={item.phase_name} />}
           {item.default_duration_days != null && <Row label="Default Duration" value={`${item.default_duration_days} day(s)`} />}
+          {item.trade && <Row label="Trade" value={item.trade} />}
+          {item.unit && <Row label="Unit" value={item.unit} />}
+          {item.type === 'activity' && <Row label="Inspection Required" value={item.requires_inspection ? 'Yes' : 'No'} />}
           {item.document_kind && <Row label="Document Kind" value={item.document_kind} />}
           <Row label="Tags" value={item.tags.length ? item.tags.join(', ') : '—'} />
           <Row label="AI Keywords" value={item.ai_keywords.length ? item.ai_keywords.join(', ') : '—'} />
@@ -205,6 +208,22 @@ export default function KnowledgeDetail() {
             </View>
           ))}
         </Section>
+
+        {item.type === 'activity' && (
+          <Section title="Unlocks">
+            <Text style={styles.unlocksHint}>
+              Activities that depend on this one — completing this activity moves them closer to Ready.
+            </Text>
+            {(!item.unlocks || item.unlocks.length === 0) ? (
+              <Text style={styles.emptyBody}>Nothing depends on this activity yet.</Text>
+            ) : item.unlocks.map((u) => (
+              <View key={u.id} style={styles.unlockRow}>
+                <Ionicons name="arrow-forward-circle-outline" size={16} color={theme.color.success} />
+                <Text style={styles.unlockText}>{u.name}</Text>
+              </View>
+            ))}
+          </Section>
+        )}
 
         <Section title={`Version History (${versions.length})`}
           action={<Pressable onPress={() => setShowVersions((v) => !v)}>
@@ -386,6 +405,9 @@ const styles = StyleSheet.create({
   relType: { color: theme.color.brand, fontSize: 10, fontWeight: '900', letterSpacing: 1 },
   relTarget: { color: theme.color.text, fontSize: 14, fontWeight: '700', marginTop: 2 },
   relNote: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
+  unlocksHint: { color: theme.color.textDim, fontSize: 12, marginBottom: 8 },
+  unlockRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 6 },
+  unlockText: { color: theme.color.text, fontSize: 14, fontWeight: '600' },
   actionBtn: { width: 32, height: 32, borderRadius: 16, backgroundColor: theme.color.surface3,
               alignItems: 'center', justifyContent: 'center' },
   versionRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 8,

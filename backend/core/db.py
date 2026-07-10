@@ -33,6 +33,9 @@ async def ensure_indexes() -> None:
     await db.knowledge_versions.create_index([("item_id", 1), ("version", -1)])
     # Sprint 4.1 — User Management foundation
     await db.users.create_index("approval_status")
+    # Sprint 5 — Construction Workflow Engine
+    await db.workflow_activities.create_index([("project_id", 1), ("order", 1)])
+    await db.workflow_activities.create_index("knowledge_activity_id")
 
 
 async def close_client() -> None:
