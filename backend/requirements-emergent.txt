@@ -1,0 +1,16 @@
+# Emergent-platform-only extras (Sprint DX-2 — Remove Emergent Runtime Dependency).
+#
+# emergentintegrations is only published to Emergent's private package
+# index and is NOT required for Atlas to run — backend/core/llm_compat.py
+# provides a local, behaviourally-equivalent fallback (see that file's
+# docstring) using the standard `openai` package against the same
+# OpenAI-compatible EMERGENT_BASE_URL/EMERGENT_LLM_KEY. It is listed here,
+# separately from requirements.txt, purely so it's still installed (and
+# preferred, when present) on Emergent's own hosted environment:
+#
+#   python -m pip install -r requirements.txt -r requirements-emergent.txt
+#
+# On any standard local machine, `pip install -r requirements.txt` alone
+# is sufficient — this file is optional and does not need to be installed
+# for local development, testing, or any non-Emergent deployment.
+emergentintegrations==0.2.0

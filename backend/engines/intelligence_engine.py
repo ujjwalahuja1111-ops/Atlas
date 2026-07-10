@@ -20,7 +20,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from openai import OpenAI
-from emergentintegrations.llm.chat import LlmChat, UserMessage, ImageContent
+from core.llm_compat import LlmChat, UserMessage, ImageContent
 from . import memory_engine
 from core.settings import EMERGENT_LLM_KEY, EMERGENT_BASE_URL
 
