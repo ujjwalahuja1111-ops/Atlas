@@ -33,14 +33,33 @@ async def _insert(collection, doc: dict) -> dict:
 
 # ---------------- users ----------------
 async def upsert_user(phone: str, name: str, role: str) -> dict:
+    """Login upsert. For a brand-new phone number, creates the account
+    with the given role (self-service — the same behaviour Atlas has
+    always had for a first-ever login). For an EXISTING account, only
+    `name` is updated — `role` is intentionally left untouched.
+
+    Sprint 6 root-cause fix: role used to be overwritten on EVERY login
+    with whatever the caller passed. The frontend (roles.ts,
+    resolveLoginRole) has no reliable way to know an existing account's
+    real role before its first login on a given device/browser, so it
+    falls back to a guessed default ("supervisor") for any phone it
+    hasn't locally cached a role for yet — including a seeded or
+    admin-configured account logging in for the very first time from any
+    device. Because this function used to apply that guess
+    unconditionally, a correctly-seeded admin/coordinator account was
+    silently downgraded to "supervisor" in the database on its first
+    ever login — this was the confirmed root cause of "all seeded users
+    persist as site_supervisor." Role changes for an existing account
+    are — and since Sprint 4.1 already should have been — exclusively an
+    admin action via set_user_role(), never a side effect of logging in.
+    """
     existing = await db.users.find_one({"phone": phone}, {"_id": 0})
     if existing:
         await db.users.update_one(
             {"id": existing["id"]},
-            {"$set": {"name": name, "role": role}},
+            {"$set": {"name": name}},
         )
         existing["name"] = name
-        existing["role"] = role
         return existing
     doc = {
         "id": _new_id(),
@@ -53,11 +72,11 @@ async def upsert_user(phone: str, name: str, role: str) -> dict:
 
 
 # ---------------- users: Sprint 4.1 registration + admin management ----------------
-# `upsert_user` above (used by the existing /api/auth/login) is UNCHANGED and
-# keeps its exact pre-Sprint-4.1 behaviour: an existing account's role/name
-# are updated on every login, a brand-new phone is auto-provisioned as an
-# immediately-usable account. That preserves every Sprint 1-4 login flow and
-# test credential verbatim.
+# `upsert_user` above is used by the existing /api/auth/login. As of Sprint 6
+# it updates `name` only for an existing account — `role` is admin-only via
+# set_user_role() (see the root-cause fix note on upsert_user itself). A
+# brand-new phone is still auto-provisioned as an immediately-usable account,
+# exactly as it always has been.
 #
 # Registration ("Sign Up" on the login screen) is a NEW, separate path with
 # different semantics: it only ever creates a brand-new account, and that

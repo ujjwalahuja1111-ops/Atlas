@@ -301,6 +301,15 @@ async def stop_worker() -> None:
         _worker_task = None
 
 
+def is_worker_running() -> bool:
+    """Sprint 6 — cheap, synchronous status check so the frontend can
+    clearly indicate when AI is unavailable rather than polling
+    indefinitely for an ai_status that will never leave 'pending' (see
+    app/event/[id].tsx). Exposed via GET /api/ (root health check) — no
+    new endpoint needed."""
+    return _worker_task is not None and not _worker_task.done()
+
+
 # ---------------- V3 + V3.1: canonical proposal generation ----------------
 async def generate_proposals_for_event(event_id: str, *, force: bool = False) -> dict:
     """Generate AI proposals from the canonical ai_analyses doc.

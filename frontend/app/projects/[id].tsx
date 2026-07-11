@@ -203,6 +203,46 @@ export default function ProjectDetail() {
             </View>
           )}
 
+          {/* Sprint 6 — Project Workspace: quick-links into existing screens,
+              pre-scoped to this project's site. No new screens — reuses
+              Timeline (Home tab), Operations (materials/labour/approvals/AI
+              proposals), and Knowledge exactly as they already exist. */}
+          <View style={styles.workflowCard}>
+            <Text style={styles.sectionLabel}>PROJECT WORKSPACE</Text>
+            <Pressable testID="project-open-timeline" disabled={sites.length === 0}
+              onPress={async () => {
+                await setActiveProject(project!.id);
+                await setActiveSite(sites[0].id);
+                router.push('/(tabs)');
+              }}
+              style={styles.workflowBtn}>
+              <Ionicons name="time-outline" size={20} color={theme.color.brand} />
+              <Text style={styles.workflowBtnText}>TIMELINE &amp; EVENTS</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            </Pressable>
+            <Pressable testID="project-open-operations" disabled={sites.length === 0}
+              onPress={async () => {
+                await setActiveProject(project!.id);
+                await setActiveSite(sites[0].id);
+                router.push('/(tabs)/ops');
+              }}
+              style={styles.workflowBtn}>
+              <Ionicons name="clipboard-outline" size={20} color={theme.color.brand} />
+              <Text style={styles.workflowBtnText}>OPERATIONS, APPROVALS &amp; AI PROPOSALS</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            </Pressable>
+            {canManage && (
+              <Pressable testID="project-open-knowledge" onPress={() => router.push('/knowledge')} style={styles.workflowBtn}>
+                <Ionicons name="library-outline" size={20} color={theme.color.brand} />
+                <Text style={styles.workflowBtnText}>CONSTRUCTION KNOWLEDGE</Text>
+                <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+              </Pressable>
+            )}
+            {sites.length === 0 && (
+              <Text style={styles.emptyBody}>Add a site first to view timeline and operations for this project.</Text>
+            )}
+          </View>
+
           {/* Sprint 5 — Construction Workflow */}
           <View style={styles.workflowCard}>
             <Text style={styles.sectionLabel}>CONSTRUCTION WORKFLOW</Text>

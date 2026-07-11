@@ -6,7 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { apiGetEvent, type TimelineItem } from '@/src/api';
+import { apiGetEvent, apiGetPlatformStatus, type TimelineItem } from '@/src/api';
 
 const TYPE_LABEL: Record<string, string> = {
   voice_note: 'VOICE NOTE', photo: 'PHOTO', material_request: 'MATERIAL REQUEST',
@@ -20,13 +20,23 @@ const AI_STATUS: Record<string, { label: string; color: string; icon: any }> = {
   analyzed: { label: 'AI ANALYZED', color: theme.color.success, icon: 'checkmark-circle' },
   failed: { label: 'AI FAILED', color: theme.color.error, icon: 'warning' },
   skipped: { label: 'NO AI', color: theme.color.textDim, icon: 'remove' },
+  // Sprint 6 — distinct from "pending": we positively know AI won't run
+  // (no API key configured) rather than "still working on it".
+  unavailable: { label: 'AI UNAVAILABLE', color: theme.color.textDim, icon: 'cloud-offline' },
 };
+
+// Sprint 6: a defensive cap regardless of the ai_enabled check above — if
+// something is wrong we haven't anticipated, this still guarantees the UI
+// never polls forever. 20 attempts x 3s = 60s, matching the existing
+// interval below.
+const MAX_POLL_ATTEMPTS = 20;
 
 export default function EventDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const router = useRouter();
   const [item, setItem] = useState<TimelineItem | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [aiUnavailable, setAiUnavailable] = useState(false);
   // Sprint 4.1 fix (audit H1): the interval below used to read `item` from
   // a closure captured once at effect-creation time — since the effect's
   // dependency array never actually changed (the old `tick` state was never
@@ -39,6 +49,7 @@ export default function EventDetail() {
   useEffect(() => {
     if (!id) return;
     let cancelled = false;
+    let attempts = 0;
     const load = async () => {
       try {
         const i = await apiGetEvent(id);
@@ -51,9 +62,26 @@ export default function EventDetail() {
       }
     };
     load();
+
+    // Sprint 6: check once, upfront, whether AI is even running — if it
+    // isn't (no API key configured, Sprint 5.0.2's optional-AI mode), we
+    // already know a "pending" status will never resolve, so skip polling
+    // entirely and say so immediately instead of showing "AI ANALYZING…"
+    // forever. Fails open (assumes AI is available) if the check itself
+    // fails, falling back to the existing poll-with-a-cap behaviour below.
+    apiGetPlatformStatus().then(({ ai_enabled }) => {
+      if (!cancelled && !ai_enabled) setAiUnavailable(true);
+    });
+
     const t = setInterval(() => {
-      if (aiStatusRef.current === 'pending' || aiStatusRef.current === null) load();
-      else clearInterval(t);
+      attempts += 1;
+      const stillPending = aiStatusRef.current === 'pending' || aiStatusRef.current === null;
+      if (stillPending && attempts < MAX_POLL_ATTEMPTS) {
+        load();
+      } else {
+        if (stillPending) setAiUnavailable(true);  // timed out — never spin forever
+        clearInterval(t);
+      }
     }, 3000);
     return () => { cancelled = true; clearInterval(t); };
   }, [id]);
@@ -83,7 +111,9 @@ export default function EventDetail() {
   const a = item.analysis;
   const struct = a?.structured || {};
   const urgency = (struct.urgency as string) || 'normal';
-  const aiBadge = AI_STATUS[evt.ai_status] || AI_STATUS.pending;
+  const aiBadge = (aiUnavailable && evt.ai_status === 'pending')
+    ? AI_STATUS.unavailable
+    : (AI_STATUS[evt.ai_status] || AI_STATUS.pending);
   const firstPhoto = item.photo_thumbs?.[0]?.base64 || null;
 
   return (
@@ -250,6 +280,16 @@ export default function EventDetail() {
             <Section icon="warning" title="AI ERROR" color={theme.color.error}>
               <Text style={styles.errorText}>{a.error}</Text>
               <Text style={styles.errorHint}>The event itself is safely stored. AI can be retried later.</Text>
+            </Section>
+          ) : null}
+
+          {aiUnavailable && evt.ai_status === 'pending' ? (
+            <Section icon="cloud-offline" title="AI UNAVAILABLE" color={theme.color.textDim}>
+              <Text style={styles.errorHint}>
+                AI processing is not configured on this server. Your event, photos, and text are
+                safely stored and already appear in the timeline and operational history — nothing
+                is blocked. AI analysis will run automatically once it's configured.
+              </Text>
             </Section>
           ) : null}
         </View>

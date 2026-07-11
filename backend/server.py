@@ -73,7 +73,10 @@ app.include_router(workflow_routes.router)
 
 @app.get("/api/")
 async def root():
-    return {"platform": PROJECT_NAME, "version": APP_VERSION, "status": "ok"}
+    return {
+        "platform": PROJECT_NAME, "version": APP_VERSION, "status": "ok",
+        "ai_enabled": intelligence_engine.is_worker_running(),
+    }
 
 
 # --- review artifact download (temporary; remove after handoff) ---

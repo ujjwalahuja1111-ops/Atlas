@@ -6,6 +6,18 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { authHeaders, apiFetch, resetSessionExpiredGuard } from './http';
 
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
+
+/** Sprint 6 — root health check, now including whether the AI worker is
+ * actually running (see intelligence_engine.is_worker_running()). Used to
+ * clearly indicate AI is unavailable instead of polling indefinitely for
+ * an ai_status that will never resolve when no API key is configured
+ * (Sprint 5.0.2's optional-AI-worker mode). Unauthenticated, matching the
+ * existing root endpoint. */
+export async function apiGetPlatformStatus(): Promise<{ ai_enabled: boolean }> {
+  const r = await fetch(`${BACKEND}/api/`);
+  if (!r.ok) return { ai_enabled: true };  // fail open to the existing polling behaviour
+  return r.json();
+}
 export const APP_VERSION = '2.0.0';
 
 export type Role = 'supervisor' | 'coordinator' | 'management';
