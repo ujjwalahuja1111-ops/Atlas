@@ -1,7 +1,7 @@
 import { useCallback, useState, type Dispatch, type SetStateAction } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Pressable, ScrollView,
-  ActivityIndicator, RefreshControl, Modal, TextInput,
+  ActivityIndicator, RefreshControl, Modal, TextInput, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -413,6 +413,7 @@ function ProposalReviewModal({ proposal, edit, setEdit, users, busy, close, acce
 }) {
   return (
     <Modal visible={!!proposal} animationType="slide" transparent>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={styles.modalBack}>
         <View style={styles.modal} onStartShouldSetResponder={() => true}>
           <View style={styles.modalHead}>
@@ -477,6 +478,7 @@ function ProposalReviewModal({ proposal, edit, setEdit, users, busy, close, acce
           ) : null}
         </View>
       </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

@@ -11,6 +11,7 @@ import {
   useAudioRecorder, AudioModule, RecordingPresets, setAudioModeAsync,
 } from 'expo-audio';
 import { theme } from '@/src/theme';
+import { getViewRole, type ViewRole } from '@/src/roles';
 import {
   apiGetItem, apiTransitionItem, apiCommentItem, apiSetBlocker, apiClearBlocker,
   apiListUsers, apiAssignItem, apiEditItem, apiVoiceUpdate, apiMarkDuplicate, apiListItems,
@@ -81,6 +82,9 @@ export default function OpDetail() {
   const [elapsed, setElapsed] = useState(0);
   const [uploadingVoice, setUploadingVoice] = useState(false);
   const timerRef = useRef<any>(null);
+  // Sprint 6.2 Client Permissions
+  const [viewRole, setViewRole] = useState<ViewRole | null>(null);
+  const [clientNote, setClientNote] = useState('');
 
   const load = async () => {
     if (!id) return;
@@ -90,6 +94,7 @@ export default function OpDetail() {
     } catch (e) { console.warn(e); }
   };
   useEffect(() => { load(); }, [id]);
+  useEffect(() => { getViewRole().then(setViewRole); }, []);
   useEffect(() => {
     (async () => {
       try {
@@ -114,6 +119,19 @@ export default function OpDetail() {
     try { await apiTransitionItem(item.id, to); await load(); }
     catch (e: any) { console.warn(e); }
     finally { setBusy(false); }
+  };
+  // Sprint 6.2 Client Permissions — approve/reject a client_approval item,
+  // with an optional comment that becomes part of the item's (and so the
+  // project's) history via the existing transition `note` field.
+  const onClientDecision = async (to: 'fulfilled' | 'cancelled') => {
+    setBusy(true);
+    try {
+      await apiTransitionItem(item.id, to, clientNote.trim() || undefined);
+      setClientNote('');
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not submit your decision', String(e?.message || e));
+    } finally { setBusy(false); }
   };
   const openAssign = async () => {
     if (users.length === 0) {
@@ -287,102 +305,151 @@ export default function OpDetail() {
                accent={!!item.blocker} />
           </View>
 
-          {/* Primary action */}
-          {next ? (
-            <Pressable testID={`primary-${next.to}`} disabled={busy}
-              onPress={() => onTransition(next.to)} style={[styles.primary, busy && { opacity: 0.5 }]}>
-              <Ionicons name={next.icon} size={24} color={theme.color.onBrand} />
-              <Text style={styles.primaryText}>{next.label}</Text>
-            </Pressable>
+          {/* Sprint 6.2 Client Permissions: clients get a dedicated
+              approve/reject/comment UI instead of the operational action
+              set below — never assignment, editing, blockers, escalation,
+              archiving, or cancelling-as-an-operational-action. */}
+          {viewRole === 'client' ? (
+            item.category === 'client_approval' ? (
+              <View style={styles.clientDecisionBox}>
+                {(item.status === 'fulfilled' || item.status === 'cancelled' || item.status === 'verified' || item.status === 'closed') ? (
+                  <View style={[styles.primary, { backgroundColor: theme.color.surface3 }]}>
+                    <Ionicons name={item.status === 'cancelled' ? 'close-circle' : 'checkmark-circle'}
+                      size={24} color={item.status === 'cancelled' ? theme.color.error : theme.color.success} />
+                    <Text style={[styles.primaryText, { color: theme.color.textDim }]}>
+                      {item.status === 'cancelled' ? 'REJECTED' : 'APPROVED'}
+                    </Text>
+                  </View>
+                ) : (
+                  <>
+                    <Text style={styles.clientDecisionLabel}>Add a comment (optional)</Text>
+                    <TextInput
+                      testID="client-decision-comment"
+                      value={clientNote} onChangeText={setClientNote}
+                      placeholder="Any notes for the project team…" placeholderTextColor={theme.color.textDim}
+                      style={styles.clientDecisionInput} multiline
+                    />
+                    <View style={{ flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.sm }}>
+                      <Pressable testID="client-approve" disabled={busy} onPress={() => onClientDecision('fulfilled')}
+                        style={[styles.primary, { flex: 1, backgroundColor: theme.color.success }]}>
+                        <Ionicons name="checkmark-circle" size={22} color={theme.color.onBrand} />
+                        <Text style={styles.primaryText}>APPROVE</Text>
+                      </Pressable>
+                      <Pressable testID="client-reject" disabled={busy} onPress={() => onClientDecision('cancelled')}
+                        style={[styles.primary, { flex: 1, backgroundColor: theme.color.error }]}>
+                        <Ionicons name="close-circle" size={22} color={theme.color.onBrand} />
+                        <Text style={styles.primaryText}>REJECT</Text>
+                      </Pressable>
+                    </View>
+                  </>
+                )}
+              </View>
+            ) : (
+              <View style={[styles.primary, { backgroundColor: theme.color.surface3 }]}>
+                <Ionicons name="eye" size={22} color={theme.color.textDim} />
+                <Text style={[styles.primaryText, { color: theme.color.textDim }]}>VIEW ONLY</Text>
+              </View>
+            )
           ) : (
-            <View style={[styles.primary, { backgroundColor: theme.color.surface3 }]}>
-              <Ionicons name="checkmark-circle" size={24} color={theme.color.textDim} />
-              <Text style={[styles.primaryText, { color: theme.color.textDim }]}>CLOSED</Text>
-            </View>
+            <>
+              {/* Primary action */}
+              {next ? (
+                <Pressable testID={`primary-${next.to}`} disabled={busy}
+                  onPress={() => onTransition(next.to)} style={[styles.primary, busy && { opacity: 0.5 }]}>
+                  <Ionicons name={next.icon} size={24} color={theme.color.onBrand} />
+                  <Text style={styles.primaryText}>{next.label}</Text>
+                </Pressable>
+              ) : (
+                <View style={[styles.primary, { backgroundColor: theme.color.surface3 }]}>
+                  <Ionicons name="checkmark-circle" size={24} color={theme.color.textDim} />
+                  <Text style={[styles.primaryText, { color: theme.color.textDim }]}>CLOSED</Text>
+                </View>
+              )}
+
+              <View style={styles.actionRow}>
+                {!item.assigned_to_user_id && item.status !== 'closed' && (
+                  <Pressable testID="reassign" onPress={openAssign} disabled={busy}
+                    style={[styles.actionBtn, { borderColor: theme.color.info }]}>
+                    <Ionicons name="person-add" size={18} color={theme.color.info} />
+                    <Text style={[styles.actionLabel, { color: theme.color.info }]}>ASSIGN</Text>
+                  </Pressable>
+                )}
+                {item.assigned_to_user_id && item.status !== 'closed' && (
+                  <Pressable testID="reassign" onPress={openAssign} disabled={busy}
+                    style={[styles.actionBtn, { borderColor: theme.color.info }]}>
+                    <Ionicons name="swap-horizontal" size={18} color={theme.color.info} />
+                    <Text style={[styles.actionLabel, { color: theme.color.info }]}>REASSIGN</Text>
+                  </Pressable>
+                )}
+                <Pressable testID="edit-item" onPress={openEdit} disabled={busy}
+                  style={[styles.actionBtn, { borderColor: theme.color.brand }]}>
+                  <Ionicons name="pencil" size={18} color={theme.color.brand} />
+                  <Text style={[styles.actionLabel, { color: theme.color.brand }]}>EDIT</Text>
+                </Pressable>
+                {item.blocker ? (
+                  <Pressable testID="clear-blocker" onPress={onClearBlocker} disabled={busy}
+                    style={[styles.actionBtn, { borderColor: theme.color.success }]}>
+                    <Ionicons name="checkmark" size={18} color={theme.color.success} />
+                    <Text style={[styles.actionLabel, { color: theme.color.success }]}>CLEAR BLOCK</Text>
+                  </Pressable>
+                ) : (
+                  <Pressable testID="set-blocker" onPress={() => setShowBlockerPicker(true)} disabled={busy}
+                    style={[styles.actionBtn, { borderColor: '#9C27B0' }]}>
+                    <Ionicons name="warning" size={18} color="#9C27B0" />
+                    <Text style={[styles.actionLabel, { color: '#9C27B0' }]}>FLAG BLOCKER</Text>
+                  </Pressable>
+                )}
+              </View>
+
+              {/* V3.3 secondary actions row */}
+              <View style={styles.actionRow}>
+                {recording ? (
+                  <>
+                    <Pressable testID="voice-stop" onPress={stopAndUpload}
+                      style={[styles.actionBtn, { borderColor: theme.color.error, backgroundColor: theme.color.surface3 }]}>
+                      <Ionicons name="stop-circle" size={20} color={theme.color.error} />
+                      <Text style={[styles.actionLabel, { color: theme.color.error }]}>{`STOP · ${elapsed}s`}</Text>
+                    </Pressable>
+                    <Pressable testID="voice-cancel" onPress={cancelRecord}
+                      style={[styles.actionBtn, { borderColor: theme.color.textDim }]}>
+                      <Ionicons name="close" size={18} color={theme.color.textDim} />
+                      <Text style={[styles.actionLabel, { color: theme.color.textDim }]}>CANCEL</Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <Pressable testID="voice-update" onPress={startRecord}
+                    disabled={busy || uploadingVoice || item.status === 'closed'}
+                    style={[styles.actionBtn, { borderColor: theme.color.brand, backgroundColor: theme.color.surface2 }]}>
+                    <Ionicons name={uploadingVoice ? 'sync' : 'mic'} size={18} color={theme.color.brand} />
+                    <Text style={[styles.actionLabel, { color: theme.color.brand }]}>
+                      {uploadingVoice ? 'TRANSCRIBING…' : 'VOICE UPDATE'}
+                    </Text>
+                  </Pressable>
+                )}
+                {item.status !== 'duplicate' && item.status !== 'closed' && item.status !== 'archived' && (
+                  <Pressable testID="mark-duplicate" onPress={openDuplicatePicker} disabled={busy}
+                    style={[styles.actionBtn, { borderColor: theme.color.textMuted }]}>
+                    <Ionicons name="copy" size={18} color={theme.color.textMuted} />
+                    <Text style={[styles.actionLabel, { color: theme.color.textMuted }]}>DUPLICATE</Text>
+                  </Pressable>
+                )}
+                {item.status !== 'archived' && (
+                  <Pressable testID="archive-item" onPress={() => Alert.alert('Archive item?', 'It will be hidden from active lists. History is preserved.', [{ text: 'Cancel' }, { text: 'Archive', style: 'destructive', onPress: onArchive }])} disabled={busy}
+                    style={[styles.actionBtn, { borderColor: theme.color.warning }]}>
+                    <Ionicons name="archive" size={18} color={theme.color.warning} />
+                    <Text style={[styles.actionLabel, { color: theme.color.warning }]}>ARCHIVE</Text>
+                  </Pressable>
+                )}
+                {item.status !== 'cancelled' && item.status !== 'closed' && item.status !== 'archived' && (
+                  <Pressable testID="cancel-item" onPress={() => Alert.alert('Cancel item?', 'Marks it cancelled. History is preserved.', [{ text: 'Back' }, { text: 'Cancel item', style: 'destructive', onPress: onCancel }])} disabled={busy}
+                    style={[styles.actionBtn, { borderColor: theme.color.error }]}>
+                    <Ionicons name="close-circle" size={18} color={theme.color.error} />
+                    <Text style={[styles.actionLabel, { color: theme.color.error }]}>CANCEL</Text>
+                  </Pressable>
+                )}
+              </View>
+            </>
           )}
-
-          <View style={styles.actionRow}>
-            {!item.assigned_to_user_id && item.status !== 'closed' && (
-              <Pressable testID="reassign" onPress={openAssign} disabled={busy}
-                style={[styles.actionBtn, { borderColor: theme.color.info }]}>
-                <Ionicons name="person-add" size={18} color={theme.color.info} />
-                <Text style={[styles.actionLabel, { color: theme.color.info }]}>ASSIGN</Text>
-              </Pressable>
-            )}
-            {item.assigned_to_user_id && item.status !== 'closed' && (
-              <Pressable testID="reassign" onPress={openAssign} disabled={busy}
-                style={[styles.actionBtn, { borderColor: theme.color.info }]}>
-                <Ionicons name="swap-horizontal" size={18} color={theme.color.info} />
-                <Text style={[styles.actionLabel, { color: theme.color.info }]}>REASSIGN</Text>
-              </Pressable>
-            )}
-            <Pressable testID="edit-item" onPress={openEdit} disabled={busy}
-              style={[styles.actionBtn, { borderColor: theme.color.brand }]}>
-              <Ionicons name="pencil" size={18} color={theme.color.brand} />
-              <Text style={[styles.actionLabel, { color: theme.color.brand }]}>EDIT</Text>
-            </Pressable>
-            {item.blocker ? (
-              <Pressable testID="clear-blocker" onPress={onClearBlocker} disabled={busy}
-                style={[styles.actionBtn, { borderColor: theme.color.success }]}>
-                <Ionicons name="checkmark" size={18} color={theme.color.success} />
-                <Text style={[styles.actionLabel, { color: theme.color.success }]}>CLEAR BLOCK</Text>
-              </Pressable>
-            ) : (
-              <Pressable testID="set-blocker" onPress={() => setShowBlockerPicker(true)} disabled={busy}
-                style={[styles.actionBtn, { borderColor: '#9C27B0' }]}>
-                <Ionicons name="warning" size={18} color="#9C27B0" />
-                <Text style={[styles.actionLabel, { color: '#9C27B0' }]}>FLAG BLOCKER</Text>
-              </Pressable>
-            )}
-          </View>
-
-          {/* V3.3 secondary actions row */}
-          <View style={styles.actionRow}>
-            {recording ? (
-              <>
-                <Pressable testID="voice-stop" onPress={stopAndUpload}
-                  style={[styles.actionBtn, { borderColor: theme.color.error, backgroundColor: theme.color.surface3 }]}>
-                  <Ionicons name="stop-circle" size={20} color={theme.color.error} />
-                  <Text style={[styles.actionLabel, { color: theme.color.error }]}>{`STOP · ${elapsed}s`}</Text>
-                </Pressable>
-                <Pressable testID="voice-cancel" onPress={cancelRecord}
-                  style={[styles.actionBtn, { borderColor: theme.color.textDim }]}>
-                  <Ionicons name="close" size={18} color={theme.color.textDim} />
-                  <Text style={[styles.actionLabel, { color: theme.color.textDim }]}>CANCEL</Text>
-                </Pressable>
-              </>
-            ) : (
-              <Pressable testID="voice-update" onPress={startRecord}
-                disabled={busy || uploadingVoice || item.status === 'closed'}
-                style={[styles.actionBtn, { borderColor: theme.color.brand, backgroundColor: theme.color.surface2 }]}>
-                <Ionicons name={uploadingVoice ? 'sync' : 'mic'} size={18} color={theme.color.brand} />
-                <Text style={[styles.actionLabel, { color: theme.color.brand }]}>
-                  {uploadingVoice ? 'TRANSCRIBING…' : 'VOICE UPDATE'}
-                </Text>
-              </Pressable>
-            )}
-            {item.status !== 'duplicate' && item.status !== 'closed' && item.status !== 'archived' && (
-              <Pressable testID="mark-duplicate" onPress={openDuplicatePicker} disabled={busy}
-                style={[styles.actionBtn, { borderColor: theme.color.textMuted }]}>
-                <Ionicons name="copy" size={18} color={theme.color.textMuted} />
-                <Text style={[styles.actionLabel, { color: theme.color.textMuted }]}>DUPLICATE</Text>
-              </Pressable>
-            )}
-            {item.status !== 'archived' && (
-              <Pressable testID="archive-item" onPress={() => Alert.alert('Archive item?', 'It will be hidden from active lists. History is preserved.', [{ text: 'Cancel' }, { text: 'Archive', style: 'destructive', onPress: onArchive }])} disabled={busy}
-                style={[styles.actionBtn, { borderColor: theme.color.warning }]}>
-                <Ionicons name="archive" size={18} color={theme.color.warning} />
-                <Text style={[styles.actionLabel, { color: theme.color.warning }]}>ARCHIVE</Text>
-              </Pressable>
-            )}
-            {item.status !== 'cancelled' && item.status !== 'closed' && item.status !== 'archived' && (
-              <Pressable testID="cancel-item" onPress={() => Alert.alert('Cancel item?', 'Marks it cancelled. History is preserved.', [{ text: 'Back' }, { text: 'Cancel item', style: 'destructive', onPress: onCancel }])} disabled={busy}
-                style={[styles.actionBtn, { borderColor: theme.color.error }]}>
-                <Ionicons name="close-circle" size={18} color={theme.color.error} />
-                <Text style={[styles.actionLabel, { color: theme.color.error }]}>CANCEL</Text>
-              </Pressable>
-            )}
-          </View>
 
           {showBlockerPicker && (
             <View style={styles.blockerPicker}>
@@ -732,6 +799,13 @@ const styles = StyleSheet.create({
            alignItems: 'center', justifyContent: 'center', marginTop: 1 },
   qQuestion: { color: theme.color.textDim, fontSize: 11, fontWeight: '800', letterSpacing: 1 },
   qAnswer: { color: theme.color.text, fontSize: 15, fontWeight: '700', marginTop: 2 },
+  clientDecisionBox: { gap: theme.spacing.sm, marginTop: theme.spacing.sm },
+  clientDecisionLabel: { color: theme.color.textMuted, fontSize: 12, fontWeight: '800', letterSpacing: 0.5 },
+  clientDecisionInput: {
+    minHeight: 70, backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
+    borderWidth: 1, borderColor: theme.color.border, padding: theme.spacing.sm,
+    color: theme.color.text, fontSize: 14, textAlignVertical: 'top',
+  },
   primary: { height: 64, borderRadius: theme.radius.md, backgroundColor: theme.color.brand,
              flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: theme.spacing.sm },
   primaryText: { color: theme.color.onBrand, fontSize: 18, fontWeight: '900', letterSpacing: 2 },

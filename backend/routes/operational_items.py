@@ -8,6 +8,23 @@ from engines import operations_engine, memory_engine
 router = APIRouter(prefix="/api", tags=["operations"])
 
 
+def _forbid_client(user: dict, action: str = "perform this action") -> None:
+    """Sprint 6.2 Client Permissions. Defense-in-depth: the frontend
+    (app/op/[id].tsx) already hides these controls for the client
+    workspace, but a client's backend `role` is `coordinator` — the same
+    role a Project Manager has — so nothing at the API layer previously
+    stopped a client account from calling these endpoints directly.
+    `workspace` (Sprint 4.3) is the only reliable signal that
+    distinguishes a client from a PM at the backend, so that is what
+    this checks, not `role`. Clients may still transition a
+    client_approval item to fulfilled/cancelled (approve/reject) and add
+    comments — see the `transition` and `comment` routes below, which do
+    NOT call this guard.
+    """
+    if user.get("workspace") == "client":
+        raise HTTPException(status_code=403, detail=f"Clients cannot {action}.")
+
+
 class CreateItem(BaseModel):
     site_id: str
     category: str
@@ -23,6 +40,7 @@ class CreateItem(BaseModel):
 
 @router.post("/operational-items", status_code=201)
 async def create_item(req: CreateItem, user: dict = Depends(get_current_user)):
+    _forbid_client(user, "create operational items")
     assignee = None
     if req.assigned_to_user_id:
         assignee = await memory_engine.db.users.find_one({"id": req.assigned_to_user_id}, {"_id": 0}) \
@@ -90,6 +108,16 @@ class TransitionReq(BaseModel):
 
 @router.post("/operational-items/{item_id}/transition")
 async def transition(item_id: str, req: TransitionReq, user: dict = Depends(get_current_user)):
+    # Sprint 6.2 Client Permissions: a client may approve (-> fulfilled) or
+    # reject (-> cancelled) a client_approval item — nothing else. Every
+    # other transition (assignment lifecycle, closing, reopening, etc.) on
+    # any category is an operational action, not a client one.
+    if user.get("workspace") == "client":
+        item = await operations_engine.get_item(item_id)
+        if not item:
+            raise HTTPException(status_code=404, detail="Item not found")
+        if item["category"] != "client_approval" or req.to_status not in ("fulfilled", "cancelled"):
+            raise HTTPException(status_code=403, detail="Clients can only approve or reject client approval items.")
     try:
         item = await operations_engine.transition_status(
             item_id=item_id, to_status=req.to_status, actor=user, note=req.note,
@@ -106,6 +134,7 @@ class AssignReq(BaseModel):
 
 @router.post("/operational-items/{item_id}/assign")
 async def assign(item_id: str, req: AssignReq, user: dict = Depends(get_current_user)):
+    _forbid_client(user, "assign or reassign work")
     from core.db import db
     assignee = await db.users.find_one({"id": req.assigned_to_user_id}, {"_id": 0})
     if not assignee:
@@ -139,6 +168,7 @@ class BlockerReq(BaseModel):
 
 @router.post("/operational-items/{item_id}/blocker")
 async def set_blocker(item_id: str, req: BlockerReq, user: dict = Depends(get_current_user)):
+    _forbid_client(user, "set blockers")
     try:
         item = await operations_engine.set_blocker(
             item_id=item_id, actor=user, category=req.category, note=req.note,
@@ -150,6 +180,7 @@ async def set_blocker(item_id: str, req: BlockerReq, user: dict = Depends(get_cu
 
 @router.delete("/operational-items/{item_id}/blocker")
 async def clear_blocker(item_id: str, user: dict = Depends(get_current_user)):
+    _forbid_client(user, "clear blockers")
     try:
         item = await operations_engine.clear_blocker(item_id=item_id, actor=user)
         return operations_engine.enrich(item)
@@ -163,6 +194,7 @@ class DueReq(BaseModel):
 
 @router.post("/operational-items/{item_id}/due")
 async def set_due(item_id: str, req: DueReq, user: dict = Depends(get_current_user)):
+    _forbid_client(user, "set due dates")
     try:
         item = await operations_engine.set_due(
             item_id=item_id, actor=user, required_by=req.required_by,
@@ -178,6 +210,7 @@ class EscalateReq(BaseModel):
 
 @router.post("/operational-items/{item_id}/escalate")
 async def escalate(item_id: str, req: EscalateReq, user: dict = Depends(get_current_user)):
+    _forbid_client(user, "escalate items")
     try:
         item = await operations_engine.escalate(
             item_id=item_id, actor=user, reason=req.reason,
@@ -212,6 +245,7 @@ class EditItemReq(BaseModel):
 @router.patch("/operational-items/{item_id}")
 async def edit_item(item_id: str, req: EditItemReq,
                     user: dict = Depends(get_current_user)):
+    _forbid_client(user, "edit operational items")
     from core.db import db
     edits = {k: v for k, v in req.model_dump().items() if v is not None}
     assignee = None
@@ -234,6 +268,7 @@ async def edit_item(item_id: str, req: EditItemReq,
 async def voice_update(item_id: str,
                        audio: UploadFile = File(...),
                        user: dict = Depends(get_current_user)):
+    _forbid_client(user, "add voice updates")
     """Accept an audio note, persist as raw_asset, transcribe via Whisper,
     and append a voice_update activity entry on the item ledger.
 
@@ -307,6 +342,7 @@ class MarkDuplicateReq(BaseModel):
 @router.post("/operational-items/{item_id}/duplicate")
 async def mark_duplicate(item_id: str, req: MarkDuplicateReq,
                          user: dict = Depends(get_current_user)):
+    _forbid_client(user, "mark items as duplicates")
     try:
         item = await operations_engine.mark_duplicate(
             item_id=item_id, actor=user,

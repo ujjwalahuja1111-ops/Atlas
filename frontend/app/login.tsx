@@ -113,6 +113,17 @@ export default function LoginScreen() {
               placeholder="Rajesh Kumar" placeholderTextColor={theme.color.textDim}
               style={styles.input} autoCapitalize="words"
             />
+            {mode === 'login' && (
+              // Sprint 6.2 Identity Security fix: logging in never changes an
+              // existing account's stored name (or role) — this field is
+              // only ever used if this phone turns out to be brand new.
+              // Backend enforcement lives in memory_engine.upsert_user();
+              // this is just making the same behaviour clear here too.
+              <Text style={styles.hint}>
+                Only used if this is your first time signing in. To change your
+                name later, use Profile.
+              </Text>
+            )}
             <Text style={styles.label}>Phone Number</Text>
             <TextInput
               testID="login-phone-input"

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
-  TextInput, Modal, Alert,
+  TextInput, Modal, Alert, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -285,6 +285,7 @@ export default function KnowledgeWorkspace() {
       )}
 
       <Modal visible={!!editing} animationType="slide" transparent onRequestClose={() => setEditing(null)}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.modalBack}>
           <ScrollView style={styles.modal} contentContainerStyle={{ paddingBottom: theme.spacing.lg }}>
             <View style={styles.modalHead}>
@@ -376,6 +377,7 @@ export default function KnowledgeWorkspace() {
             </Pressable>
           </ScrollView>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={!!pickerFor} animationType="fade" transparent onRequestClose={() => setPickerFor(null)}>

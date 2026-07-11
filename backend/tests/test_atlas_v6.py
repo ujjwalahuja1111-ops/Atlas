@@ -57,12 +57,16 @@ def test_existing_account_role_survives_a_guessed_role_login():
     assert r2.json()["role"] == "management"
 
 
-def test_name_still_updates_on_plain_login():
+def test_name_does_not_update_on_plain_login():
+    """Sprint 6.2 Identity Security fix supersedes Sprint 6's original
+    behaviour here: name (like role, fixed in Sprint 6) must never be
+    modified by logging in. Only PATCH /api/me (self-service) or an
+    admin action may change an existing account's identity."""
     phone = "9600100002"
     _login("coordinator", phone, "Original Name")
-    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Updated Name", "role": "supervisor"}, timeout=20)
+    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Someone Typed This", "role": "supervisor"}, timeout=20)
     body = r.json()["user"]
-    assert body["name"] == "Updated Name"
+    assert body["name"] == "Original Name"
     assert body["role"] == "coordinator"
 
 

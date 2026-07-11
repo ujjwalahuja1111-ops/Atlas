@@ -37,8 +37,13 @@ HEALTHS = ["on_track", "due_soon", "overdue", "blocked", "waiting_external", "co
 PRIORITIES = ["low", "normal", "high", "critical"]
 
 # Status transition map (from → allowed_to)
+# Sprint 6.2: "open" -> "fulfilled" added directly (previously only reachable
+# via acknowledged/in_progress) so a client_approval item can be approved
+# straight away, without a client ever needing to go through an internal
+# assign/acknowledge/start-work pipeline that doesn't apply to their role at
+# all. "open" -> "cancelled" already existed and now doubles as "reject".
 TRANSITIONS = {
-    "open":         {"assigned", "acknowledged", "in_progress", "closed",
+    "open":         {"assigned", "acknowledged", "in_progress", "fulfilled", "closed",
                      "archived", "cancelled", "duplicate"},
     "assigned":     {"acknowledged", "in_progress", "open", "closed",
                      "archived", "cancelled", "duplicate"},

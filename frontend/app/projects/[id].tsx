@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
-  TextInput, Modal, Alert, RefreshControl,
+  TextInput, Modal, Alert, RefreshControl, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -325,6 +325,7 @@ export default function ProjectDetail() {
       )}
 
       <Modal visible={!!editing} animationType="slide" transparent>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.modalBack}>
           <View style={styles.modal}>
             <View style={styles.modalHead}>
@@ -346,6 +347,7 @@ export default function ProjectDetail() {
             </Pressable>
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Sprint 5 — Workflow Template picker */}

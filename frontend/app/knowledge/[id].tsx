@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Modal, Alert,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -249,6 +250,7 @@ export default function KnowledgeDetail() {
 
       {/* Edit modal */}
       <Modal visible={!!editingField} animationType="slide" transparent onRequestClose={() => setEditingField(null)}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.modalBack}>
           <View style={styles.modal}>
             <View style={styles.modalHead}>
@@ -286,10 +288,12 @@ export default function KnowledgeDetail() {
             </Pressable>
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       {/* Add relationship modal */}
       <Modal visible={addingRel} animationType="slide" transparent onRequestClose={() => setAddingRel(false)}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.modalBack}>
           <View style={styles.modal}>
             <View style={styles.modalHead}>
@@ -329,6 +333,7 @@ export default function KnowledgeDetail() {
             </Pressable>
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
 
       <Modal visible={relTargetPicker} animationType="fade" transparent onRequestClose={() => setRelTargetPicker(false)}>

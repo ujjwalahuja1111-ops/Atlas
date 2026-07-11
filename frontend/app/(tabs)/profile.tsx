@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Modal, TextInput, Alert, ScrollView } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Modal, TextInput, Alert, ScrollView, KeyboardAvoidingView, Platform } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -124,6 +124,7 @@ export default function ProfileScreen() {
       </ScrollView>
 
       <Modal visible={editingName !== null} animationType="slide" transparent onRequestClose={() => setEditingName(null)}>
+        <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.modalBack}>
           <View style={styles.modal}>
             <View style={styles.modalHead}>
@@ -145,6 +146,7 @@ export default function ProfileScreen() {
             </Pressable>
           </View>
         </View>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );

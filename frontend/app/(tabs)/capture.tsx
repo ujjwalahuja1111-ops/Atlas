@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
   View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView, TextInput,
+  KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -120,6 +121,15 @@ export default function CaptureScreen() {
     } finally { setSubmitting(false); }
   };
 
+  // Sprint 6.2 — mirrors the existing cancelRecord pattern already used
+  // in app/op/[id].tsx's voice-update flow.
+  const cancelRecording = async () => {
+    try { await recorder.stop(); } catch {}
+    setRecording(false);
+    setStatus('');
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+  };
+
   const pickPhoto = async () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     tryCaptureGps();
@@ -207,135 +217,161 @@ export default function CaptureScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
-      <View style={styles.headerRow}>
-        <Text style={styles.title}>CAPTURE</Text>
-        <Text style={styles.subtitle} numberOfLines={1}>
-          {activeProject ? `${activeProject.name} · ` : ''}{activeSite?.name || 'No site selected'}
-        </Text>
-      </View>
-
-      <ScrollView horizontal showsHorizontalScrollIndicator={false}
-        style={styles.chipsRow} contentContainerStyle={styles.chipsContent}>
-        {sites.length === 0 ? (
-          <Text style={styles.noSitesText}>No sites available yet</Text>
-        ) : sites.map((s) => {
-          const active = s.id === siteId;
-          return (
-            <Pressable key={s.id} testID={`capture-site-${s.id}`}
-              onPress={async () => { setSiteId(s.id); await setActiveSite(s.id); }}
-              style={[styles.chip, active && styles.chipActive]}>
-              <Ionicons name="business" size={16}
-                color={active ? theme.color.onBrand : theme.color.textMuted} />
-              <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
-                {s.name}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
-
-      <View style={styles.center}>
-        {photoUris.length > 0 ? (
-          <View style={styles.photoStrip}>
-            {photoUris.map((uri, i) => (
-              <View key={i} style={styles.photoPreviewWrap}>
-                <ExpoImage source={{ uri }} style={styles.photoPreview} contentFit="cover" />
-                <Pressable testID={`clear-photo-${i}`}
-                  onPress={() => setPhotoUris((p) => p.filter((_, j) => j !== i))}
-                  style={styles.photoX}>
-                  <Ionicons name="close" size={18} color="#fff" />
-                </Pressable>
-              </View>
-            ))}
-          </View>
-        ) : null}
-
-        <Text style={styles.statusText} testID="capture-status">
-          {status || (recording ? `${mins}:${secs}` : sites.length === 0 ? 'No sites available — check back soon' : 'Tap mic to record')}
-        </Text>
-
-        <Pressable
-          testID="record-button"
-          onPress={recording ? stopAndSubmit : startRecording}
-          disabled={submitting || !siteId}
-          style={({ pressed }) => [
-            styles.micButton, recording && styles.micRecording,
-            (submitting || !siteId) && { opacity: 0.5 },
-            pressed && { transform: [{ scale: 0.97 }] },
-          ]}
-        >
-          {submitting ? (
-            <ActivityIndicator color={theme.color.onBrand} size="large" />
-          ) : (
-            <Ionicons name={recording ? 'stop' : 'mic'} size={80} color={theme.color.onBrand} />
-          )}
-        </Pressable>
-
-        <Text style={styles.helperText}>
-          {recording ? 'Tap again to stop & send' : 'Hindi · Punjabi · Hinglish · English'}
-        </Text>
-
-        <View style={styles.secondaryRow}>
-          <Pressable testID="camera-button" onPress={pickPhoto}
-            disabled={submitting || recording}
-            style={[styles.secondaryBtn, (submitting || recording) && { opacity: 0.4 }]}>
-            <Ionicons name="camera" size={32} color={theme.color.text} />
-            <Text style={styles.secondaryLabel}>PHOTO</Text>
-          </Pressable>
-          <Pressable testID="gallery-button" onPress={pickFromGallery}
-            disabled={submitting || recording}
-            style={[styles.secondaryBtn, (submitting || recording) && { opacity: 0.4 }]}>
-            <Ionicons name="images" size={32} color={theme.color.text} />
-            <Text style={styles.secondaryLabel}>GALLERY</Text>
-          </Pressable>
-          <Pressable testID="text-capture-button" onPress={() => setShowTextInput((v) => !v)}
-            disabled={submitting || recording}
-            style={[styles.secondaryBtn, showTextInput && styles.secondaryBtnActive, (submitting || recording) && { opacity: 0.4 }]}>
-            <Ionicons name="create-outline" size={32} color={showTextInput ? theme.color.onBrand : theme.color.text} />
-            <Text style={[styles.secondaryLabel, showTextInput && { color: theme.color.onBrand }]}>TEXT</Text>
-          </Pressable>
-          {photoUris.length > 0 && !recording ? (
-            <Pressable testID="photo-only-send" onPress={photoOnlySubmit}
-              disabled={submitting}
-              style={[styles.secondaryBtn, styles.secondarySend]}>
-              <Ionicons name="send" size={28} color={theme.color.onBrand} />
-              <Text style={[styles.secondaryLabel, { color: theme.color.onBrand }]}>SEND</Text>
-            </Pressable>
-          ) : null}
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
+        <View style={styles.headerRow}>
+          <Text style={styles.title}>CAPTURE</Text>
+          <Text style={styles.subtitle} numberOfLines={1}>
+            {activeProject ? `${activeProject.name} · ` : ''}{activeSite?.name || 'No site selected'}
+          </Text>
         </View>
 
-        {showTextInput && (
-          <View style={styles.textCaptureBox}>
-            <TextInput
-              testID="text-capture-input"
-              value={textNote}
-              onChangeText={setTextNote}
-              placeholder="Add a site note as text…"
-              placeholderTextColor={theme.color.textDim}
-              style={styles.textCaptureInput}
-              multiline
-              autoFocus
-            />
-            <Pressable testID="text-capture-send" onPress={textOnlySubmit}
-              disabled={submitting || !textNote.trim()}
-              style={[styles.textCaptureSend, (submitting || !textNote.trim()) && { opacity: 0.4 }]}>
-              {submitting ? <ActivityIndicator color={theme.color.onBrand} size="small" /> : (
-                <>
-                  <Ionicons name="send" size={18} color={theme.color.onBrand} />
-                  <Text style={styles.textCaptureSendLabel}>ADD AS TEXT</Text>
-                </>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false}
+          style={styles.chipsRow} contentContainerStyle={styles.chipsContent}>
+          {sites.length === 0 ? (
+            <Text style={styles.noSitesText}>No sites available yet</Text>
+          ) : sites.map((s) => {
+            const active = s.id === siteId;
+            return (
+              <Pressable key={s.id} testID={`capture-site-${s.id}`}
+                onPress={async () => { setSiteId(s.id); await setActiveSite(s.id); }}
+                style={[styles.chip, active && styles.chipActive]}>
+                <Ionicons name="business" size={16}
+                  color={active ? theme.color.onBrand : theme.color.textMuted} />
+                <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>
+                  {s.name}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        {/* Sprint 6.2 — the whole capture body is now scrollable, so it
+            never clips content or leaves controls unreachable on smaller
+            screens or when the keyboard is open. */}
+        <ScrollView
+          style={{ flex: 1 }}
+          contentContainerStyle={styles.scrollBody}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          {photoUris.length > 0 ? (
+            <View style={styles.photoStrip}>
+              {photoUris.map((uri, i) => (
+                <View key={i} style={styles.photoPreviewWrap}>
+                  <ExpoImage source={{ uri }} style={styles.photoPreview} contentFit="cover" />
+                  <Pressable testID={`clear-photo-${i}`}
+                    onPress={() => setPhotoUris((p) => p.filter((_, j) => j !== i))}
+                    style={styles.photoX}>
+                    <Ionicons name="close" size={18} color="#fff" />
+                  </Pressable>
+                </View>
+              ))}
+              <Pressable testID="photo-only-send" onPress={photoOnlySubmit} disabled={submitting}
+                style={styles.photoSendBtn}>
+                {submitting ? <ActivityIndicator color={theme.color.onBrand} size="small" /> : (
+                  <>
+                    <Ionicons name="send" size={16} color={theme.color.onBrand} />
+                    <Text style={styles.photoSendBtnText}>SEND PHOTOS</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          ) : null}
+
+          <Text style={styles.statusText} numberOfLines={2} testID="capture-status">
+            {status || (recording ? `Recording · ${mins}:${secs}` : sites.length === 0 ? 'No sites available — check back soon' : 'Choose how you want to capture')}
+          </Text>
+
+          {/* Sprint 6.2 — Voice / Photo / Text as one consistent,
+              responsive control group: equal size, equal weight, same
+              row. Recording state is shown by the Voice button itself
+              transforming (icon + label + timer), mirroring the same
+              record/stop pattern already used for Voice Update on
+              operational items. */}
+          <View style={styles.captureGroup}>
+            <Pressable
+              testID="record-button"
+              onPress={recording ? stopAndSubmit : startRecording}
+              disabled={submitting || !siteId}
+              style={[styles.captureBtn, recording && styles.captureBtnRecording, (submitting || !siteId) && { opacity: 0.4 }]}
+            >
+              {submitting && recording === false ? (
+                <ActivityIndicator color={theme.color.onBrand} />
+              ) : (
+                <Ionicons name={recording ? 'stop' : 'mic'} size={30} color={theme.color.onBrand} />
               )}
+              <Text style={styles.captureBtnLabel}>{recording ? `${mins}:${secs}` : 'VOICE'}</Text>
+            </Pressable>
+
+            <Pressable
+              testID="camera-button" onPress={pickPhoto}
+              disabled={submitting || recording}
+              style={[styles.captureBtn, styles.captureBtnSecondary, (submitting || recording) && { opacity: 0.4 }]}
+            >
+              <Ionicons name="camera" size={30} color={theme.color.text} />
+              <Text style={[styles.captureBtnLabel, { color: theme.color.text }]}>PHOTO</Text>
+            </Pressable>
+
+            <Pressable
+              testID="text-capture-button" onPress={() => setShowTextInput((v) => !v)}
+              disabled={submitting || recording}
+              style={[styles.captureBtn, styles.captureBtnSecondary, showTextInput && styles.captureBtnActive, (submitting || recording) && { opacity: 0.4 }]}
+            >
+              <Ionicons name="create-outline" size={30} color={showTextInput ? theme.color.onBrand : theme.color.text} />
+              <Text style={[styles.captureBtnLabel, { color: showTextInput ? theme.color.onBrand : theme.color.text }]}>TEXT</Text>
             </Pressable>
           </View>
-        )}
 
-        {gps ? (
-          <View style={styles.gpsTag}>
-            <Ionicons name="location" size={12} color={theme.color.brand} />
-            <Text style={styles.gpsText}>GPS LOCKED</Text>
-          </View>
-        ) : null}
-      </View>
+          {recording && (
+            <Pressable testID="voice-cancel-capture" onPress={cancelRecording} style={styles.cancelRecordingLink}>
+              <Text style={styles.cancelRecordingLinkText}>Cancel recording</Text>
+            </Pressable>
+          )}
+
+          <Pressable testID="gallery-button" onPress={pickFromGallery}
+            disabled={submitting || recording} style={styles.galleryLink}>
+            <Ionicons name="images-outline" size={16} color={theme.color.textDim} />
+            <Text style={styles.galleryLinkText}>or choose photo from gallery</Text>
+          </Pressable>
+
+          {!recording && (
+            <Text style={styles.helperText}>Hindi · Punjabi · Hinglish · English</Text>
+          )}
+
+          {showTextInput && (
+            <View style={styles.textCaptureBox}>
+              <TextInput
+                testID="text-capture-input"
+                value={textNote}
+                onChangeText={setTextNote}
+                placeholder="Add a site note as text…"
+                placeholderTextColor={theme.color.textDim}
+                style={styles.textCaptureInput}
+                multiline
+                autoFocus
+              />
+              <Pressable testID="text-capture-send" onPress={textOnlySubmit}
+                disabled={submitting || !textNote.trim()}
+                style={[styles.textCaptureSend, (submitting || !textNote.trim()) && { opacity: 0.4 }]}>
+                {submitting ? <ActivityIndicator color={theme.color.onBrand} size="small" /> : (
+                  <>
+                    <Ionicons name="send" size={18} color={theme.color.onBrand} />
+                    <Text style={styles.textCaptureSendLabel}>ADD AS TEXT</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          )}
+
+          {gps ? (
+            <View style={styles.gpsTag}>
+              <Ionicons name="location" size={12} color={theme.color.brand} />
+              <Text style={styles.gpsText}>GPS LOCKED</Text>
+            </View>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -355,25 +391,39 @@ const styles = StyleSheet.create({
   chipActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
   chipText: { color: theme.color.textMuted, fontSize: 13, fontWeight: '700' },
   chipTextActive: { color: theme.color.onBrand },
-  center: { flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: theme.spacing.lg, gap: theme.spacing.md },
+  // Sprint 6.2 — the body is now a ScrollView (was a fixed-height flex
+  // container), so nothing ever clips or overlaps regardless of screen
+  // size, content length, or keyboard state.
+  scrollBody: {
+    flexGrow: 1, alignItems: 'center', justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg, paddingVertical: theme.spacing.lg, gap: theme.spacing.md,
+  },
   noSitesText: { color: theme.color.textDim, fontSize: 13, fontWeight: '600', paddingHorizontal: theme.spacing.md },
-  statusText: { color: theme.color.text, fontSize: 20, fontWeight: '700', letterSpacing: 1, textAlign: 'center' },
-  micButton: {
-    width: 200, height: 200, borderRadius: 100, backgroundColor: theme.color.brand,
-    alignItems: 'center', justifyContent: 'center',
-    boxShadow: '0 8px 20px rgba(255,90,0,0.5)',
-    elevation: 12,
+  statusText: { color: theme.color.text, fontSize: 18, fontWeight: '700', letterSpacing: 0.5, textAlign: 'center' },
+  // Sprint 6.2 — Voice / Photo / Text as one consistent, responsive group:
+  // equal flex, equal height, same row, wraps on very narrow screens
+  // instead of clipping or overlapping text.
+  captureGroup: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.sm,
+    width: '100%', justifyContent: 'center',
   },
-  micRecording: { backgroundColor: theme.color.error },
-  helperText: { color: theme.color.textDim, fontSize: 13, fontWeight: '600', letterSpacing: 0.5 },
-  secondaryRow: { flexDirection: 'row', gap: theme.spacing.md, marginTop: theme.spacing.lg, flexWrap: 'wrap', justifyContent: 'center' },
-  secondaryBtn: {
-    width: 100, height: 100, borderRadius: theme.radius.md, backgroundColor: theme.color.surface2,
-    alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: theme.color.border,
+  captureBtn: {
+    flex: 1, minWidth: 92, height: 92, borderRadius: theme.radius.md,
+    backgroundColor: theme.color.brand, alignItems: 'center', justifyContent: 'center', gap: 6,
+    boxShadow: '0 4px 12px rgba(255,90,0,0.35)',
   },
-  secondarySend: { backgroundColor: theme.color.success, borderColor: theme.color.success },
-  secondaryBtnActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
-  secondaryLabel: { color: theme.color.textMuted, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
+  captureBtnSecondary: {
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border,
+    boxShadow: 'none',
+  },
+  captureBtnActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  captureBtnRecording: { backgroundColor: theme.color.error },
+  captureBtnLabel: { color: theme.color.onBrand, fontSize: 12, fontWeight: '900', letterSpacing: 1 },
+  cancelRecordingLink: { paddingVertical: 4 },
+  cancelRecordingLinkText: { color: theme.color.error, fontSize: 13, fontWeight: '700' },
+  galleryLink: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6 },
+  galleryLinkText: { color: theme.color.textDim, fontSize: 13, fontWeight: '600' },
+  helperText: { color: theme.color.textDim, fontSize: 13, fontWeight: '600', letterSpacing: 0.5, textAlign: 'center' },
   textCaptureBox: {
     width: '100%', backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
     borderWidth: 1, borderColor: theme.color.border, padding: theme.spacing.md, gap: theme.spacing.sm,
@@ -386,13 +436,19 @@ const styles = StyleSheet.create({
     height: 48, borderRadius: theme.radius.sm, backgroundColor: theme.color.brand,
   },
   textCaptureSendLabel: { color: theme.color.onBrand, fontSize: 13, fontWeight: '900', letterSpacing: 1 },
-  photoStrip: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center' },
+  photoStrip: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center', width: '100%' },
   photoPreviewWrap: { width: 100, height: 80, borderRadius: theme.radius.sm, overflow: 'hidden', position: 'relative' },
   photoPreview: { width: '100%', height: '100%' },
   photoX: {
     position: 'absolute', top: 4, right: 4, width: 24, height: 24, borderRadius: 12,
     backgroundColor: 'rgba(0,0,0,0.6)', alignItems: 'center', justifyContent: 'center',
   },
+  photoSendBtn: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    height: 40, paddingHorizontal: theme.spacing.md, borderRadius: theme.radius.sm,
+    backgroundColor: theme.color.success, width: '100%',
+  },
+  photoSendBtnText: { color: theme.color.onBrand, fontSize: 12, fontWeight: '900', letterSpacing: 1 },
   gpsTag: {
     flexDirection: 'row', alignItems: 'center', gap: 4, paddingHorizontal: 10, paddingVertical: 4,
     backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm,

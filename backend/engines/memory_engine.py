@@ -34,9 +34,10 @@ async def _insert(collection, doc: dict) -> dict:
 # ---------------- users ----------------
 async def upsert_user(phone: str, name: str, role: str) -> dict:
     """Login upsert. For a brand-new phone number, creates the account
-    with the given role (self-service — the same behaviour Atlas has
-    always had for a first-ever login). For an EXISTING account, only
-    `name` is updated — `role` is intentionally left untouched.
+    with the given name and role (self-service account creation — the
+    same behaviour Atlas has always had for a first-ever login). For an
+    EXISTING account, nothing is written at all — login purely
+    authenticates and returns the account exactly as stored.
 
     Sprint 6 root-cause fix: role used to be overwritten on EVERY login
     with whatever the caller passed. The frontend (roles.ts,
@@ -52,14 +53,20 @@ async def upsert_user(phone: str, name: str, role: str) -> dict:
     persist as site_supervisor." Role changes for an existing account
     are — and since Sprint 4.1 already should have been — exclusively an
     admin action via set_user_role(), never a side effect of logging in.
+
+    Sprint 6.2 Identity Security fix: the same reasoning applies to
+    `name`. Login's request body carries whatever display name the
+    device's local form currently shows (which can be edited freely,
+    since there is no server-side identity check at that point) — for
+    an existing account this was silently overwriting their real,
+    admin-visible identity with arbitrary typed text on every single
+    login. User identity must never be modified by authenticating.
+    Name changes for an existing account are exclusively self-service
+    via the dedicated PATCH /api/me (Sprint 4.1), never a side effect of
+    logging in.
     """
     existing = await db.users.find_one({"phone": phone}, {"_id": 0})
     if existing:
-        await db.users.update_one(
-            {"id": existing["id"]},
-            {"$set": {"name": name}},
-        )
-        existing["name"] = name
         return existing
     doc = {
         "id": _new_id(),
@@ -72,11 +79,13 @@ async def upsert_user(phone: str, name: str, role: str) -> dict:
 
 
 # ---------------- users: Sprint 4.1 registration + admin management ----------------
-# `upsert_user` above is used by the existing /api/auth/login. As of Sprint 6
-# it updates `name` only for an existing account — `role` is admin-only via
-# set_user_role() (see the root-cause fix note on upsert_user itself). A
-# brand-new phone is still auto-provisioned as an immediately-usable account,
-# exactly as it always has been.
+# `upsert_user` above is used by the existing /api/auth/login. As of
+# Sprint 6.2 it makes no changes at all to an existing account — neither
+# `role` (admin-only via set_user_role(), Sprint 6) nor `name` (self-service
+# only via PATCH /api/me, Sprint 6.2) — see the docstrings on upsert_user
+# itself for the full reasoning. A brand-new phone is still auto-
+# provisioned as an immediately-usable account, exactly as it always has
+# been.
 #
 # Registration ("Sign Up" on the login screen) is a NEW, separate path with
 # different semantics: it only ever creates a brand-new account, and that
