@@ -95,6 +95,13 @@ export type AiStatus = 'pending' | 'analyzed' | 'failed' | 'skipped';
 export type EventDoc = {
   id: string;
   site_id: string;
+  // Sprint 6.1 — Foundation for AI Client Communication. project_id is
+  // always populated (denormalized from the site at capture time).
+  // activity_id is reserved for future capture flows / AI post-processing
+  // to associate an event with a specific Construction Workflow activity
+  // — no current UI sets it, so it's usually null.
+  project_id: string;
+  activity_id: string | null;
   user_id: string;
   user_name: string;
   kind: 'voice' | 'photo' | 'text' | 'mixed';

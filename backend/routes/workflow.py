@@ -1,19 +1,21 @@
-"""Construction Workflow Engine routes (Sprint 5).
+"""Construction Workflow Engine routes (Sprint 5, extended Sprint 6.1).
 
-Three endpoints, deliberately thin — every rule (project visibility,
-dependency-respecting status transitions, template-to-activity generation)
-lives in engines/workflow_engine.py. This file only translates HTTP <->
-engine calls and maps exceptions to status codes, mirroring the exact
-`_raise_for()` pattern already established in routes/knowledge.py.
+Deliberately thin — every rule (project visibility, dependency-respecting
+status transitions, template-to-activity generation, execution-target
+storage) lives in engines/workflow_engine.py. This file only translates
+HTTP <-> engine calls and maps exceptions to status codes, mirroring the
+exact `_raise_for()` pattern already established in routes/knowledge.py.
 
 Workflow Templates themselves are NOT a new endpoint family — they are
 just `knowledge_items` with `type="workflow_template"`, fully served by
 the existing routes/knowledge.py (list/create/update/archive/relationships
 all already work for them with zero code change). Only project-scoped
-generation and status tracking are genuinely new capabilities.
+generation, status tracking, and (Sprint 6.1) scheduling are genuinely
+new capabilities.
 """
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 from core.auth import get_current_user
 from engines import workflow_engine
 from engines.workflow_engine import WorkflowNotFoundError, DependencyNotSatisfiedError
@@ -38,6 +40,16 @@ class GenerateWorkflowRequest(BaseModel):
 
 class SetStatusRequest(BaseModel):
     status: str
+
+
+class SetScheduleRequest(BaseModel):
+    # Sprint 6.1 — execution targets. All optional; only provided fields
+    # are updated (exclude_unset below), matching the existing
+    # KnowledgeItemUpdate/EditItemReq convention elsewhere in the codebase.
+    planned_start: Optional[str] = None
+    planned_finish: Optional[str] = None
+    actual_start: Optional[str] = None
+    actual_finish: Optional[str] = None
 
 
 @router.post("/projects/{project_id}/workflow/generate", status_code=201)
@@ -70,6 +82,21 @@ async def set_workflow_activity_status(activity_id: str, req: SetStatusRequest, 
     visibility is still enforced inside the engine for scoped users."""
     try:
         return await workflow_engine.set_status(activity_id, req.status, actor=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.post("/workflow-activities/{activity_id}/schedule")
+async def set_workflow_activity_schedule(activity_id: str, req: SetScheduleRequest, user: dict = Depends(get_current_user)):
+    """Sprint 6.1 — Planned/Actual Start/Finish. Open to any authenticated
+    role, same as status (a supervisor logging actual dates on-site is
+    exactly the intended use). Pure data storage — see
+    workflow_engine.set_schedule's docstring for why no validation or
+    status-linked inference happens here."""
+    try:
+        return await workflow_engine.set_schedule(
+            activity_id, req.model_dump(exclude_unset=True), actor=user,
+        )
     except ValueError as e:
         _raise_for(e)
 

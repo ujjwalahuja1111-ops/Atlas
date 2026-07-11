@@ -17,6 +17,7 @@ from . import intelligence_engine
 async def capture(
     *,
     site_id: str,
+    project_id: str,
     user: dict,
     text_input: Optional[str],
     audio_file: Optional[UploadFile],
@@ -24,11 +25,24 @@ async def capture(
     gps_json: Optional[str],
     client_created_at: Optional[str],
     app_version: Optional[str],
+    activity_id: Optional[str] = None,
 ) -> dict:
     """Persist a construction event and queue it for AI analysis.
 
     All raw assets are stored in raw_assets BEFORE the event document is created
     so the event holds final references — preserving immutability.
+
+    Sprint 6.1 — Foundation for AI Client Communication: `project_id` is
+    denormalized from the site at capture time (the caller already looks
+    the site up to validate it exists, so this costs no extra query) so a
+    future reporting engine can query events directly by project without
+    an extra site join. `activity_id` is a reserved, optional field — no
+    current capture UI sets it, but the column exists so a future capture
+    flow (or AI post-processing) can associate an event with a specific
+    Construction Workflow activity/stage without a schema change then.
+    Neither changes the capture pipeline itself — same inputs, same
+    <300ms return, same Golden Rule (event saved before the AI worker is
+    enqueued).
     """
     server_created_at = datetime.now(timezone.utc).isoformat()
     event_id = memory_engine._new_id("evt_")
@@ -74,6 +88,8 @@ async def capture(
     event_doc = {
         "id": event_id,
         "site_id": site_id,
+        "project_id": project_id,
+        "activity_id": activity_id,
         "user_id": user["id"],
         "user_name": user["name"],
         "kind": kind,

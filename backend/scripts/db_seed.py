@@ -220,7 +220,7 @@ async def seed_knowledge(admin: dict) -> dict:
 # ---------------------------------------------------------------------------
 # Per-project sample content (events, operational items)
 # ---------------------------------------------------------------------------
-async def _seed_event(site_id: str, user: dict, text: str, kind: str, days_ago: int,
+async def _seed_event(site_id: str, project_id: str, user: dict, text: str, kind: str, days_ago: int,
                       photo: bool = False) -> dict:
     """Directly builds the same event shape reality_engine.capture() does —
     capture() itself expects FastAPI UploadFile objects (it's the HTTP-layer
@@ -236,6 +236,8 @@ async def _seed_event(site_id: str, user: dict, text: str, kind: str, days_ago: 
     doc = {
         "id": event_id,
         "site_id": site_id,
+        "project_id": project_id,
+        "activity_id": None,
         "user_id": user["id"],
         "user_name": user["name"],
         "kind": kind,
@@ -265,11 +267,11 @@ async def seed_light_project_content(project: dict, site: dict, users: dict[str,
     supervisor = users["Site Supervisor 1"]
     pm = users["Project Manager 1"]
 
-    await _seed_event(site["id"], supervisor, "Foundation excavation started on the north wing.",
+    await _seed_event(site["id"], project["id"], supervisor, "Foundation excavation started on the north wing.",
                       kind="text", days_ago=6)
-    await _seed_event(site["id"], supervisor, "Excavation 70% complete, minor rock encountered on east side.",
+    await _seed_event(site["id"], project["id"], supervisor, "Excavation 70% complete, minor rock encountered on east side.",
                       kind="photo", days_ago=4, photo=True)
-    await _seed_event(site["id"], supervisor, "Excavation complete, ready for shuttering.",
+    await _seed_event(site["id"], project["id"], supervisor, "Excavation complete, ready for shuttering.",
                       kind="text", days_ago=2)
 
     await operations_engine.create_item(
@@ -365,19 +367,19 @@ async def seed_demo_project_content(project: dict, site: dict, users: dict[str, 
     admin = users["Atlas Admin 1"]
 
     # --- Timeline: a realistic run of events, including photos ---
-    await _seed_event(site["id"], supervisor, "Site mobilization complete, boundary marked.",
+    await _seed_event(site["id"], project["id"], supervisor, "Site mobilization complete, boundary marked.",
                       kind="text", days_ago=14)
-    await _seed_event(site["id"], supervisor, "Excavation started.", kind="photo", days_ago=12, photo=True)
-    await _seed_event(site["id"], supervisor, "Excavation 60% complete.", kind="photo", days_ago=9, photo=True)
+    await _seed_event(site["id"], project["id"], supervisor, "Excavation started.", kind="photo", days_ago=12, photo=True)
+    await _seed_event(site["id"], project["id"], supervisor, "Excavation 60% complete.", kind="photo", days_ago=9, photo=True)
     voice_note_event = await _seed_event(
-        site["id"], supervisor,
+        site["id"], project["id"], supervisor,
         "Voice note: Foundation 60 percent complete, need full material takeoff for next pour, "
         "also flagging a safety issue on the east excavation edge.",
         kind="voice", days_ago=7,
     )
-    await _seed_event(site["id"], pm, "Progress update: on schedule, client walkthrough planned for next week.",
+    await _seed_event(site["id"], project["id"], pm, "Progress update: on schedule, client walkthrough planned for next week.",
                       kind="text", days_ago=5)
-    await _seed_event(site["id"], supervisor, "Shuttering work started on north wing.",
+    await _seed_event(site["id"], project["id"], supervisor, "Shuttering work started on north wing.",
                       kind="photo", days_ago=3, photo=True)
 
     # --- AI Analysis + Proposals — the real production code path, fed a

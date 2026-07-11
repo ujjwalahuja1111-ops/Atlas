@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator, Modal, TextInput, Alert } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, Modal, TextInput, Alert, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -66,54 +66,62 @@ export default function ProfileScreen() {
         <Text style={styles.title}>PROFILE</Text>
       </View>
 
-      <View style={styles.card}>
-        <View style={styles.avatar}>
-          <Ionicons name="person" size={56} color={theme.color.onBrand} />
+      {/* Sprint 6.1 — mobile scrolling fix: the admin workspace's extra nav
+          buttons (Knowledge/Users/System Info) can push total content taller
+          than the viewport on real devices, and this screen previously had
+          no ScrollView at all — Logout (and anything below the fold) was
+          simply unreachable. Wrapping the body guarantees every control
+          stays reachable regardless of content height or screen size. */}
+      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+        <View style={styles.card}>
+          <View style={styles.avatar}>
+            <Ionicons name="person" size={56} color={theme.color.onBrand} />
+          </View>
+          <View style={styles.nameRow}>
+            <Text style={styles.name}>{user.name}</Text>
+            <Pressable testID="edit-name-button" onPress={() => setEditingName(user.name)} style={styles.editNameBtn}>
+              <Ionicons name="pencil" size={16} color={theme.color.brand} />
+            </Pressable>
+          </View>
+          <Text style={styles.phone}>{user.phone}</Text>
+          <View style={styles.roleTag}>
+            <Ionicons name="shield-checkmark" size={16} color={theme.color.onBrand} />
+            <Text style={styles.roleText}>{VIEW_ROLE_LABEL[viewRole]}</Text>
+          </View>
         </View>
-        <View style={styles.nameRow}>
-          <Text style={styles.name}>{user.name}</Text>
-          <Pressable testID="edit-name-button" onPress={() => setEditingName(user.name)} style={styles.editNameBtn}>
-            <Ionicons name="pencil" size={16} color={theme.color.brand} />
-          </Pressable>
+
+        <View style={styles.info}>
+          <Row icon="business" label="Workspace" value={VIEW_ROLE_LABEL[viewRole]} />
+          <Row icon="key" label="Backend role" value={ROLE_LABEL[user.role] || user.role} />
+          <Row icon="globe" label="Voice languages" value="HI · PA · EN" />
+          <Row icon="time" label="Member since" value={new Date(user.created_at).toLocaleDateString()} />
         </View>
-        <Text style={styles.phone}>{user.phone}</Text>
-        <View style={styles.roleTag}>
-          <Ionicons name="shield-checkmark" size={16} color={theme.color.onBrand} />
-          <Text style={styles.roleText}>{VIEW_ROLE_LABEL[viewRole]}</Text>
-        </View>
-      </View>
 
-      <View style={styles.info}>
-        <Row icon="business" label="Workspace" value={VIEW_ROLE_LABEL[viewRole]} />
-        <Row icon="key" label="Backend role" value={ROLE_LABEL[user.role] || user.role} />
-        <Row icon="globe" label="Voice languages" value="HI · PA · EN" />
-        <Row icon="time" label="Member since" value={new Date(user.created_at).toLocaleDateString()} />
-      </View>
+        {viewRole === 'admin' && (
+          <>
+            <Pressable testID="open-knowledge" onPress={() => router.push('/knowledge')} style={styles.knowledgeBtn}>
+              <Ionicons name="library-outline" size={22} color={theme.color.brand} />
+              <Text style={styles.knowledgeText}>CONSTRUCTION KNOWLEDGE</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            </Pressable>
+            <Pressable testID="open-user-management" onPress={() => router.push('/users')} style={styles.knowledgeBtn}>
+              <Ionicons name="people-outline" size={22} color={theme.color.brand} />
+              <Text style={styles.knowledgeText}>USER MANAGEMENT</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            </Pressable>
+            <Pressable testID="open-system-info" onPress={() => router.push('/system')} style={styles.knowledgeBtn}>
+              <Ionicons name="hardware-chip-outline" size={22} color={theme.color.brand} />
+              <Text style={styles.knowledgeText}>SYSTEM INFORMATION</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            </Pressable>
+          </>
+        )}
 
-      {viewRole === 'admin' && (
-        <>
-          <Pressable testID="open-knowledge" onPress={() => router.push('/knowledge')} style={styles.knowledgeBtn}>
-            <Ionicons name="library-outline" size={22} color={theme.color.brand} />
-            <Text style={styles.knowledgeText}>CONSTRUCTION KNOWLEDGE</Text>
-            <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
-          </Pressable>
-          <Pressable testID="open-user-management" onPress={() => router.push('/users')} style={styles.knowledgeBtn}>
-            <Ionicons name="people-outline" size={22} color={theme.color.brand} />
-            <Text style={styles.knowledgeText}>USER MANAGEMENT</Text>
-            <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
-          </Pressable>
-          <Pressable testID="open-system-info" onPress={() => router.push('/system')} style={styles.knowledgeBtn}>
-            <Ionicons name="hardware-chip-outline" size={22} color={theme.color.brand} />
-            <Text style={styles.knowledgeText}>SYSTEM INFORMATION</Text>
-            <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
-          </Pressable>
-        </>
-      )}
-
-      <Pressable testID="logout-button" onPress={logout} style={styles.logoutBtn}>
-        <Ionicons name="log-out-outline" size={28} color={theme.color.error} />
-        <Text style={styles.logoutText}>LOG OUT</Text>
-      </Pressable>
+        <Pressable testID="logout-button" onPress={logout} style={styles.logoutBtn}>
+          <Ionicons name="log-out-outline" size={28} color={theme.color.error} />
+          <Text style={styles.logoutText}>LOG OUT</Text>
+        </Pressable>
+      </ScrollView>
 
       <Modal visible={editingName !== null} animationType="slide" transparent onRequestClose={() => setEditingName(null)}>
         <View style={styles.modalBack}>
@@ -192,11 +200,12 @@ const styles = StyleSheet.create({
   },
   knowledgeText: { flex: 1, color: theme.color.text, fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
   logoutBtn: {
-    marginTop: 'auto', marginHorizontal: theme.spacing.md, marginBottom: theme.spacing.lg,
+    marginTop: theme.spacing.lg, marginHorizontal: theme.spacing.md, marginBottom: theme.spacing.lg,
     height: 72, borderRadius: theme.radius.md, borderWidth: 2, borderColor: theme.color.error,
     backgroundColor: theme.color.surface2, alignItems: 'center', justifyContent: 'center',
     flexDirection: 'row', gap: theme.spacing.sm,
   },
+  scrollContent: { flexGrow: 1, paddingBottom: theme.spacing.lg },
   logoutText: { color: theme.color.error, fontSize: 18, fontWeight: '900', letterSpacing: 2 },
   modalBack: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
   modal: { backgroundColor: theme.color.surface, borderTopLeftRadius: 18, borderTopRightRadius: 18,

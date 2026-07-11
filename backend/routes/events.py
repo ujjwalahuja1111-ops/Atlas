@@ -21,6 +21,11 @@ async def create_event(
     gps: Optional[str] = Form(None),
     client_created_at: Optional[str] = Form(None),
     app_version: Optional[str] = Form(None),
+    # Sprint 6.1 — reserved, optional. No current capture UI sets this;
+    # the field exists so a future capture flow (or AI post-processing)
+    # can associate an event with a specific Construction Workflow
+    # activity without a schema change then.
+    activity_id: Optional[str] = Form(None),
     audio: Optional[UploadFile] = File(None),
     photos: List[UploadFile] = File(default_factory=list),
     user: dict = Depends(get_current_user),
@@ -35,6 +40,7 @@ async def create_event(
 
     event = await reality_engine.capture(
         site_id=site_id,
+        project_id=site["project_id"],
         user=user,
         text_input=text,
         audio_file=audio,
@@ -42,6 +48,7 @@ async def create_event(
         gps_json=gps,
         client_created_at=client_created_at,
         app_version=app_version,
+        activity_id=activity_id,
     )
     return event
 

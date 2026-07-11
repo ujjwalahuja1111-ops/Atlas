@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { apiListKnowledgeItems } from '@/src/knowledge_api';
-import { apiGetWorkflow, apiSetWorkflowActivityStatus, type WorkflowActivity, type WorkflowStatus } from '@/src/workflow_api';
+import {
+  apiGetWorkflow, apiSetWorkflowActivityStatus, apiSetWorkflowActivitySchedule,
+  type WorkflowActivity, type WorkflowStatus, type WorkflowScheduleInput,
+} from '@/src/workflow_api';
 
 const STATUS_ORDER: WorkflowStatus[] = ['not_started', 'ready', 'in_progress', 'blocked', 'completed'];
 
@@ -32,6 +35,11 @@ export default function WorkflowViewer() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  // Sprint 6.1 — Planned/Actual Start/Finish. Collapsed by default per
+  // activity (minimal footprint on the existing simple list); draft
+  // values are edited locally and saved as a single call.
+  const [expandedSchedule, setExpandedSchedule] = useState<string | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState<WorkflowScheduleInput>({});
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -61,6 +69,30 @@ export default function WorkflowViewer() {
       await load();
     } catch (e: any) {
       Alert.alert('Could not update status', String(e?.message || e));
+    } finally { setBusyId(null); }
+  };
+
+  // Sprint 6.1 — Planned/Actual Start/Finish
+  const toggleSchedule = (activity: WorkflowActivity) => {
+    if (expandedSchedule === activity.id) {
+      setExpandedSchedule(null);
+      return;
+    }
+    setExpandedSchedule(activity.id);
+    setScheduleDraft({
+      planned_start: activity.planned_start, planned_finish: activity.planned_finish,
+      actual_start: activity.actual_start, actual_finish: activity.actual_finish,
+    });
+  };
+
+  const saveSchedule = async (activity: WorkflowActivity) => {
+    setBusyId(activity.id);
+    try {
+      await apiSetWorkflowActivitySchedule(activity.id, scheduleDraft);
+      setExpandedSchedule(null);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not save schedule', String(e?.message || e));
     } finally { setBusyId(null); }
   };
 
@@ -141,6 +173,65 @@ export default function WorkflowViewer() {
                     </View>
                   )}
 
+                  {/* Sprint 6.1 — Planned/Actual Start/Finish */}
+                  <Pressable testID={`workflow-schedule-toggle-${a.id}`} onPress={() => toggleSchedule(a)}
+                    style={styles.scheduleToggle}>
+                    <Ionicons name="calendar-outline" size={14} color={theme.color.textDim} />
+                    <Text style={styles.scheduleToggleText} numberOfLines={1}>
+                      {(a.planned_start || a.planned_finish || a.actual_start || a.actual_finish)
+                        ? `Planned ${a.planned_start || '—'} → ${a.planned_finish || '—'} · Actual ${a.actual_start || '—'} → ${a.actual_finish || '—'}`
+                        : 'No schedule set — tap to add planned/actual dates'}
+                    </Text>
+                    <Ionicons name={expandedSchedule === a.id ? 'chevron-up' : 'chevron-down'} size={14} color={theme.color.textDim} />
+                  </Pressable>
+
+                  {expandedSchedule === a.id && (
+                    <View style={styles.scheduleBox}>
+                      <View style={styles.scheduleRow}>
+                        <View style={styles.scheduleField}>
+                          <Text style={styles.scheduleLabel}>PLANNED START</Text>
+                          <TextInput testID={`schedule-planned-start-${a.id}`}
+                            value={scheduleDraft.planned_start || ''}
+                            onChangeText={(t) => setScheduleDraft((d) => ({ ...d, planned_start: t || null }))}
+                            placeholder="YYYY-MM-DD" placeholderTextColor={theme.color.textDim}
+                            style={styles.scheduleInput} />
+                        </View>
+                        <View style={styles.scheduleField}>
+                          <Text style={styles.scheduleLabel}>PLANNED FINISH</Text>
+                          <TextInput testID={`schedule-planned-finish-${a.id}`}
+                            value={scheduleDraft.planned_finish || ''}
+                            onChangeText={(t) => setScheduleDraft((d) => ({ ...d, planned_finish: t || null }))}
+                            placeholder="YYYY-MM-DD" placeholderTextColor={theme.color.textDim}
+                            style={styles.scheduleInput} />
+                        </View>
+                      </View>
+                      <View style={styles.scheduleRow}>
+                        <View style={styles.scheduleField}>
+                          <Text style={styles.scheduleLabel}>ACTUAL START</Text>
+                          <TextInput testID={`schedule-actual-start-${a.id}`}
+                            value={scheduleDraft.actual_start || ''}
+                            onChangeText={(t) => setScheduleDraft((d) => ({ ...d, actual_start: t || null }))}
+                            placeholder="YYYY-MM-DD" placeholderTextColor={theme.color.textDim}
+                            style={styles.scheduleInput} />
+                        </View>
+                        <View style={styles.scheduleField}>
+                          <Text style={styles.scheduleLabel}>ACTUAL FINISH</Text>
+                          <TextInput testID={`schedule-actual-finish-${a.id}`}
+                            value={scheduleDraft.actual_finish || ''}
+                            onChangeText={(t) => setScheduleDraft((d) => ({ ...d, actual_finish: t || null }))}
+                            placeholder="YYYY-MM-DD" placeholderTextColor={theme.color.textDim}
+                            style={styles.scheduleInput} />
+                        </View>
+                      </View>
+                      <Pressable testID={`schedule-save-${a.id}`} onPress={() => saveSchedule(a)}
+                        disabled={busyId === a.id} style={styles.scheduleSaveBtn}>
+                        {busyId === a.id ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : (
+                          <Text style={styles.scheduleSaveBtnText}>SAVE SCHEDULE</Text>
+                        )}
+                      </Pressable>
+                    </View>
+                  )}
+
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.statusChipsRow}>
                     {STATUS_ORDER.map((s) => {
                       const active = a.status === s;
@@ -194,6 +285,19 @@ const styles = StyleSheet.create({
   statusBadgeText: { fontSize: 10, fontWeight: '900', letterSpacing: 0.5 },
   depsRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 6 },
   depsText: { flex: 1, color: theme.color.textDim, fontSize: 11 },
+  scheduleToggle: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 4 },
+  scheduleToggleText: { flex: 1, color: theme.color.textDim, fontSize: 11 },
+  scheduleBox: { backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm,
+                padding: theme.spacing.sm, gap: theme.spacing.sm },
+  scheduleRow: { flexDirection: 'row', gap: theme.spacing.sm },
+  scheduleField: { flex: 1, gap: 4 },
+  scheduleLabel: { color: theme.color.textDim, fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
+  scheduleInput: { color: theme.color.text, backgroundColor: theme.color.surface2,
+                  borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.color.border,
+                  paddingHorizontal: 8, paddingVertical: 6, fontSize: 12 },
+  scheduleSaveBtn: { height: 36, borderRadius: theme.radius.sm, backgroundColor: theme.color.brand,
+                    alignItems: 'center', justifyContent: 'center' },
+  scheduleSaveBtnText: { color: theme.color.onBrand, fontSize: 11, fontWeight: '900', letterSpacing: 1 },
   statusChipsRow: { flexGrow: 0, marginTop: 4 },
   statusChip: { paddingHorizontal: 10, paddingVertical: 6, borderRadius: theme.radius.pill,
                backgroundColor: theme.color.surface3, borderWidth: 1, borderColor: theme.color.border, marginRight: 6 },

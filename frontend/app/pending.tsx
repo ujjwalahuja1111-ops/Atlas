@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, Pressable, ActivityIndicator, ScrollView } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
@@ -53,7 +53,7 @@ export default function PendingApprovalScreen() {
 
   return (
     <SafeAreaView style={styles.safe}>
-      <View style={styles.center}>
+      <ScrollView contentContainerStyle={styles.center} showsVerticalScrollIndicator={false}>
         <View style={styles.badge}>
           <Ionicons name={status === 'rejected' ? 'close-circle' : 'time'} size={48}
             color={status === 'rejected' ? theme.color.error : theme.color.brand} />
@@ -86,7 +86,7 @@ export default function PendingApprovalScreen() {
           <Ionicons name="log-out-outline" size={20} color={theme.color.error} />
           <Text style={styles.logoutText}>LOG OUT</Text>
         </Pressable>
-      </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }

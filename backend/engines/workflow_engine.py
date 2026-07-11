@@ -163,6 +163,16 @@ async def generate_workflow(project_id: str, template_id: str, *, actor: dict) -
             "order": order,
             "status": "not_started",   # provisional; corrected in the second pass below
             "depends_on_activity_ids": [],  # filled in the second pass below
+            # Sprint 6.1 — execution targets. Pure data storage, no
+            # validation or inference against status transitions (no
+            # auto-populating actual_start when status becomes
+            # in_progress, etc.) — deliberately deferred, this is the
+            # foundation for future delay detection / schedule variance
+            # reporting, not that reporting itself.
+            "planned_start": None,
+            "planned_finish": None,
+            "actual_start": None,
+            "actual_finish": None,
             "created_at": now,
             "updated_at": now,
             "status_updated_by_user_id": actor["id"],
@@ -224,6 +234,36 @@ def _dependencies_satisfied(activity: dict, siblings_by_id: dict[str, dict]) -> 
         siblings_by_id.get(dep_id, {}).get("status") == "completed"
         for dep_id in activity.get("depends_on_activity_ids", [])
     )
+
+
+SCHEDULE_FIELDS = {"planned_start", "planned_finish", "actual_start", "actual_finish"}
+
+
+async def set_schedule(activity_id: str, updates: dict, *, actor: dict) -> dict:
+    """Sprint 6.1 — store execution targets (Planned/Actual Start/Finish)
+    on a workflow activity. Deliberately pure data storage: no validation
+    against status, no cross-field validation (e.g. finish-after-start),
+    no auto-population from status transitions. This is the foundation
+    for future delay detection / schedule variance reporting — that
+    analytics layer is explicitly not built here.
+
+    `updates` may contain any subset of SCHEDULE_FIELDS; unrecognized
+    keys are ignored (same filtering convention as
+    knowledge_engine.update_item's UPDATABLE_FIELDS). A value of None
+    clears that field.
+    """
+    activity = await db.workflow_activities.find_one({"id": activity_id}, {"_id": 0})
+    if not activity:
+        raise WorkflowNotFoundError(f"Workflow activity '{activity_id}' not found")
+
+    await _assert_project_visible(activity["project_id"], actor)
+
+    upd = {k: v for k, v in updates.items() if k in SCHEDULE_FIELDS}
+    if not upd:
+        return activity
+    upd["updated_at"] = _now()
+    await db.workflow_activities.update_one({"id": activity_id}, {"$set": upd})
+    return await get_workflow_activity(activity_id)
 
 
 async def set_status(activity_id: str, new_status: str, *, actor: dict) -> dict:

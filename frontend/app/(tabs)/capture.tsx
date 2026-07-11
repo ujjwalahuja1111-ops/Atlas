@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import {
-  View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView,
+  View, Text, Pressable, StyleSheet, ActivityIndicator, ScrollView, TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -34,6 +34,12 @@ export default function CaptureScreen() {
   const [gps, setGps] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
   const [gpsAsked, setGpsAsked] = useState(false);
   const [viewRole, setViewRole] = useState<ViewRole | null>(null);
+  // Sprint 6.1 — manual "Add as Text" option, alongside the existing
+  // voice/photo capture. Creates the exact same event structure (see
+  // apiCreateEvent's `text` field, already supported by POST /api/events
+  // independent of audio/photos — no backend change needed here).
+  const [showTextInput, setShowTextInput] = useState(false);
+  const [textNote, setTextNote] = useState('');
   const timerRef = useRef<any>(null);
 
   useEffect(() => { getViewRole().then(setViewRole); }, []);
@@ -152,6 +158,26 @@ export default function CaptureScreen() {
     } finally { setSubmitting(false); }
   };
 
+  // Sprint 6.1 — manual text capture. Mirrors photoOnlySubmit exactly:
+  // same apiCreateEvent call (just a different field populated), same
+  // success handling, same navigation. Creates the identical event
+  // structure a voice note does wherever text applies (kind, site_id,
+  // ai_status lifecycle) — nothing about the backend pipeline changes.
+  const textOnlySubmit = async () => {
+    if (!siteId || !textNote.trim()) return;
+    setSubmitting(true);
+    setStatus('Saving…');
+    try {
+      await apiCreateEvent({ siteId, text: textNote.trim(), gps });
+      setStatus('Saved!');
+      setTextNote('');
+      setShowTextInput(false);
+      setTimeout(() => { setStatus(''); router.push('/(tabs)'); }, 500);
+    } catch (e: any) {
+      setStatus(e?.message || 'Save failed');
+    } finally { setSubmitting(false); }
+  };
+
   const mins = String(Math.floor(elapsed / 60)).padStart(2, '0');
   const secs = String(elapsed % 60).padStart(2, '0');
   const activeSite = sites.find((s) => s.id === siteId);
@@ -262,6 +288,12 @@ export default function CaptureScreen() {
             <Ionicons name="images" size={32} color={theme.color.text} />
             <Text style={styles.secondaryLabel}>GALLERY</Text>
           </Pressable>
+          <Pressable testID="text-capture-button" onPress={() => setShowTextInput((v) => !v)}
+            disabled={submitting || recording}
+            style={[styles.secondaryBtn, showTextInput && styles.secondaryBtnActive, (submitting || recording) && { opacity: 0.4 }]}>
+            <Ionicons name="create-outline" size={32} color={showTextInput ? theme.color.onBrand : theme.color.text} />
+            <Text style={[styles.secondaryLabel, showTextInput && { color: theme.color.onBrand }]}>TEXT</Text>
+          </Pressable>
           {photoUris.length > 0 && !recording ? (
             <Pressable testID="photo-only-send" onPress={photoOnlySubmit}
               disabled={submitting}
@@ -271,6 +303,31 @@ export default function CaptureScreen() {
             </Pressable>
           ) : null}
         </View>
+
+        {showTextInput && (
+          <View style={styles.textCaptureBox}>
+            <TextInput
+              testID="text-capture-input"
+              value={textNote}
+              onChangeText={setTextNote}
+              placeholder="Add a site note as text…"
+              placeholderTextColor={theme.color.textDim}
+              style={styles.textCaptureInput}
+              multiline
+              autoFocus
+            />
+            <Pressable testID="text-capture-send" onPress={textOnlySubmit}
+              disabled={submitting || !textNote.trim()}
+              style={[styles.textCaptureSend, (submitting || !textNote.trim()) && { opacity: 0.4 }]}>
+              {submitting ? <ActivityIndicator color={theme.color.onBrand} size="small" /> : (
+                <>
+                  <Ionicons name="send" size={18} color={theme.color.onBrand} />
+                  <Text style={styles.textCaptureSendLabel}>ADD AS TEXT</Text>
+                </>
+              )}
+            </Pressable>
+          </View>
+        )}
 
         {gps ? (
           <View style={styles.gpsTag}>
@@ -315,7 +372,20 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center', gap: 6, borderWidth: 1, borderColor: theme.color.border,
   },
   secondarySend: { backgroundColor: theme.color.success, borderColor: theme.color.success },
+  secondaryBtnActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
   secondaryLabel: { color: theme.color.textMuted, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
+  textCaptureBox: {
+    width: '100%', backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
+    borderWidth: 1, borderColor: theme.color.border, padding: theme.spacing.md, gap: theme.spacing.sm,
+  },
+  textCaptureInput: {
+    minHeight: 80, color: theme.color.text, fontSize: 15, textAlignVertical: 'top',
+  },
+  textCaptureSend: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    height: 48, borderRadius: theme.radius.sm, backgroundColor: theme.color.brand,
+  },
+  textCaptureSendLabel: { color: theme.color.onBrand, fontSize: 13, fontWeight: '900', letterSpacing: 1 },
   photoStrip: { flexDirection: 'row', gap: 8, flexWrap: 'wrap', justifyContent: 'center' },
   photoPreviewWrap: { width: 100, height: 80, borderRadius: theme.radius.sm, overflow: 'hidden', position: 'relative' },
   photoPreview: { width: '100%', height: '100%' },
