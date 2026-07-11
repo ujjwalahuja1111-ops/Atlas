@@ -16,12 +16,25 @@ def _clean_phone(raw: str) -> str:
     Strips spaces/dashes/parens, requires an optional leading '+' followed
     by 6-15 digits. Deliberately lenient (no country-specific rules) since
     phone is a free-text identity key across regions, not a login secret.
+
+    Sprint 6.2 Founder Verification fix: this used to VALIDATE against a
+    fully-stripped `digits` string (spaces/dashes/parens AND a leading '+'
+    all removed) but RETURN a less-stripped value that kept the '+' if the
+    caller typed one. Two logins with the exact same phone number - one
+    typed as "9876543210", the other as "+919876543210" - normalized to
+    two DIFFERENT stored strings, so the second login silently created a
+    brand-new account instead of matching the existing one. From the
+    outside this looked exactly like "logging in overwrote my identity" -
+    it didn't; a second account was created and the person was looking at
+    it instead of their real one. Returning the same fully-stripped
+    `digits` value used for validation makes every formatting variant of
+    the same digit sequence collapse to one canonical stored key.
     """
     phone = raw.strip()
     digits = phone.lstrip("+").replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
     if not digits.isdigit() or not (6 <= len(digits) <= 15):
         raise HTTPException(status_code=400, detail="Invalid phone number")
-    return phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
+    return digits
 
 
 class LoginRequest(BaseModel):

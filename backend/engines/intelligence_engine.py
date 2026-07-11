@@ -22,6 +22,7 @@ from typing import Optional
 from openai import OpenAI
 from core.llm_compat import LlmChat, UserMessage, ImageContent
 from . import memory_engine
+from . import operations_engine
 from core.settings import EMERGENT_LLM_KEY, EMERGENT_BASE_URL
 
 logger = logging.getLogger(__name__)
@@ -214,6 +215,25 @@ async def _process(event_id: str) -> None:
             await memory_engine.set_event_ai_status(event_id, "failed", analysis_doc["id"])
         except Exception:
             await memory_engine.set_event_ai_status(event_id, "failed")
+
+        # Sprint 6.2 Founder Verification fix — the original patch only
+        # created a fallback operational record when the worker was never
+        # running AT ALL (checked once, at capture time). A configured
+        # but broken AI key (expired, wrong format, network-blocked, rate
+        # limited, ...) starts the worker fine, so that check passed, but
+        # every event routed through it would still fail here and be
+        # stranded exactly the same way — "AI unavailable" has to cover
+        # both cases, or a broken-but-configured key produces the exact
+        # symptom the fix was supposed to eliminate. Reuses the same
+        # idempotent helper as the capture-time path — see its docstring.
+        if event.get("text_input"):
+            try:
+                actor = {"id": event["user_id"], "name": event["user_name"]}
+                await operations_engine.create_fallback_note_item(
+                    actor=actor, site_id=event["site_id"], text=event["text_input"], event_id=event_id,
+                )
+            except Exception:
+                logger.exception(f"worker: fallback operational item creation failed for {event_id}")
 
 
 async def _worker_loop() -> None:

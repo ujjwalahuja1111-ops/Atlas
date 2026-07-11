@@ -14,12 +14,6 @@ from . import memory_engine
 from . import intelligence_engine
 from . import operations_engine
 
-# Sprint 6.2 — Manual Text Capture Processing. If a threshold this short
-# is met, truncate for the operational item's title (kept readable in a
-# list row); the full text always goes into description, nothing is ever
-# lost.
-_FALLBACK_TITLE_MAX = 60
-
 
 async def capture(
     *,
@@ -115,32 +109,19 @@ async def capture(
     await memory_engine.insert_event(event_doc)
 
     # Sprint 6.2 — Manual Text Capture Processing. Operational items are
-    # normally only created via AI proposal acceptance (a human reviews
-    # and accepts a machine GUESS). A manually-typed text observation is
-    # not a guess — the human already authored it directly — so when AI
-    # is unavailable (and would otherwise never produce a proposal at
-    # all, stranding the observation with ai_status stuck at "pending"
+    # normally only created via AI proposal acceptance (a human reviewing
+    # a machine GUESS). A manually-typed text observation is not a guess
+    # — the human already authored it directly — so when AI is not
+    # running at all (and would otherwise never produce a proposal,
+    # stranding the observation with ai_status stuck at "pending"
     # forever) this creates a real, actionable operational record
-    # straight away, reusing operations_engine.create_item() completely
-    # unchanged. When AI IS available, behaviour is byte-for-byte
-    # unchanged — this fallback only runs in its absence, keeping "AI
-    # enhancement" strictly optional rather than required to get any
-    # operational record at all. Photo/voice-only captures are not
-    # covered here: there is no text to build a readable record from
-    # without AI, so they remain events only, same as before.
+    # straight away. See operations_engine.create_fallback_note_item's
+    # docstring for the OTHER half of this fix — the same fallback also
+    # fires from intelligence_engine's AI-failure path, covering a
+    # configured-but-broken key, not just "no key at all."
     if has_text and not intelligence_engine.is_worker_running():
-        fallback_text = text_input.strip()
-        title = fallback_text if len(fallback_text) <= _FALLBACK_TITLE_MAX else fallback_text[:_FALLBACK_TITLE_MAX - 1] + "…"
-        await operations_engine.create_item(
-            actor=user, site_id=site_id, category="general",
-            title=title,
-            description=(
-                f"{fallback_text}\n\n"
-                "(Automatically created from a captured text observation — "
-                "AI processing was unavailable at capture time.)"
-            ),
-            origin_type="manual",
-            inherited_evidence_event_id=event_id,
+        await operations_engine.create_fallback_note_item(
+            actor=user, site_id=site_id, text=text_input, event_id=event_id,
         )
 
     # Fire-and-forget enqueue. Never await processing here.

@@ -299,6 +299,53 @@ async def create_item(*, actor: dict, site_id: str,
     return doc
 
 
+_FALLBACK_TITLE_MAX = 60
+
+
+async def create_fallback_note_item(*, actor: dict, site_id: str, text: str, event_id: str) -> Optional[dict]:
+    """Sprint 6.2 Founder Verification fix — Manual Text Capture Processing.
+
+    Shared by BOTH places a manually-typed observation can end up with no
+    AI ever having produced a proposal for it:
+      1. reality_engine.capture() — AI was never running at all (no API
+         key configured), checked once at capture time.
+      2. intelligence_engine._process()'s except block — AI WAS running
+         but genuinely failed for this event (bad/expired key, network
+         error, rate limit, etc.) — a gap the original Sprint 6.2 patch
+         missed entirely: it only ever checked "is the worker task alive"
+         at capture time, never "did processing actually succeed."
+         "AI unavailable" has to mean both, or a broken-but-configured
+         key produces the exact same stranded-observation symptom the
+         fix was supposed to eliminate.
+
+    Idempotent: if a fallback (or any) item already traces back to this
+    event via inherited_evidence_event_id, does nothing — so an event
+    can never end up with two fallback records even if, hypothetically,
+    both call sites above were ever reached for the same event.
+    """
+    existing = await db.operational_items.find_one(
+        {"inherited_evidence_event_id": event_id}, {"_id": 0, "id": 1},
+    )
+    if existing:
+        return None
+
+    fallback_text = text.strip()
+    if not fallback_text:
+        return None
+    title = fallback_text if len(fallback_text) <= _FALLBACK_TITLE_MAX else fallback_text[:_FALLBACK_TITLE_MAX - 1] + "…"
+    return await create_item(
+        actor=actor, site_id=site_id, category="general",
+        title=title,
+        description=(
+            f"{fallback_text}\n\n"
+            "(Automatically created from a captured text observation — "
+            "AI processing was unavailable at capture time.)"
+        ),
+        origin_type="manual",
+        inherited_evidence_event_id=event_id,
+    )
+
+
 async def transition_status(*, item_id: str, to_status: str, actor: dict,
                             note: Optional[str] = None) -> dict:
     item = await get_item(item_id)

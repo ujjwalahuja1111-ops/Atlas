@@ -220,6 +220,17 @@ export async function apiUpdateMe(name: string): Promise<User> {
   return r.json();
 }
 
+/** Sprint 6.2 Founder Verification fix — fetches the CURRENT, authoritative
+ * user record from the server. Needed because loadAuth()/getViewRole() only
+ * ever read a value cached once at login time (see (tabs)/_layout.tsx) —
+ * an admin-assigned workspace/role change was invisible on an already-
+ * logged-in device until that device explicitly logged out and back in. */
+export async function apiGetMe(): Promise<User> {
+  const r = await apiFetch(`${BACKEND}/api/me`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function apiListProjects(includeArchived = false): Promise<Project[]> {
   const qs = includeArchived ? '?include_archived=true' : '';
   const r = await apiFetch(`${BACKEND}/api/projects${qs}`, { headers: await authHeaders() });
