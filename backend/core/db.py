@@ -36,6 +36,10 @@ async def ensure_indexes() -> None:
     # Sprint 5 — Construction Workflow Engine
     await db.workflow_activities.create_index([("project_id", 1), ("order", 1)])
     await db.workflow_activities.create_index("knowledge_activity_id")
+    # Innovation Sprint 01 — Construction Reasoning Engine
+    await db.reasoning_insights.create_index([("project_id", 1), ("status", 1), ("created_at", -1)])
+    await db.reasoning_insights.create_index([("project_id", 1), ("dedupe_key", 1), ("status", 1)])
+    await db.reasoning_runs.create_index([("project_id", 1), ("started_at", -1)])
 
 
 async def close_client() -> None:

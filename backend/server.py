@@ -28,6 +28,7 @@ from routes import knowledge as knowledge_routes
 from routes import admin_users as admin_users_routes
 from routes import admin_system as admin_system_routes
 from routes import workflow as workflow_routes
+from routes import reasoning as reasoning_routes
 
 
 logging.basicConfig(
@@ -79,6 +80,7 @@ app.include_router(knowledge_routes.router)
 app.include_router(admin_users_routes.router)
 app.include_router(admin_system_routes.router)
 app.include_router(workflow_routes.router)
+app.include_router(reasoning_routes.router)
 
 
 @app.get("/api/")
