@@ -34,11 +34,55 @@ def _no_mongo_id(obj, path="root"):
             _no_mongo_id(v, f"{path}[{i}]")
 
 
+# FAC-03 P0 fix: /api/auth/login no longer auto-creates an account for an
+# unrecognized phone number - that silent auto-create-on-login was the
+# confirmed root cause of the P0 "any well-formed but unregistered phone
+# number logs in successfully" bug. This test suite's bootstrap strategy
+# changes accordingly: _login() below first tries a plain login (the fast
+# path for an account it - or the target environment's seed script -
+# already created); only if that fails does it fall back to the REAL
+# account-creation flow (Sign Up -> admin approval -> role assignment ->
+# login), using the DX-7 seed script's known admin account as the root of
+# trust needed to approve a freshly self-registered account. This assumes
+# the target environment has been seeded (`python -m scripts.dev seed`) -
+# the same assumption this suite already made implicitly by requiring a
+# reachable EXPO_PUBLIC_BACKEND_URL in the first place.
+_SEEDED_ADMIN_PHONE = "9000000001"  # DX-7 seed script's "Atlas Admin 1"
+_seeded_admin_cache: dict = {}
+
+
+def _seeded_admin_headers():
+    if "headers" not in _seeded_admin_cache:
+        r = requests.post(f"{API}/auth/login",
+                          json={"phone": _SEEDED_ADMIN_PHONE, "name": "Atlas Admin 1", "role": "management"},
+                          timeout=20)
+        assert r.status_code == 200, (
+            "Seeded admin account not found - has the target environment been "
+            f"seeded? (python -m scripts.dev seed) {r.text}"
+        )
+        _seeded_admin_cache["headers"] = {"Authorization": f"Bearer {r.json()['token']}"}
+    return _seeded_admin_cache["headers"]
+
+
 def _login(role, phone, name):
     r = requests.post(f"{API}/auth/login",
                       json={"phone": phone, "name": name, "role": role}, timeout=20)
-    assert r.status_code == 200, r.text
-    b = r.json()
+    if r.status_code == 200:
+        b = r.json()
+        return b["user"], {"Authorization": f"Bearer {b['token']}"}
+
+    reg = requests.post(f"{API}/auth/register", json={"phone": phone, "name": name}, timeout=20)
+    assert reg.status_code == 200, reg.text
+    user_id = reg.json()["user"]["id"]
+    admin_headers = _seeded_admin_headers()
+    ar = requests.post(f"{API}/admin/users/{user_id}/approve", headers=admin_headers, timeout=20)
+    assert ar.status_code == 200, ar.text
+    rr = requests.post(f"{API}/admin/users/{user_id}/role", json={"role": role}, headers=admin_headers, timeout=20)
+    assert rr.status_code == 200, rr.text
+
+    r2 = requests.post(f"{API}/auth/login", json={"phone": phone, "name": name, "role": role}, timeout=20)
+    assert r2.status_code == 200, r2.text
+    b = r2.json()
     return b["user"], {"Authorization": f"Bearer {b['token']}"}
 
 

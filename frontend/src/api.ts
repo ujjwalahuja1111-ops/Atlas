@@ -182,7 +182,16 @@ export async function apiLogin(phone: string, name: string, role: Role) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ phone, name, role }),
   });
-  if (!r.ok) throw new Error('Login failed');
+  if (!r.ok) {
+    // FAC-03 P0 fix: login can now genuinely fail for a real, specific
+    // reason (unknown phone, pending/rejected account is unaffected here
+    // since login itself still succeeds for those - this covers unknown/
+    // invalid phone) - surface the backend's actual detail message
+    // instead of a generic "Login failed" so it's unambiguous why.
+    let detail = 'Login failed';
+    try { detail = (await r.json())?.detail || detail; } catch {}
+    throw new Error(detail);
+  }
   return (await r.json()) as { token: string; user: User };
 }
 

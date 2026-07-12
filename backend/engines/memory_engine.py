@@ -78,8 +78,24 @@ async def upsert_user(phone: str, name: str, role: str) -> dict:
     return await _insert(db.users, doc)
 
 
+async def get_user_by_phone(phone: str) -> Optional[dict]:
+    """FAC-03 P0 fix — pure, read-only lookup. Never creates, never
+    modifies. This is what /api/auth/login now uses instead of
+    upsert_user(): login must authenticate an EXISTING account only,
+    never conjure one into existence from an unrecognized phone number.
+    upsert_user() (above) remains exactly as it was — still used by the
+    internal dev seed script (scripts/db_seed.py), where "create on
+    first use" is the correct, intentional behaviour for a trusted,
+    non-public caller — just no longer reachable from the public login
+    endpoint.
+    """
+    return await db.users.find_one({"phone": phone}, {"_id": 0})
+
+
 # ---------------- users: Sprint 4.1 registration + admin management ----------------
-# `upsert_user` above is used by the existing /api/auth/login. As of
+# `upsert_user` above is used by the internal dev seed script only as of
+# FAC-03 (see get_user_by_phone's docstring for why /api/auth/login no
+# longer calls it). As of
 # Sprint 6.2 it makes no changes at all to an existing account — neither
 # `role` (admin-only via set_user_role(), Sprint 6) nor `name` (self-service
 # only via PATCH /api/me, Sprint 6.2) — see the docstrings on upsert_user

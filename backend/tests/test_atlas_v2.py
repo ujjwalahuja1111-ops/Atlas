@@ -37,12 +37,39 @@ def _recursive_no_underscore_id(obj, path="root"):
 
 
 # ------------- fixtures -------------
+# FAC-03 P0 fix: /api/auth/login no longer auto-creates an account for an
+# unrecognized phone number - see the identical note in the other test
+# files for the full rationale.
+_SEEDED_ADMIN_PHONE = "9000000001"  # DX-7 seed script's "Atlas Admin 1"
+_seeded_admin_cache: dict = {}
+
+
+def _seeded_admin_headers():
+    if "headers" not in _seeded_admin_cache:
+        r = requests.post(f"{API}/auth/login",
+                          json={"phone": _SEEDED_ADMIN_PHONE, "name": "Atlas Admin 1", "role": "management"},
+                          timeout=20)
+        assert r.status_code == 200, (
+            "Seeded admin account not found - has the target environment been "
+            f"seeded? (python -m scripts.dev seed) {r.text}"
+        )
+        _seeded_admin_cache["headers"] = {"Authorization": f"Bearer {r.json()['token']}"}
+    return _seeded_admin_cache["headers"]
+
+
 @pytest.fixture(scope="session")
 def auth():
     """Login the seed test user and return (token, user, headers)."""
-    r = requests.post(f"{API}/auth/login", json={
-        "phone": "9999988888", "name": "Test User", "role": "supervisor"
-    }, timeout=20)
+    phone, name, role = "9999988888", "Test User", "supervisor"
+    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": name, "role": role}, timeout=20)
+    if r.status_code != 200:
+        reg = requests.post(f"{API}/auth/register", json={"phone": phone, "name": name}, timeout=20)
+        assert reg.status_code == 200, reg.text
+        user_id = reg.json()["user"]["id"]
+        admin_headers = _seeded_admin_headers()
+        requests.post(f"{API}/admin/users/{user_id}/approve", headers=admin_headers, timeout=20)
+        requests.post(f"{API}/admin/users/{user_id}/role", json={"role": role}, headers=admin_headers, timeout=20)
+        r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": name, "role": role}, timeout=20)
     assert r.status_code == 200, r.text
     body = r.json()
     assert "token" in body and "user" in body

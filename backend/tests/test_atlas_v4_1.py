@@ -1,9 +1,7 @@
 """Project Atlas V4.1 — Sprint 4.1: Stabilization & QA Pass tests.
 
 Validates:
-  * Sign Up (/auth/register) creates a pending, unassigned account distinct
-    from /auth/login's upsert-on-first-use behaviour
-  * Existing /auth/login behaviour is completely unchanged (regression)
+  * Sign Up (/auth/register) creates a pending, unassigned account
   * Admin User Management: list pending, approve, reject, assign role,
     assign projects, activate/deactivate — all admin-gated
   * Deactivated accounts are hard-blocked at the auth layer (401)
@@ -13,6 +11,17 @@ Validates:
   * Knowledge Core stabilization fixes: 404 vs 400 vs 409 status codes,
     batched list enrichment still returns correct data
   * Basic phone format validation on both login and register
+
+FAC-03 P0 note: /auth/login's original "upsert-on-first-use" behaviour
+(auto-creating an account for any never-before-seen, well-formatted
+phone number) was removed entirely — it was the confirmed root cause of
+a real authentication bypass (any well-formed but unregistered phone
+logged in successfully as a new Site Supervisor). Login now ONLY
+authenticates an existing account; see test_atlas_fac03.py for the
+dedicated coverage of the corrected behaviour. This file's own tests
+were updated to bootstrap accounts via the real
+register->approve->login flow rather than relying on the removed
+shortcut — see this file's _login() helper.
 
 This file only covers what's new/changed in Sprint 4.1. See test_atlas_v4.py
 for full Construction Knowledge Core coverage, which remains valid —
@@ -28,11 +37,55 @@ BASE = (os.environ.get("EXPO_PUBLIC_BACKEND_URL") or
 API = f"{BASE}/api"
 
 
+# FAC-03 P0 fix: /api/auth/login no longer auto-creates an account for an
+# unrecognized phone number - that silent auto-create-on-login was the
+# confirmed root cause of the P0 "any well-formed but unregistered phone
+# number logs in successfully" bug. This test suite's bootstrap strategy
+# changes accordingly: _login() below first tries a plain login (the fast
+# path for an account it - or the target environment's seed script -
+# already created); only if that fails does it fall back to the REAL
+# account-creation flow (Sign Up -> admin approval -> role assignment ->
+# login), using the DX-7 seed script's known admin account as the root of
+# trust needed to approve a freshly self-registered account. This assumes
+# the target environment has been seeded (`python -m scripts.dev seed`) -
+# the same assumption this suite already made implicitly by requiring a
+# reachable EXPO_PUBLIC_BACKEND_URL in the first place.
+_SEEDED_ADMIN_PHONE = "9000000001"  # DX-7 seed script's "Atlas Admin 1"
+_seeded_admin_cache: dict = {}
+
+
+def _seeded_admin_headers():
+    if "headers" not in _seeded_admin_cache:
+        r = requests.post(f"{API}/auth/login",
+                          json={"phone": _SEEDED_ADMIN_PHONE, "name": "Atlas Admin 1", "role": "management"},
+                          timeout=20)
+        assert r.status_code == 200, (
+            "Seeded admin account not found - has the target environment been "
+            f"seeded? (python -m scripts.dev seed) {r.text}"
+        )
+        _seeded_admin_cache["headers"] = {"Authorization": f"Bearer {r.json()['token']}"}
+    return _seeded_admin_cache["headers"]
+
+
 def _login(role, phone, name):
     r = requests.post(f"{API}/auth/login",
                       json={"phone": phone, "name": name, "role": role}, timeout=20)
-    assert r.status_code == 200, r.text
-    b = r.json()
+    if r.status_code == 200:
+        b = r.json()
+        return b["user"], {"Authorization": f"Bearer {b['token']}"}
+
+    reg = requests.post(f"{API}/auth/register", json={"phone": phone, "name": name}, timeout=20)
+    assert reg.status_code == 200, reg.text
+    user_id = reg.json()["user"]["id"]
+    admin_headers = _seeded_admin_headers()
+    ar = requests.post(f"{API}/admin/users/{user_id}/approve", headers=admin_headers, timeout=20)
+    assert ar.status_code == 200, ar.text
+    rr = requests.post(f"{API}/admin/users/{user_id}/role", json={"role": role}, headers=admin_headers, timeout=20)
+    assert rr.status_code == 200, rr.text
+
+    r2 = requests.post(f"{API}/auth/login", json={"phone": phone, "name": name, "role": role}, timeout=20)
+    assert r2.status_code == 200, r2.text
+    b = r2.json()
     return b["user"], {"Authorization": f"Bearer {b['token']}"}
 
 
@@ -49,7 +102,7 @@ def admin():
 
 
 # --------------------------------------------------------------------------
-# Existing login behaviour unchanged (regression guard)
+# Existing login behaviour for an already-provisioned account (regression guard)
 # --------------------------------------------------------------------------
 def test_existing_login_unchanged(supervisor):
     assert supervisor["user"]["role"] == "supervisor"

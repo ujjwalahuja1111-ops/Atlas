@@ -37,10 +37,46 @@ def _no_mongo_id(obj, path="root"):
             _no_mongo_id(v, f"{path}[{i}]")
 
 
+# FAC-03 P0 fix: /api/auth/login no longer auto-creates an account for an
+# unrecognized phone number - see the identical note in the other test
+# files for the full rationale. This file's _login keeps its own
+# signature/return shape (positional defaults, 3-tuple return) since
+# other tests in this file destructure it that way.
+_SEEDED_ADMIN_PHONE = "9000000001"  # DX-7 seed script's "Atlas Admin 1"
+_seeded_admin_cache: dict = {}
+
+
+def _seeded_admin_headers():
+    if "headers" not in _seeded_admin_cache:
+        r = requests.post(f"{API}/auth/login",
+                          json={"phone": _SEEDED_ADMIN_PHONE, "name": "Atlas Admin 1", "role": "management"},
+                          timeout=20)
+        assert r.status_code == 200, (
+            "Seeded admin account not found - has the target environment been "
+            f"seeded? (python -m scripts.dev seed) {r.text}"
+        )
+        _seeded_admin_cache["headers"] = {"Authorization": f"Bearer {r.json()['token']}"}
+    return _seeded_admin_cache["headers"]
+
+
 def _login(role="supervisor", phone="9999988888", name="Test User"):
     r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": name, "role": role}, timeout=20)
-    assert r.status_code == 200, r.text
-    body = r.json()
+    if r.status_code == 200:
+        body = r.json()
+        return body["token"], body["user"], {"Authorization": f"Bearer {body['token']}"}
+
+    reg = requests.post(f"{API}/auth/register", json={"phone": phone, "name": name}, timeout=20)
+    assert reg.status_code == 200, reg.text
+    user_id = reg.json()["user"]["id"]
+    admin_headers = _seeded_admin_headers()
+    ar = requests.post(f"{API}/admin/users/{user_id}/approve", headers=admin_headers, timeout=20)
+    assert ar.status_code == 200, ar.text
+    rr = requests.post(f"{API}/admin/users/{user_id}/role", json={"role": role}, headers=admin_headers, timeout=20)
+    assert rr.status_code == 200, rr.text
+
+    r2 = requests.post(f"{API}/auth/login", json={"phone": phone, "name": name, "role": role}, timeout=20)
+    assert r2.status_code == 200, r2.text
+    body = r2.json()
     return body["token"], body["user"], {"Authorization": f"Bearer {body['token']}"}
 
 

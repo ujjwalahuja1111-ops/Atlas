@@ -2,7 +2,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from typing import Literal, Optional
-from core.auth import create_token, get_current_user
+from core.auth import create_token, get_current_user, get_current_user_any_status
 from engines import memory_engine
 
 router = APIRouter(prefix="/api", tags=["auth"])
@@ -45,8 +45,35 @@ class LoginRequest(BaseModel):
 
 @router.post("/auth/login")
 async def login(req: LoginRequest):
+    """Pure authentication. FAC-03 P0 fix: this used to upsert — silently
+    CREATING a brand-new account for any never-before-seen phone number
+    and logging that invented identity straight into a working session,
+    using whatever role the request happened to carry (default
+    "supervisor"). Any string of 6-15 digits — a typo, an unregistered
+    number, "90000001" — was therefore a valid login: it passed format
+    validation, found no existing account, and upsert_user() created one
+    on the spot. That is a real authentication bypass, not a UX nicety.
+
+    Login now ONLY authenticates an EXISTING account, looked up by phone
+    and nothing else. An unrecognized phone is rejected outright (401) —
+    it is never a signal to create anything. Creating a new account is
+    exclusively /auth/register's job (Sign Up), which correctly starts
+    every new account `approval_status="pending"`, locked out of real
+    access until an Administrator approves it — self-service login-time
+    account creation bypassed that gate entirely, which was the other
+    half of the problem: even a deliberately-invented phone number
+    landed directly in a fully-functional Site Supervisor session, no
+    approval step in sight.
+
+    A pending or rejected account still authenticates here (still gets a
+    token) — core/auth.py's get_current_user is what blocks it from
+    every real endpoint except GET /api/me, which is what the Pending
+    Approval screen's own status check depends on to ever resolve.
+    """
     phone = _clean_phone(req.phone)
-    user = await memory_engine.upsert_user(phone=phone, name=req.name.strip() or "Site User", role=req.role)
+    user = await memory_engine.get_user_by_phone(phone)
+    if not user:
+        raise HTTPException(status_code=401, detail="No account found for this phone number. Please sign up first.")
     return {"token": create_token(user["id"]), "user": user}
 
 
@@ -84,7 +111,7 @@ async def register(req: RegisterRequest):
 
 
 @router.get("/me")
-async def me(user: dict = Depends(get_current_user)):
+async def me(user: dict = Depends(get_current_user_any_status)):
     return user
 
 
