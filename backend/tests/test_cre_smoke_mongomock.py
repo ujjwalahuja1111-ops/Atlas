@@ -403,3 +403,139 @@ async def test_run_audit_trail_is_recorded(ctx):
         assert run["triggered_by_user_name"]
         assert run["snapshot_stats"]["workflow_activities"] == 3
         assert run["include_ai"] is False  # no AI key in this environment
+
+
+# ---------------------------------------------------------------------------
+# Sprint 01B — construction intelligence surface
+# ---------------------------------------------------------------------------
+
+async def test_stage_awareness_on_insights_and_lookahead(ctx):
+    c, pid = ctx["client"], ctx["world"]["project_id"]
+    # world: Excavation (excavation) complete, PCC (foundation) ready,
+    # Slab Pour (rcc) complete -> earliest incomplete stage = foundation
+    insights = (await c.get(f"/api/projects/{pid}/insights",
+                            headers=ctx["pm"])).json()
+    assert insights and all(i.get("project_stage") == "foundation"
+                            for i in insights if i.get("project_stage"))
+    r = await c.get(f"/api/projects/{pid}/lookahead", headers=ctx["sup"])
+    assert r.status_code == 200
+    look = r.json()
+    assert look["stage"]["current"] == "foundation"
+    nxt = look["next_expected"]
+    assert nxt["name"] == "PCC"
+    assert "Excavation" in nxt["why_expected"]
+    # the overdue steel makes PCC not ready; blockers + preparation named
+    assert nxt["ready"] is False
+    checks = {x["check"]: x["status"] for x in nxt["prerequisites"]}
+    assert checks["materials_available"] == "not_ready"
+    assert checks["dependencies_complete"] == "ready"
+    assert nxt["recommended_preparation"]
+
+
+async def test_forecast_endpoint_is_honest_without_planned_dates(ctx):
+    c, pid = ctx["client"], ctx["world"]["project_id"]
+    r = await c.get(f"/api/projects/{pid}/forecast", headers=ctx["pm"])
+    assert r.status_code == 200
+    fc = r.json()
+    assert fc["forecast_slip_days"] is None  # world has no planned dates
+    assert fc["confidence"]["level"] == "low"
+    assert fc["confidence"]["missing_evidence"]
+
+
+async def test_daily_briefing_endpoint(ctx):
+    c, pid = ctx["client"], ctx["world"]["project_id"]
+    r = await c.get(f"/api/projects/{pid}/briefing", headers=ctx["pm"])
+    assert r.status_code == 200
+    b = r.json()
+    assert b["stage"] == "foundation"
+    assert b["next_expected"]["name"] == "PCC"
+    assert len(b["safety_reminders"]) == 1
+    assert len(b["material_risks"]) == 1
+    assert b["todays_priorities"]
+    assert b["required_decisions"]["open_insights_awaiting_review"] >= 1
+
+
+async def test_client_summary_is_internal_only_and_leak_free(ctx):
+    c, pid = ctx["client"], ctx["world"]["project_id"]
+    r = await c.get(f"/api/projects/{pid}/client-summary", headers=ctx["pm"])
+    assert r.status_code == 200
+    cs = r.json()
+    text = cs["summary_text"].lower()
+    assert "excavation" in text
+    assert "pcc" in text and "expected to begin" in text
+    # internal ids and safety detail never leak into client wording
+    assert "wfa_" not in text and "op_" not in text
+    assert "shaft" not in text and "safety" not in text
+    assert "review" in cs["disclaimer"].lower()
+    # a draft for internal humans — the client workspace never sees it
+    assert (await c.get(f"/api/projects/{pid}/client-summary",
+                        headers=ctx["cli"])).status_code == 403
+
+
+async def test_construction_memory_captured_idempotently(ctx):
+    c, pid = ctx["client"], ctx["world"]["project_id"]
+    r = await c.get(f"/api/projects/{pid}/construction-memory",
+                    headers=ctx["pm"])
+    assert r.status_code == 200
+    records = r.json()
+    # three runs have happened; the two completed activities were
+    # captured exactly once each
+    assert sorted(m["name"] for m in records) == ["Excavation", "Slab Pour"]
+    for m in records:
+        assert m["schema_version"] == 1
+        assert m["stage"] in ("excavation", "rcc_structure")
+        assert "material_delay_item_ids" in m
+        assert m["weather_impacts"] == [] and m["labour_count"] is None
+
+
+async def test_executive_reasoning_endpoint(ctx):
+    c = ctx["client"]
+    r = await c.get("/api/reasoning/executive",
+                    params={"question": "greatest_risk"},
+                    headers=ctx["admin"])
+    assert r.status_code == 200
+    body = r.json()
+    assert body["scope"]["projects_considered"] == 1
+    assert body["answer"]["greatest_risk"]["project_id"] == \
+        ctx["world"]["project_id"]
+    assert body["answer"]["greatest_risk"]["health_score"] < 100
+    assert body["explanation"]
+
+    r = await c.get("/api/reasoning/executive",
+                    params={"question": "attention_today"},
+                    headers=ctx["admin"])
+    assert r.json()["answer"]["total_open_urgent"] >= 1
+
+    r = await c.get("/api/reasoning/executive",
+                    params={"question": "tomorrow"}, headers=ctx["pm"])
+    plan = r.json()["answer"]["projects"]
+    assert plan and plan[0]["next_expected"]["name"] == "PCC"
+
+    r = await c.get("/api/reasoning/executive",
+                    params={"question": "top_blocker"}, headers=ctx["admin"])
+    assert r.status_code == 200  # nothing blocked in world -> empty, not error
+    assert r.json()["answer"]["top"] is None
+
+    # fixed vocabulary, not conversational AI
+    assert (await c.get("/api/reasoning/executive",
+                        params={"question": "tell me a story"},
+                        headers=ctx["admin"])).status_code == 400
+    # supervisors and clients are outside executive reasoning
+    assert (await c.get("/api/reasoning/executive",
+                        params={"question": "greatest_risk"},
+                        headers=ctx["sup"])).status_code == 403
+    assert (await c.get("/api/reasoning/executive",
+                        params={"question": "greatest_risk"},
+                        headers=ctx["cli"])).status_code == 403
+
+
+async def test_meta_exposes_stages_and_executive_vocabulary(ctx):
+    c = ctx["client"]
+    m = (await c.get("/api/reasoning-meta", headers=ctx["pm"])).json()
+    assert m["stages"][0] == "pre_construction"
+    assert m["stages"][-1] == "handover"
+    assert "greatest_risk" in m["executive_questions"]
+    assert m["memory_schema_version"] == 1
+    ids = {r["id"] for r in m["rules"]}
+    assert {"schedule.forecast_finish_slip",
+            "procurement.frontier_material_gap"} <= ids

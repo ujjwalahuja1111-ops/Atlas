@@ -27,6 +27,7 @@ from pydantic import BaseModel
 from typing import Optional
 from core.auth import get_current_user
 from engines import reasoning_engine
+from engines import reasoning_projections
 from engines.reasoning_engine import (
     ReasoningNotFoundError, InvalidInsightTransitionError,
 )
@@ -121,6 +122,87 @@ async def get_project_health(project_id: str,
         _raise_for(e)
 
 
+@router.get("/projects/{project_id}/lookahead")
+async def get_project_lookahead(project_id: str,
+                                user: dict = Depends(get_current_user)):
+    """Look-ahead intelligence: next expected activities, why they are
+    expected, readiness prerequisites, possible blockers, recommended
+    preparation. Derived projection — never stored, never executed."""
+    _forbid_client(user)
+    try:
+        return await reasoning_engine.project_lookahead_view(
+            project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/forecast")
+async def get_project_forecast(project_id: str,
+                               user: dict = Depends(get_current_user)):
+    """Deterministic delay forecast from the project's own measured
+    productivity propagated through the dependency graph. No AI."""
+    _forbid_client(user)
+    try:
+        return await reasoning_engine.project_forecast_view(
+            project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/briefing")
+async def get_project_briefing(project_id: str,
+                               user: dict = Depends(get_current_user)):
+    """The PM's deterministic morning briefing."""
+    _forbid_client(user)
+    try:
+        return await reasoning_engine.project_briefing_view(
+            project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/client-summary")
+async def get_client_summary(project_id: str,
+                             user: dict = Depends(get_current_user)):
+    """Deterministic plain-English progress DRAFT for the client.
+    Served to internal roles only: CRE prepares the words, a human
+    reviews and sends them."""
+    _forbid_client(user)
+    try:
+        return await reasoning_engine.client_summary_view(
+            project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/construction-memory")
+async def list_construction_memory(project_id: str,
+                                   user: dict = Depends(get_current_user)):
+    """Captured construction-memory records (learning substrate; nothing
+    reads these back yet)."""
+    _forbid_client(user)
+    try:
+        return await reasoning_engine.list_construction_memory(
+            project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/reasoning/executive")
+async def executive_answer(question: str,
+                           user: dict = Depends(get_current_user)):
+    """Reusable deterministic answers to portfolio-level management
+    questions (see /api/reasoning-meta -> executive_questions). Not
+    conversational AI: a fixed question vocabulary, each answered by
+    explicit reasoning over the caller's visible projects."""
+    _forbid_client(user)
+    _require_coordination_role(user, "use executive reasoning")
+    try:
+        return await reasoning_engine.executive_answer(question, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/projects/{project_id}/reasoning/runs")
 async def list_reasoning_runs(project_id: str,
                               user: dict = Depends(get_current_user)):
@@ -200,5 +282,9 @@ async def reasoning_meta(user: dict = Depends(get_current_user)):
         "feedback_verdicts": sorted(reasoning_engine.FEEDBACK_VERDICTS),
         "relation_types": sorted(reasoning_engine.RELATION_TYPES),
         "health_dimensions": sorted(reasoning_engine.HEALTH_DIMENSIONS),
+        "stages": reasoning_projections.STAGE_ORDER,
+        "stage_labels": reasoning_projections.STAGE_LABELS,
+        "executive_questions": reasoning_engine.EXECUTIVE_QUESTIONS,
+        "memory_schema_version": reasoning_projections.MEMORY_SCHEMA_VERSION,
         "rules": reasoning_engine.list_rules(),
     }

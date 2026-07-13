@@ -94,12 +94,14 @@ from __future__ import annotations
 import json
 import logging
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import timedelta
 from typing import Callable, Optional
 
 from core.db import db
 from core.settings import EMERGENT_LLM_KEY
 from engines import memory_engine
+from engines import reasoning_projections as projections
+from engines.reasoning_projections import _iso, _now, _parse_iso
 
 logger = logging.getLogger(__name__)
 
@@ -161,29 +163,6 @@ MATERIAL_LEAD_TIME_DAYS = 3
 STALE_ITEM_DAYS = 7
 SAFETY_UNRESOLVED_HOURS = 24
 MILESTONE_WINDOW_DAYS = 7
-
-
-def _now() -> datetime:
-    return datetime.now(timezone.utc)
-
-
-def _iso(dt: datetime) -> str:
-    return dt.isoformat()
-
-
-def _parse_iso(value) -> Optional[datetime]:
-    """Tolerant ISO parsing (operations_engine._parse_iso convention):
-    naive timestamps are assumed UTC; garbage returns None — one bad
-    document must never sink a whole reasoning run."""
-    if not value:
-        return None
-    if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
-    try:
-        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except (ValueError, TypeError):
-        return None
 
 
 def _new_id(prefix: str) -> str:
@@ -296,6 +275,10 @@ async def build_project_snapshot(project_id: str) -> dict:
         "recent_events": events,
         "event_assets": event_assets,
         "recent_proposals": proposals,
+        # Sprint 01B: stage awareness — every reasoning pass knows where
+        # the project is in its lifecycle (derived deterministically from
+        # the workflow itself; see projections.infer_project_stage).
+        "stage": projections.infer_project_stage(activities),
     }
 
 
@@ -676,19 +659,13 @@ def _r_activity_blocked(snap: dict) -> list[dict]:
       "A requires-inspection activity is complete with no inspection "
       "recorded for its period.")
 def _r_completed_without_inspection(snap: dict) -> list[dict]:
-    inspections = [i for i in snap["operational_items"]
-                   if i.get("category") == "inspection"]
     out = []
     for a in snap["workflow_activities"]:
         if not _act_requires_inspection(a) or a.get("status") != "completed":
             continue
-        started = (_parse_iso(a.get("actual_start"))
-                   or _parse_iso(a.get("created_at")))
-        covered = any(
-            (_parse_iso(i.get("created_at")) or started) >= started
-            for i in inspections
-        ) if started else bool(inspections)
-        if covered:
+        # one shared definition of "covered by an inspection", reused by
+        # the readiness checks (projections.activity_readiness)
+        if projections.inspection_covered(a, snap["operational_items"]):
             continue
         kref = _act_knowledge_ref(a)
         out.append(_finding(
@@ -961,16 +938,142 @@ def _r_client_update_due(snap: dict) -> list[dict]:
     )]
 
 
+@rule("schedule.forecast_finish_slip", "schedule",
+      "Deterministic forecast (project's own measured productivity "
+      "propagated through the dependency graph) predicts completion will "
+      "slip past the plan. Forecast, not detection — no AI estimation.")
+def _r_forecast_finish_slip(snap: dict) -> list[dict]:
+    fc = projections.delay_forecast(snap)
+    slip = fc.get("forecast_slip_days")
+    if slip is None or slip < 3:
+        return []
+    sev = "critical" if slip >= 14 else "warning"
+    worst = fc["per_activity"][:4]
+    proj = snap["project"]
+    return [_finding(
+        rule_id="schedule.forecast_finish_slip",
+        domain="schedule", severity=sev,
+        observation=(f"At the project's own measured pace, completion is "
+                     f"forecast {slip:.0f} day(s) past the planned date "
+                     f"({fc['planned_completion'][:10]} planned vs "
+                     f"{fc['forecast_completion'][:10]} forecast)."),
+        risk=("This slip is not yet visible in any single overdue "
+              "activity — it is the compounding of measured productivity "
+              "through the dependency chain. Left unmanaged it surfaces "
+              "later as an unavoidable handover delay."),
+        recommendation=("Review the largest forecast slips and decide now: "
+                        "recover pace (resources/resequencing) or re-baseline "
+                        "the plan and reset expectations with the client."),
+        suggested_operational_action=_suggested_action(
+            "follow_up", "Review completion forecast slip",
+            f"Forecast completion {fc['forecast_completion'][:10]} vs plan "
+            f"{fc['planned_completion'][:10]} at measured productivity "
+            f"{fc['productivity_ratio']}x. Largest slips: "
+            + ", ".join(f"{w['name']} (+{w['forecast_slip_days']:.0f}d)"
+                        for w in worst)),
+        suggested_responsible_role="management",
+        suggested_due_date=_due_date(snap, sev),
+        # forecast confidence comes from the forecast itself: sample depth
+        # and planned-date coverage, honestly capped (extrapolation is
+        # never "high" on thin history)
+        confidence=_confidence(
+            "medium" if fc["confidence"]["level"] == "high"
+            else fc["confidence"]["level"],
+            fc["confidence"]["reason"],
+            missing_evidence=fc["confidence"]["missing_evidence"],
+            assumptions=fc["confidence"]["assumptions"],
+        ),
+        evidence=_evidence(
+            workflow_activities=[
+                _ref(w["activity_id"],
+                     f"forecast finish {w['forecast_finish'][:10]} vs "
+                     f"planned {w['planned_finish'][:10]} "
+                     f"(+{w['forecast_slip_days']:.0f}d)")
+                for w in worst],
+            absences=([_ref(None, m) for m in
+                       fc["confidence"]["missing_evidence"]]),
+        ),
+        subject_id=proj.get("id"),
+    )]
+
+
+@rule("procurement.frontier_material_gap", "procurement",
+      "The construction sequence allows the next activity to start, but "
+      "the material pipeline has unfulfilled requirements in the window.")
+def _r_frontier_material_gap(snap: dict) -> list[dict]:
+    now = _parse_iso(snap["generated_at"])
+    frontier = projections._frontier(snap["workflow_activities"])
+    if not frontier:
+        return []
+    gaps = [
+        i for i in _active(snap["operational_items"])
+        if i.get("category") == "material_requirement"
+        and i.get("required_by")
+        and (_parse_iso(i.get("required_by")) or now)
+        <= now + timedelta(days=MATERIAL_LEAD_TIME_DAYS)
+    ]
+    if not gaps:
+        return []
+    names = ", ".join(a["name"] for a in frontier[:3])
+    lead = frontier[0]
+    proj = snap["project"]
+    return [_finding(
+        rule_id="procurement.frontier_material_gap",
+        domain="procurement", severity="warning",
+        observation=(f"The sequence allows {names} to start, but "
+                     f"{len(gaps)} material requirement(s) remain "
+                     "unfulfilled inside the lead-time window."),
+        risk=("The next activity may mobilize into a material gap: crew "
+              "on site, sequence clear, nothing to build with — the most "
+              "expensive way to discover a procurement problem."),
+        recommendation=("Before mobilizing the next activity, confirm the "
+                        "listed materials are delivered or firmly scheduled; "
+                        "hold the start decision until the pipeline is "
+                        "clear."),
+        suggested_operational_action=_suggested_action(
+            "follow_up", f"Clear material pipeline before '{lead['name']}'",
+            "Verify delivery of: "
+            + ", ".join(i.get("title", i["id"]) for i in gaps[:5])),
+        suggested_responsible_role="coordinator",
+        suggested_due_date=_due_date(snap, "warning"),
+        confidence=_confidence(
+            "medium",
+            "The frontier and the material gaps are both directly "
+            "recorded; what Atlas cannot yet verify is whether these "
+            "specific materials are needed by these specific activities.",
+            missing_evidence=["activity-to-material mapping in the "
+                              "Knowledge Core"],
+            assumptions=["open material requirements in the lead-time "
+                         "window relate to imminent work"],
+        ),
+        evidence=_evidence(
+            workflow_activities=[_ref(a["id"],
+                "frontier activity - all dependencies complete")
+                for a in frontier[:3]],
+            operational_items=[_ref(i["id"],
+                f"required_by={i.get('required_by')}, "
+                f"status={i.get('status')}") for i in gaps[:6]],
+        ),
+        subject_id=proj.get("id"),
+    )]
+
+
 def evaluate_rules(snapshot: dict) -> list[dict]:
     """Run every registered rule. Pure orchestration of pure functions —
     a misbehaving rule is logged and skipped; the run survives. Every
     finding is re-checked against its rule's declared domain."""
+    stage = (snapshot.get("stage")
+             or projections.infer_project_stage(
+                 snapshot["workflow_activities"]))
     findings: list[dict] = []
     for r in _RULES:
         try:
             for f in r["fn"](snapshot):
                 assert f["domain"] == r["domain"], (
                     f"rule '{r['id']}' emitted finding outside its domain")
+                # Sprint 01B: every insight knows the project's current
+                # lifecycle stage — reasoning is contextual to it.
+                f["project_stage"] = stage.get("current")
                 findings.append(f)
         except Exception:
             logger.exception(f"CRE rule '{r['id']}' failed; skipping")
@@ -1293,6 +1396,11 @@ async def run_reasoning(project_id: str, *, actor: dict,
     }
     await db.reasoning_runs.insert_one({**run_doc})
 
+    # Sprint 01B: construction memory — capture the learning substrate
+    # for every newly completed activity (CRE-owned collection; NOTHING
+    # reads these records back in this sprint).
+    await _capture_construction_memory(snapshot)
+
     open_now = await list_insights(project_id, status="open")
     return {
         "run": run_doc,
@@ -1432,3 +1540,255 @@ async def list_runs(project_id: str, *, user: dict, limit: int = 50) -> list[dic
     return await db.reasoning_runs.find(
         {"project_id": project_id}, {"_id": 0}).sort(
         "started_at", -1).to_list(limit)
+
+
+# ---------------------------------------------------------------------------
+# Construction memory (Sprint 01B item 11) — capture only, NO learning.
+# CRE-owned collection `construction_memory`: one record per completed
+# activity. Nothing in this sprint reads these records back; the future
+# learning layer consumes them under the CRE_ARCHITECTURE.md boundary.
+# ---------------------------------------------------------------------------
+
+_memory_indexes_ready = False
+
+
+async def _capture_construction_memory(snapshot: dict) -> int:
+    global _memory_indexes_ready
+    if not _memory_indexes_ready:
+        # lazy, idempotent — keeps core/db.py untouched this sprint;
+        # registration moves into ensure_indexes() at merge time.
+        await db.construction_memory.create_index(
+            [("project_id", 1), ("activity_id", 1)])
+        _memory_indexes_ready = True
+    captured = 0
+    for a in snapshot["workflow_activities"]:
+        if a.get("status") != "completed":
+            continue
+        exists = await db.construction_memory.find_one(
+            {"activity_id": a["id"]}, {"_id": 0, "activity_id": 1})
+        if exists:
+            continue
+        record = projections.build_memory_record(a, snapshot)
+        record["id"] = _new_id("mem_")
+        record["captured_at"] = _iso(_now())
+        await db.construction_memory.insert_one({**record})
+        captured += 1
+    return captured
+
+
+async def list_construction_memory(project_id: str, *, user: dict,
+                                   limit: int = 200) -> list[dict]:
+    await _assert_project_visible(project_id, user)
+    return await db.construction_memory.find(
+        {"project_id": project_id}, {"_id": 0}).sort(
+        "captured_at", -1).to_list(limit)
+
+
+# ---------------------------------------------------------------------------
+# Projection views (Sprint 01B) — snapshot + pure projection, per request.
+# Nothing stored; identical visibility discipline to project_health.
+# ---------------------------------------------------------------------------
+
+async def project_lookahead_view(project_id: str, *, user: dict) -> dict:
+    await _assert_project_visible(project_id, user)
+    snapshot = await build_project_snapshot(project_id)
+    return projections.project_lookahead(snapshot)
+
+
+async def project_forecast_view(project_id: str, *, user: dict) -> dict:
+    await _assert_project_visible(project_id, user)
+    snapshot = await build_project_snapshot(project_id)
+    return projections.delay_forecast(snapshot)
+
+
+async def project_briefing_view(project_id: str, *, user: dict) -> dict:
+    await _assert_project_visible(project_id, user)
+    snapshot = await build_project_snapshot(project_id)
+    open_now = await list_insights(project_id, status="open")
+    return projections.compose_daily_briefing(snapshot, open_now)
+
+
+async def client_summary_view(project_id: str, *, user: dict) -> dict:
+    """Client communication intelligence: a deterministic plain-English
+    DRAFT for the internal team to review and send. Served only to
+    internal roles — CRE prepares words; humans decide to send them."""
+    await _assert_project_visible(project_id, user)
+    snapshot = await build_project_snapshot(project_id)
+    return projections.compose_client_summary(snapshot)
+
+
+# ---------------------------------------------------------------------------
+# Executive reasoning (Sprint 01B item 8) — reusable deterministic
+# answers to portfolio-level management questions. No conversational AI:
+# a fixed vocabulary of questions, each answered by explicit reasoning
+# over per-project snapshots, scoped to the caller's project visibility.
+# ---------------------------------------------------------------------------
+
+EXECUTIVE_QUESTIONS = {
+    "attention_today":   "What needs my attention today?",
+    "greatest_risk":     "Which project is at greatest risk?",
+    "top_blocker":       "Which activity is blocking the most work?",
+    "overdue_approvals": "Which approvals are overdue?",
+    "stalled_projects":  "Which projects have no recent progress?",
+    "tomorrow":          "What should happen tomorrow?",
+    "supervisor_load":   "Which supervisor is overloaded?",
+}
+_PORTFOLIO_PROJECT_CAP = 25
+STALLED_PROJECT_DAYS = 7
+
+
+async def _visible_project_ids(user: dict) -> list[str]:
+    projects = await memory_engine.list_projects(user=user)
+    return [p["id"] for p in projects[:_PORTFOLIO_PROJECT_CAP]]
+
+
+async def _portfolio(user: dict) -> list[dict]:
+    """Per-project context bundles for executive reasoning. Snapshots are
+    built once and shared by whichever answer function needs them."""
+    out = []
+    for pid in await _visible_project_ids(user):
+        snapshot = await build_project_snapshot(pid)
+        findings = evaluate_rules(snapshot)
+        health = compute_project_health(snapshot, findings)
+        out.append({
+            "snapshot": snapshot,
+            "findings": findings,
+            "digest": projections.project_digest(snapshot, findings, health),
+        })
+    return out
+
+
+async def executive_answer(question: str, *, user: dict) -> dict:
+    if question not in EXECUTIVE_QUESTIONS:
+        raise ReasoningError(
+            f"Unknown executive question '{question}'. "
+            f"Must be one of {sorted(EXECUTIVE_QUESTIONS)}")
+    portfolio = await _portfolio(user)
+    now = _now()
+
+    if question == "attention_today":
+        pids = [p["digest"]["project_id"] for p in portfolio]
+        urgent = await db.reasoning_insights.find(
+            {"project_id": {"$in": pids}, "status": "open",
+             "severity": {"$in": ["critical", "warning"]}},
+            {"_id": 0, "id": 1, "project_id": 1, "project_name": 1,
+             "severity": 1, "observation": 1, "recommendation": 1,
+             "suggested_due_date": 1, "domain": 1},
+        ).sort("created_at", -1).to_list(200)
+        urgent.sort(key=lambda i: (0 if i["severity"] == "critical" else 1,
+                                   i.get("suggested_due_date") or "~"))
+        answer = {"items": urgent[:10], "total_open_urgent": len(urgent)}
+        explanation = ("Open critical and warning insights across your "
+                       "visible projects, most severe and soonest-due first.")
+
+    elif question == "greatest_risk":
+        ranked = sorted((p["digest"] for p in portfolio),
+                        key=lambda d: d["health_score"])
+        answer = {"ranking": ranked,
+                  "greatest_risk": ranked[0] if ranked else None}
+        explanation = ("Projects ranked by reasoned health score "
+                       "(five-dimension model; overall leans toward the "
+                       "weakest dimension).")
+
+    elif question == "top_blocker":
+        blockers = []
+        for p in portfolio:
+            for b in projections.blocking_impact(p["snapshot"])[:3]:
+                blockers.append({**b,
+                                 "project_id": p["digest"]["project_id"],
+                                 "project_name": p["digest"]["project_name"]})
+        blockers.sort(key=lambda b: -b["downstream_activities_held"])
+        answer = {"blockers": blockers[:10],
+                  "top": blockers[0] if blockers else None}
+        explanation = ("Blocked or overdue activities ranked by how many "
+                       "incomplete downstream activities their dependency "
+                       "chains are holding.")
+
+    elif question == "overdue_approvals":
+        overdue = []
+        for p in portfolio:
+            for i in p["snapshot"]["operational_items"]:
+                if i.get("category") not in ("client_approval",
+                                             "drawing_request"):
+                    continue
+                if i.get("status") in ("fulfilled", "verified", "closed",
+                                       "archived", "cancelled", "duplicate"):
+                    continue
+                req = _parse_iso(i.get("required_by"))
+                created = _parse_iso(i.get("created_at"))
+                if (req and req < now) or (not req and created and
+                                           (now - created).days >= 7):
+                    overdue.append({
+                        "item_id": i["id"], "title": i.get("title"),
+                        "category": i.get("category"),
+                        "required_by": i.get("required_by"),
+                        "created_at": i.get("created_at"),
+                        "project_id": p["digest"]["project_id"],
+                        "project_name": p["digest"]["project_name"]})
+        overdue.sort(key=lambda x: x.get("required_by") or x.get("created_at") or "")
+        answer = {"approvals": overdue[:15], "total": len(overdue)}
+        explanation = ("Open client approvals and drawing requests past "
+                       "their required date, or older than 7 days when no "
+                       "date was set.")
+
+    elif question == "stalled_projects":
+        stalled = [
+            p["digest"] for p in portfolio
+            if not p["digest"]["last_activity_at"]
+            or (now - _parse_iso(p["digest"]["last_activity_at"])).days
+            >= STALLED_PROJECT_DAYS]
+        answer = {"stalled": stalled,
+                  "threshold_days": STALLED_PROJECT_DAYS}
+        explanation = (f"Projects with no workflow movement and no site "
+                       f"events for {STALLED_PROJECT_DAYS}+ days.")
+
+    elif question == "tomorrow":
+        plan = []
+        for p in portfolio:
+            look = projections.project_lookahead(p["snapshot"])
+            if look["next_expected"]:
+                plan.append({
+                    "project_id": p["digest"]["project_id"],
+                    "project_name": p["digest"]["project_name"],
+                    "stage": look["stage"]["current"],
+                    "next_expected": look["next_expected"]})
+        answer = {"projects": plan}
+        explanation = ("Per project: the next activity the construction "
+                       "sequence expects, with readiness prerequisites and "
+                       "recommended preparation.")
+
+    else:  # supervisor_load
+        counts: dict[str, dict] = {}
+        for p in portfolio:
+            for i in p["snapshot"]["operational_items"]:
+                uid = i.get("assigned_to_user_id")
+                if not uid or i.get("status") in (
+                        "fulfilled", "verified", "closed", "archived",
+                        "cancelled", "duplicate"):
+                    continue
+                c = counts.setdefault(uid, {"open_items": 0, "projects": set()})
+                c["open_items"] += 1
+                c["projects"].add(p["digest"]["project_id"])
+        users = await db.users.find(
+            {"id": {"$in": list(counts)}, "role": "supervisor"},
+            {"_id": 0, "id": 1, "name": 1},
+        ).to_list(200)
+        load = sorted(
+            ({"user_id": u["id"], "name": u["name"],
+              "open_items": counts[u["id"]]["open_items"],
+              "projects": len(counts[u["id"]]["projects"])}
+             for u in users),
+            key=lambda x: -x["open_items"])
+        answer = {"supervisors": load,
+                  "most_loaded": load[0] if load else None}
+        explanation = ("Supervisors ranked by open operational items "
+                       "assigned to them across your visible projects.")
+
+    return {
+        "question": question,
+        "question_text": EXECUTIVE_QUESTIONS[question],
+        "scope": {"projects_considered": len(portfolio)},
+        "answer": answer,
+        "explanation": explanation,
+        "generated_at": _iso(now),
+    }

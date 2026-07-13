@@ -321,3 +321,70 @@ Verification: 25 pure rule unit tests + 12 full-stack HTTP tests (real
 app on mongomock-motor) — 37/37 passing locally; live-deployment suite
 updated to the v2 contract. The two structural guarantees (read-only
 runs, no conclusions without evidence) are pinned by tests.
+
+---
+
+## Innovation Sprint 01B — Construction Reasoning Evolution
+
+Objective: evolve CRE from a rule engine into a **Construction Project
+Intelligence Layer** — preserving the deterministic, explainable core.
+New module `engines/reasoning_projections.py` holds every new capability
+as pure functions over snapshots (no I/O), imported by the engine.
+
+1. **Stage awareness.** Canonical lifecycle (pre_construction …
+   handover) inferred deterministically from the workflow itself via a
+   transparent keyword/trade vocabulary; snapshot carries `stage`; every
+   insight is stamped `project_stage`.
+2. **Look-ahead intelligence.** `GET /projects/{id}/lookahead`: next
+   expected activities, why expected (dependency graph), readiness
+   prerequisites, possible blockers, recommended preparation.
+3. **Construction readiness.** "What is ready?" — frontier activities
+   with zero readiness gaps surface as "Ready for X".
+4. **Delay forecast.** `GET /projects/{id}/forecast` + new rule
+   `schedule.forecast_finish_slip`: progress → measured productivity
+   (median actual/planned) → dependency propagation → likely slip →
+   structural confidence. Deterministic; no AI estimation; the
+   optimistic floor is a stated assumption.
+5. **Material readiness.** New rule `procurement.frontier_material_gap`:
+   sequence clear + unfulfilled materials in the lead window → risk +
+   recommendation, with the missing activity-material mapping honestly
+   named in confidence. No procurement automation.
+6. **Quality readiness.** `activity_readiness` checks: dependencies,
+   predecessor inspection (shared `inspection_covered` definition with
+   the quality rule), drawings, client approvals, materials; checklists
+   reported `unknown` until modelled.
+7. **Multi-project awareness — interfaces only.** `project_digest`
+   frozen as the unit of portfolio reasoning;
+   `compare_projects_at_stage` reserved (NotImplementedError) until
+   Construction Memory accumulates baselines.
+8. **Executive questions.** `GET /reasoning/executive?question=…` —
+   fixed vocabulary (attention_today, greatest_risk, top_blocker,
+   overdue_approvals, stalled_projects, tomorrow, supervisor_load),
+   deterministic answers over the caller's visible projects, each with
+   an explanation. Unknown questions are a 400 — no conversational AI.
+9. **PM daily briefing.** `GET /projects/{id}/briefing`: completed
+   yesterday, today's priorities, blocked activities, required
+   decisions, upcoming milestones, client actions, material risks,
+   safety reminders.
+10. **Client communication intelligence.**
+    `GET /projects/{id}/client-summary`: deterministic plain-English
+    draft from workflow facts only (no internal ids, no safety detail);
+    always for human review; AI may later enhance wording, never content.
+11. **Construction memory.** CRE-owned `construction_memory` collection:
+    per completed activity — planned/actual duration, variance, stage,
+    material delays / approvals / issues in window, explicit
+    placeholders for weather and labour. Captured idempotently during
+    runs; **nothing reads it back** (no learning).
+12. **Permanent boundary documented** in CRE_ARCHITECTURE.md §2: CRE
+    must never modify workflow, assign work, complete activities,
+    approve work, or change project state. *CRE exists to reason.
+    Humans execute.* Plus the three-layer intelligence model
+    (Operational / Construction / Business) as the platform's target
+    shape — executive/briefing/client views are layer-3 views over
+    layer-2 outputs, isolated for clean future migration.
+
+Scope discipline held: zero shared production files (core/db.py index
+registration deferred via lazy in-engine ensure), zero auth changes,
+zero operational-engine changes; server.py untouched (router was already
+wired). Verification: 25 + 15 + 19 = 59 tests passing locally across
+three layers; live suite extended with the 01B surface.

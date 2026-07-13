@@ -157,7 +157,7 @@ def test_suggested_due_date_tracks_severity():
 
 def test_every_rule_declares_exactly_one_known_domain():
     rules = cre.list_rules()
-    assert len(rules) == 9
+    assert len(rules) == 11  # 9 from Sprint 01 + forecast + frontier-gap (01B)
     for r in rules:
         assert r["domain"] in cre.DOMAINS
         assert r["description"]

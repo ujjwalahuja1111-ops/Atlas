@@ -377,3 +377,70 @@ def test_unknown_project_404(pm):
     r = requests.post(f"{API}/projects/proj_does_not_exist/reasoning/run",
                       json={}, headers=pm["headers"], timeout=20)
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Sprint 01B — construction intelligence surface (live deployment)
+# ---------------------------------------------------------------------------
+
+def test_lookahead_and_stage_awareness(world, pm):
+    look = _get(pm["headers"], f"/projects/{world['project_id']}/lookahead")
+    assert look["stage"]["current"] in look["stage"]["order"]
+    nxt = look["next_expected"]
+    if nxt:  # PCC untouched with Excavation complete -> expected next
+        assert nxt["prerequisites"] and nxt["why_expected"]
+        assert isinstance(nxt["ready"], bool)
+    insights = _get(pm["headers"],
+                    f"/projects/{world['project_id']}/insights")
+    assert all("project_stage" in i for i in insights
+               if i.get("schema_version", 0) >= 2 and i.get("run_id"))
+
+
+def test_forecast_briefing_and_client_summary(world, pm):
+    fc = _get(pm["headers"], f"/projects/{world['project_id']}/forecast")
+    assert fc["confidence"]["level"] in ("low", "medium", "high")
+    assert "assumptions" in fc["confidence"]
+
+    b = _get(pm["headers"], f"/projects/{world['project_id']}/briefing")
+    for section in ("completed_yesterday", "todays_priorities",
+                    "blocked_activities", "required_decisions",
+                    "upcoming_milestones", "client_actions",
+                    "material_risks", "safety_reminders"):
+        assert section in b
+    assert len(b["material_risks"]) >= 1  # overdue steel from setup
+
+    cs = _get(pm["headers"],
+              f"/projects/{world['project_id']}/client-summary")
+    assert cs["summary_text"]
+    assert "op_" not in cs["summary_text"] and "wfa_" not in cs["summary_text"]
+    assert "review" in cs["disclaimer"].lower()
+
+
+def test_construction_memory_capture(world, pm):
+    records = _get(pm["headers"],
+                   f"/projects/{world['project_id']}/construction-memory")
+    names = sorted(m["name"] for m in records)
+    # Excavation and Slab were completed through public APIs in setup
+    assert len(names) >= 2
+    for m in records:
+        assert m["schema_version"] == 1
+        assert "planned_duration_days" in m and "variance_days" in m
+        assert m["weather_impacts"] == [] and m["labour_count"] is None
+
+
+def test_executive_reasoning(world, pm, supervisor):
+    r = _get(pm["headers"], "/reasoning/executive",
+             params={"question": "greatest_risk"})
+    assert r["scope"]["projects_considered"] >= 1
+    assert r["answer"]["ranking"]
+    r = _get(pm["headers"], "/reasoning/executive",
+             params={"question": "attention_today"})
+    assert "items" in r["answer"]
+    bad = requests.get(f"{API}/reasoning/executive",
+                       params={"question": "chat with me"},
+                       headers=pm["headers"], timeout=20)
+    assert bad.status_code == 400
+    sup = requests.get(f"{API}/reasoning/executive",
+                       params={"question": "greatest_risk"},
+                       headers=supervisor["headers"], timeout=20)
+    assert sup.status_code == 403
