@@ -20,7 +20,7 @@ export async function apiGetPlatformStatus(): Promise<{ ai_enabled: boolean }> {
 }
 export const APP_VERSION = '2.0.0';
 
-export type Role = 'supervisor' | 'coordinator' | 'management';
+export type Role = 'management' | 'project_manager' | 'site_supervisor' | 'client';
 
 export type User = {
   id: string;

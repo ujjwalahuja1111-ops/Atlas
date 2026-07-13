@@ -82,7 +82,7 @@ def _login(role, phone, name):
 def legacy_user():
     """Simulates a pre-Sprint-4.3 account: created via plain login, exactly
     like every Sprint 1-4.2 test credential."""
-    u, h = _login("supervisor", "9999933333", "V43 Legacy Supervisor")
+    u, h = _login("site_supervisor", "9999933333", "V43 Legacy Supervisor")
     return {"user": u, "headers": h}
 
 
@@ -144,9 +144,11 @@ def test_new_unapproved_account_sees_no_projects_or_sites():
 
 
 # --------------------------------------------------------------------------
-# Admin assigns Workspace, Permission Level, Project(s)
+# Admin assigns Permission Level (Role) + Project(s) — FAC-04: workspace is
+# now purely derived from role, so there is no longer a separate
+# "assign workspace" step to test independently.
 # --------------------------------------------------------------------------
-def test_admin_assigns_workspace_role_projects_end_to_end(admin):
+def test_admin_assigns_role_and_projects_end_to_end(admin):
     h = admin["headers"]
     reg = requests.post(f"{API}/auth/register",
                         json={"phone": "9888711116", "name": "V43 Full Flow", "requested_workspace": "client"},
@@ -154,79 +156,42 @@ def test_admin_assigns_workspace_role_projects_end_to_end(admin):
     uid = reg["user"]["id"]
     user_headers = {"Authorization": f"Bearer {reg['token']}"}
 
-    # approve
     assert requests.post(f"{API}/admin/users/{uid}/approve", headers=h, timeout=20).status_code == 200
 
-    # assign role (Permission Level)
-    r_role = requests.post(f"{API}/admin/users/{uid}/role", json={"role": "coordinator"}, headers=h, timeout=20)
+    # FAC-04: assigning role="client" directly (honoring the
+    # requested_workspace preference) automatically derives workspace="client"
+    # — no separate workspace-assignment call.
+    r_role = requests.post(f"{API}/admin/users/{uid}/role", json={"role": "client"}, headers=h, timeout=20)
     assert r_role.status_code == 200
-    assert r_role.json()["role"] == "coordinator"
+    assert r_role.json()["role"] == "client"
+    assert r_role.json()["workspace"] == "client"
 
-    # assign workspace (honoring the requested_workspace this time)
-    r_ws = requests.post(f"{API}/admin/users/{uid}/workspace", json={"workspace": "client"}, headers=h, timeout=20)
-    assert r_ws.status_code == 200
-    assert r_ws.json()["workspace"] == "client"
-
-    # assign project
     proj = requests.post(f"{API}/projects", json={"name": "V43 Assigned Project", "code": "V43AP"}, headers=h, timeout=20).json()
     r_proj = requests.post(f"{API}/admin/users/{uid}/projects", json={"project_ids": [proj["id"]]}, headers=h, timeout=20)
     assert r_proj.status_code == 200
     assert proj["id"] in r_proj.json()["assigned_project_ids"]
 
-    # now the user sees ONLY their assigned project
     r_list = requests.get(f"{API}/projects", headers=user_headers, timeout=20)
     names = [p["name"] for p in r_list.json()]
     assert names == ["V43 Assigned Project"]
 
 
-def test_workspace_assignment_validates_role_compatibility(admin):
-    h = admin["headers"]
-    reg = requests.post(f"{API}/auth/register", json={"phone": "9888711117", "name": "V43 Incompatible"}, timeout=20).json()
-    uid = reg["user"]["id"]
-    requests.post(f"{API}/admin/users/{uid}/approve", headers=h, timeout=20)
-    requests.post(f"{API}/admin/users/{uid}/role", json={"role": "supervisor"}, headers=h, timeout=20)
-
-    # supervisor role is only compatible with 'supervisor' workspace
-    r_bad = requests.post(f"{API}/admin/users/{uid}/workspace", json={"workspace": "admin"}, headers=h, timeout=20)
-    assert r_bad.status_code == 400
-
-    r_ok = requests.post(f"{API}/admin/users/{uid}/workspace", json={"workspace": "supervisor"}, headers=h, timeout=20)
-    assert r_ok.status_code == 200
-
-
-def test_workspace_assignment_unlocks_client_workspace(admin):
-    """Coordinator role can now be explicitly assigned the 'client'
-    workspace by an admin — previously unreachable via any path
-    (ADR-020), now possible via explicit assignment (ADR of this sprint)."""
-    h = admin["headers"]
-    reg = requests.post(f"{API}/auth/register", json={"phone": "9888711118", "name": "V43 Client Test"}, timeout=20).json()
-    uid = reg["user"]["id"]
-    requests.post(f"{API}/admin/users/{uid}/approve", headers=h, timeout=20)
-    requests.post(f"{API}/admin/users/{uid}/role", json={"role": "coordinator"}, headers=h, timeout=20)
-    r = requests.post(f"{API}/admin/users/{uid}/workspace", json={"workspace": "client"}, headers=h, timeout=20)
-    assert r.status_code == 200
-    assert r.json()["workspace"] == "client"
-
-
-def test_role_change_resets_incompatible_workspace(admin):
+def test_role_assignment_always_derives_a_valid_workspace(admin):
+    """FAC-04: role assignment can never produce an inconsistent role/
+    workspace combination — there is no longer a second, independent
+    field that could be left incompatible or unset. This supersedes the
+    old workspace-compatibility-validation and reset-on-role-change
+    tests, which tested a mechanism that no longer exists."""
     h = admin["headers"]
     reg = requests.post(f"{API}/auth/register", json={"phone": "9888711119", "name": "V43 Reset Test"}, timeout=20).json()
     uid = reg["user"]["id"]
     requests.post(f"{API}/admin/users/{uid}/approve", headers=h, timeout=20)
-    requests.post(f"{API}/admin/users/{uid}/role", json={"role": "coordinator"}, headers=h, timeout=20)
-    requests.post(f"{API}/admin/users/{uid}/workspace", json={"workspace": "pm"}, headers=h, timeout=20)
 
-    r_role_change = requests.post(f"{API}/admin/users/{uid}/role", json={"role": "supervisor"}, headers=h, timeout=20)
-    assert r_role_change.status_code == 200
-    assert r_role_change.json()["workspace"] is None
+    r1 = requests.post(f"{API}/admin/users/{uid}/role", json={"role": "project_manager"}, headers=h, timeout=20)
+    assert r1.json()["workspace"] == "pm"
 
-
-def test_workspace_assignment_requires_admin(legacy_user, admin):
-    h = admin["headers"]
-    reg = requests.post(f"{API}/auth/register", json={"phone": "9888711120", "name": "V43 Perm Test"}, timeout=20).json()
-    uid = reg["user"]["id"]
-    r = requests.post(f"{API}/admin/users/{uid}/workspace", json={"workspace": "supervisor"}, headers=legacy_user["headers"], timeout=20)
-    assert r.status_code == 403
+    r2 = requests.post(f"{API}/admin/users/{uid}/role", json={"role": "site_supervisor"}, headers=h, timeout=20)
+    assert r2.json()["workspace"] == "supervisor"  # correctly re-derived, never left stale or None
 
 
 # --------------------------------------------------------------------------
@@ -260,14 +225,17 @@ def test_legacy_account_sees_all_sites_unaffected(legacy_user):
     assert len(r.json()) >= 0  # doesn't error, and isn't artificially emptied
 
 
-def test_legacy_account_has_no_new_fields_forced_on_it(legacy_user):
-    """GET /api/me on a legacy account should show the backward-compatible
-    defaults (workspace=None, scope_projects effectively False) without
-    ever having been touched by an admin action."""
+def test_legacy_account_has_a_correctly_derived_workspace(legacy_user):
+    """FAC-04: GET /api/me on a legacy account now shows workspace
+    correctly DERIVED from its role (even though the field itself was
+    never explicitly touched) — superseding the pre-FAC-04 expectation
+    that an untouched legacy account's workspace was None."""
     r = requests.get(f"{API}/me", headers=legacy_user["headers"], timeout=20)
     assert r.status_code == 200
     body = r.json()
-    assert body.get("workspace") in (None,)  # never explicitly assigned
+    assert body.get("workspace") is not None
+    assert body["workspace"] == {"management": "admin", "project_manager": "pm",
+                                 "site_supervisor": "supervisor", "client": "client"}[body["role"]]
 
 
 # --------------------------------------------------------------------------
@@ -287,11 +255,11 @@ def test_regression_sprint_1_4_2_endpoints(legacy_user, admin):
 
 def test_regression_existing_role_and_project_assignment_unchanged(admin):
     """Assign Role and Assign Projects (Sprint 4.1) must still work exactly
-    as before — this sprint only ADDS workspace assignment alongside them."""
+    as before."""
     h = admin["headers"]
     reg = requests.post(f"{API}/auth/register", json={"phone": "9888711121", "name": "V43 Regression"}, timeout=20).json()
     uid = reg["user"]["id"]
     assert requests.post(f"{API}/admin/users/{uid}/approve", headers=h, timeout=20).status_code == 200
-    assert requests.post(f"{API}/admin/users/{uid}/role", json={"role": "coordinator"}, headers=h, timeout=20).status_code == 200
+    assert requests.post(f"{API}/admin/users/{uid}/role", json={"role": "project_manager"}, headers=h, timeout=20).status_code == 200
     assert requests.post(f"{API}/admin/users/{uid}/projects", json={"project_ids": []}, headers=h, timeout=20).status_code == 200
     assert requests.post(f"{API}/admin/users/{uid}/active", json={"is_active": False}, headers=h, timeout=20).status_code == 200

@@ -59,7 +59,7 @@ def _seeded_admin_headers():
     return _seeded_admin_cache["headers"]
 
 
-def _login(role="supervisor", phone="9999988888", name="Test User"):
+def _login(role="site_supervisor", phone="9999988888", name="Test User"):
     r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": name, "role": role}, timeout=20)
     if r.status_code == 200:
         body = r.json()
@@ -83,13 +83,13 @@ def _login(role="supervisor", phone="9999988888", name="Test User"):
 # ------------- fixtures -------------
 @pytest.fixture(scope="session")
 def supervisor():
-    t, u, h = _login("supervisor", "9999988888", "Test User")
+    t, u, h = _login("site_supervisor", "9999988888", "Test User")
     return {"token": t, "user": u, "headers": h}
 
 
 @pytest.fixture(scope="session")
 def coordinator():
-    t, u, h = _login("coordinator", "9222222222", "Priya Coordinator")
+    t, u, h = _login("project_manager", "9222222222", "Priya Coordinator")
     return {"token": t, "user": u, "headers": h}
 
 

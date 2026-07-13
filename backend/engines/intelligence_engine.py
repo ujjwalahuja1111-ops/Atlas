@@ -443,7 +443,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
         qty_str = "" if qty in (None, "") else str(qty)
         title = " ".join(filter(None, ["Procure", qty_str, unit, name])).strip() or f"Procure {name}"
         await add("material_requirement", title,
-                  suggested_owner_role="coordinator",
+                  suggested_owner_role="project_manager",
                   priority=m.get("priority"),
                   confidence=_str(m.get("confidence")) or "high",
                   snippet=f"Material: {name} {qty_str} {unit}".strip(),
@@ -459,7 +459,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
         cnt_str = "" if cnt in (None, "") else str(cnt)
         title = " ".join(filter(None, [cnt_str, trade, "required"])).strip() or f"{trade} required"
         await add("labour_requirement", title,
-                  suggested_owner_role="coordinator",
+                  suggested_owner_role="project_manager",
                   priority=lb.get("priority"),
                   confidence=_str(lb.get("confidence")) or "high",
                   snippet=f"Labour: {cnt_str} {trade}".strip(),
@@ -475,7 +475,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
         qty_str = "" if qty in (None, "") else str(qty)
         title = " ".join(filter(None, [qty_str, name, "required"])).strip() or f"{name} required"
         await add("equipment_requirement", title,
-                  suggested_owner_role="coordinator",
+                  suggested_owner_role="project_manager",
                   priority=e.get("priority"),
                   confidence=_str(e.get("confidence")) or "high",
                   snippet=f"Equipment: {qty_str} {name}".strip(),
@@ -488,7 +488,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
             continue
         what = _str(c.get("what")) or "Client approval pending"
         await add("client_approval", what,
-                  suggested_owner_role="client_coordinator",
+                  suggested_owner_role="project_manager",
                   priority=c.get("priority") or "high",
                   confidence=_str(c.get("confidence")) or "high",
                   snippet=f"Client approval: {what}",
@@ -552,7 +552,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
         owed_to = _str(c.get("owed_to"))
         title = what + (f" → {owed_to}" if owed_to else "")
         await add("commitment", title,
-                  suggested_owner_role="coordinator",
+                  suggested_owner_role="project_manager",
                   priority=c.get("priority"),
                   confidence=_str(c.get("confidence")) or "high",
                   snippet=f"Commitment: {what}",
@@ -564,7 +564,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
             continue
         what = _str(f.get("what")) or "Follow up"
         await add("follow_up", what,
-                  suggested_owner_role="coordinator",
+                  suggested_owner_role="project_manager",
                   priority=f.get("priority"),
                   confidence=_str(f.get("confidence")) or "high",
                   snippet=f"Follow up: {what}",

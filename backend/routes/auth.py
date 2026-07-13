@@ -7,7 +7,7 @@ from engines import memory_engine
 
 router = APIRouter(prefix="/api", tags=["auth"])
 
-Role = Literal["supervisor", "coordinator", "management"]
+Role = Literal["management", "project_manager", "site_supervisor", "client"]
 Workspace = Literal["client", "supervisor", "pm", "admin"]
 
 
@@ -40,7 +40,7 @@ def _clean_phone(raw: str) -> str:
 class LoginRequest(BaseModel):
     phone: str
     name: str
-    role: Role = "supervisor"
+    role: Role = "site_supervisor"
 
 
 @router.post("/auth/login")

@@ -1,12 +1,18 @@
-"""Admin User Management routes (Sprint 4.1, extended Sprint 4.3).
+"""Admin User Management routes (Sprint 4.1, extended Sprint 4.3, frozen FAC-04).
 
 Deliberately a SEPARATE endpoint family from the existing GET /api/users
 (routes/operational_items.py), which is a lightweight, unrestricted
 assignee-picker used across Sprint 1-4 and left completely untouched here.
 These routes are the admin workflow for the Sign Up / Pending Approval /
 Identity & Access foundation: list pending/all users, approve/reject,
-assign role, assign workspace (Sprint 4.3), assign projects,
-activate/deactivate.
+assign role, assign projects, activate/deactivate.
+
+FAC-04 — Final Authorization Model Freeze: the separate "assign workspace"
+endpoint that existed here (Sprint 4.3) is REMOVED. Workspace is now a
+pure, deterministic function of role (see memory_engine.WORKSPACE_FOR_ROLE)
+— assigning a role is now the only action an admin needs, and it can never
+produce an inconsistent role/workspace combination, because there is no
+longer a second, independent field to get out of sync.
 
 Admin-only, mirroring the exact `_require_admin` pattern already
 established in routes/knowledge.py — reusing that convention rather than
@@ -20,8 +26,7 @@ from engines import memory_engine
 
 router = APIRouter(prefix="/api/admin", tags=["admin-users"])
 
-Role = Literal["supervisor", "coordinator", "management"]
-Workspace = Literal["client", "supervisor", "pm", "admin"]
+Role = Literal["management", "project_manager", "site_supervisor", "client"]
 
 
 def _require_admin(user: dict) -> None:
@@ -31,10 +36,6 @@ def _require_admin(user: dict) -> None:
 
 class AssignRoleRequest(BaseModel):
     role: Role
-
-
-class AssignWorkspaceRequest(BaseModel):
-    workspace: Workspace
 
 
 class AssignProjectsRequest(BaseModel):
@@ -73,26 +74,15 @@ async def reject_user(user_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/users/{user_id}/role")
 async def assign_role(user_id: str, req: AssignRoleRequest, user: dict = Depends(get_current_user)):
-    _require_admin(user)
-    target = await memory_engine.get_user(user_id)
-    if not target:
-        raise HTTPException(status_code=404, detail="User not found")
-    return await memory_engine.set_user_role(user_id, req.role)
-
-
-@router.post("/users/{user_id}/workspace")
-async def assign_workspace(user_id: str, req: AssignWorkspaceRequest, user: dict = Depends(get_current_user)):
-    """Sprint 4.3 — Identity & Access Foundation. Assign the admin-controlled
-    UI workspace (Client/Supervisor/Project Manager/Admin). Validated
-    against the account's current role (see memory_engine.WORKSPACE_ROLE_MAP)
-    — a 400 here means "assign a compatible role first," not a system error.
-    """
+    """Assigns both role AND (automatically, as a consequence — see
+    memory_engine.set_user_role) the one correct workspace for that role.
+    This is now the ONLY identity-shaping action an admin takes."""
     _require_admin(user)
     target = await memory_engine.get_user(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
     try:
-        return await memory_engine.set_user_workspace(user_id, req.workspace)
+        return await memory_engine.set_user_role(user_id, req.role)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

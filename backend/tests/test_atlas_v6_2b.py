@@ -98,39 +98,42 @@ def test_plus_prefix_and_bare_digits_resolve_to_the_same_account():
     account rather than matching the first — which looked exactly like
     "my identity got overwritten" from the outside, even though no
     document was actually mutated."""
-    u1, _ = _login("supervisor", "+919990100010", "First Login")
-    u2, _ = _login("supervisor", "9199901 00010", "Second Login Attempt")
+    u1, _ = _login("site_supervisor", "+919990100010", "First Login")
+    u2, _ = _login("site_supervisor", "9199901 00010", "Second Login Attempt")
     assert u1["id"] == u2["id"], "same phone number in different formats must resolve to the same account"
     assert u2["name"] == "First Login"
 
 
 def test_spacing_and_dashes_are_normalized_consistently():
-    u1, _ = _login("supervisor", "999-010-0011", "Dash Format")
-    u2, _ = _login("supervisor", "999 010 0011", "Space Format")
+    u1, _ = _login("site_supervisor", "999-010-0011", "Dash Format")
+    u2, _ = _login("site_supervisor", "999 010 0011", "Space Format")
     assert u1["id"] == u2["id"]
 
 
 # --------------------------------------------------------------------------
 # GET /api/me reflects server-side changes immediately (no re-login)
 # --------------------------------------------------------------------------
-def test_get_me_reflects_workspace_change_on_same_token(admin):
-    user, headers = _login("coordinator", "9990100020", "V62b Workspace Test")
+def test_get_me_reflects_role_and_workspace_change_on_same_token(admin):
+    """FAC-04: role is now the single action that changes both role AND
+    workspace (auto-derived) - no more separate workspace-assignment step."""
+    user, headers = _login("project_manager", "9990100020", "V62b Workspace Test")
     r1 = requests.get(f"{API}/me", headers=headers, timeout=20)
-    assert r1.json().get("workspace") is None
+    assert r1.json()["workspace"] == "pm"
 
-    requests.post(f"{API}/admin/users/{user['id']}/workspace", json={"workspace": "client"},
+    requests.post(f"{API}/admin/users/{user['id']}/role", json={"role": "client"},
                  headers=admin["headers"], timeout=20)
 
     r2 = requests.get(f"{API}/me", headers=headers, timeout=20)
+    assert r2.json()["role"] == "client"
     assert r2.json()["workspace"] == "client"
 
 
 def test_get_me_reflects_role_change_on_same_token(admin):
-    user, headers = _login("supervisor", "9990100021", "V62b Role Test")
-    requests.post(f"{API}/admin/users/{user['id']}/role", json={"role": "coordinator"},
+    user, headers = _login("site_supervisor", "9990100021", "V62b Role Test")
+    requests.post(f"{API}/admin/users/{user['id']}/role", json={"role": "project_manager"},
                  headers=admin["headers"], timeout=20)
     r = requests.get(f"{API}/me", headers=headers, timeout=20)
-    assert r.json()["role"] == "coordinator"
+    assert r.json()["role"] == "project_manager"
 
 
 # --------------------------------------------------------------------------

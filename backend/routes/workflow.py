@@ -57,10 +57,10 @@ async def generate_workflow(project_id: str, req: GenerateWorkflowRequest, user:
     """Generate a project's workflow from a Workflow Template. Gated the
     same way project management already is (routes/projects.py) —
     supervisors can view and update workflow status on-site, but only
-    coordinator/management can generate the initial workflow, matching
+    Project Manager/management can generate the initial workflow, matching
     how only they can create/edit/archive a project."""
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot generate a project workflow")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can generate a project workflow")
     try:
         return await workflow_engine.generate_workflow(project_id, req.template_id, actor=user)
     except ValueError as e:
@@ -114,6 +114,6 @@ async def seed_default_templates(user: dict = Depends(get_current_user)):
     Residential, Commercial, Interior, Renovation) as empty shells, ready
     for an admin to populate via the existing Knowledge relationship
     mechanism. Mirrors POST /api/projects/seed's idempotent shape."""
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot seed workflow templates")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can seed workflow templates")
     return await workflow_engine.seed_default_templates(actor=user)

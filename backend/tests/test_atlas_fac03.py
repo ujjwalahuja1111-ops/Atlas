@@ -73,13 +73,13 @@ def admin():
 
 @pytest.fixture(scope="session")
 def pm():
-    u, h = _login("coordinator", "9993000002", "FAC03 PM")
+    u, h = _login("project_manager", "9993000002", "FAC03 PM")
     return {"user": u, "headers": h}
 
 
 @pytest.fixture(scope="session")
 def supervisor():
-    u, h = _login("supervisor", "9993000003", "FAC03 Supervisor")
+    u, h = _login("site_supervisor", "9993000003", "FAC03 Supervisor")
     return {"user": u, "headers": h}
 
 
@@ -88,7 +88,7 @@ def supervisor():
 # --------------------------------------------------------------------------
 def test_founder_reproduced_invalid_phone_now_rejected():
     """The exact founder scenario: entering '90000001' must NOT log in."""
-    r = requests.post(f"{API}/auth/login", json={"phone": "90000001", "name": "Anyone", "role": "supervisor"}, timeout=20)
+    r = requests.post(f"{API}/auth/login", json={"phone": "90000001", "name": "Anyone", "role": "site_supervisor"}, timeout=20)
     assert r.status_code == 401, r.text
     assert "token" not in r.json()
 
@@ -105,7 +105,7 @@ def test_login_never_creates_a_user():
     trying to register it fresh - registration must succeed (it
     wouldn't if login had silently created something)."""
     phone = "9993000099"
-    r1 = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "X", "role": "supervisor"}, timeout=20)
+    r1 = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "X", "role": "site_supervisor"}, timeout=20)
     assert r1.status_code == 401
     r2 = requests.post(f"{API}/auth/register", json={"phone": phone, "name": "Real Sign Up"}, timeout=20)
     assert r2.status_code == 200, "registration should succeed - login must not have created anything"
@@ -114,7 +114,7 @@ def test_login_never_creates_a_user():
 def test_existing_account_authenticates_without_modification(admin):
     """Existing phone: authenticate only, never modify role or name."""
     r = requests.post(f"{API}/auth/login",
-                      json={"phone": "9993000001", "name": "Totally Different Typed Name", "role": "supervisor"},
+                      json={"phone": "9993000001", "name": "Totally Different Typed Name", "role": "site_supervisor"},
                       timeout=20)
     assert r.status_code == 200
     assert r.json()["user"]["name"] == "FAC03 Admin"
@@ -153,21 +153,21 @@ def test_invalid_input_rejected_immediately():
 def test_same_phone_always_resolves_to_one_record(admin):
     """Multiple logins with the exact same phone must always return the
     same user id - never a duplicate."""
-    u1, _ = _login("supervisor", "9993000020", "Identity Test")
+    u1, _ = _login("site_supervisor", "9993000020", "Identity Test")
     r2 = requests.post(f"{API}/auth/login", json={"phone": "9993000020", "name": "Different Typed Name", "role": "management"}, timeout=20)
     assert r2.json()["user"]["id"] == u1["id"]
 
 
 def test_register_refuses_a_phone_that_already_has_an_account():
     phone = "9993000021"
-    _login("supervisor", phone, "Existing Account")
+    _login("site_supervisor", phone, "Existing Account")
     r = requests.post(f"{API}/auth/register", json={"phone": phone, "name": "Duplicate Attempt"}, timeout=20)
     assert r.status_code == 400
 
 
 def test_phone_formatting_variants_resolve_to_the_same_account():
-    u1, _ = _login("supervisor", "+919993000022", "Format Test")
-    r2 = requests.post(f"{API}/auth/login", json={"phone": "9199930 00022", "name": "X", "role": "supervisor"}, timeout=20)
+    u1, _ = _login("site_supervisor", "+919993000022", "Format Test")
+    r2 = requests.post(f"{API}/auth/login", json={"phone": "9199930 00022", "name": "X", "role": "site_supervisor"}, timeout=20)
     assert r2.status_code == 200
     assert r2.json()["user"]["id"] == u1["id"]
 
@@ -177,8 +177,8 @@ def test_phone_formatting_variants_resolve_to_the_same_account():
 # --------------------------------------------------------------------------
 @pytest.mark.parametrize("role,expected_default_workspace", [
     ("management", "admin"),
-    ("coordinator", "pm"),
-    ("supervisor", "supervisor"),
+    ("project_manager", "pm"),
+    ("site_supervisor", "supervisor"),
 ])
 def test_role_integrity_chain(role, expected_default_workspace):
     phone = f"99930003{['management','coordinator','supervisor'].index(role)}0"
@@ -195,10 +195,14 @@ def test_role_integrity_chain(role, expected_default_workspace):
 
 
 def test_client_workspace_routing(admin):
-    user, _ = _login("coordinator", "9993000040", "Chain Test Client")
-    requests.post(f"{API}/admin/users/{user['id']}/workspace", json={"workspace": "client"},
+    """FAC-04: Client is now a first-class role - assigning it directly
+    (not a separate workspace-assignment step) automatically derives the
+    correct workspace."""
+    user, _ = _login("site_supervisor", "9993000040", "Chain Test Client")
+    requests.post(f"{API}/admin/users/{user['id']}/role", json={"role": "client"},
                  headers=admin["headers"], timeout=20)
-    r = requests.post(f"{API}/auth/login", json={"phone": "9993000040", "name": "Chain Test Client", "role": "supervisor"}, timeout=20)
+    r = requests.post(f"{API}/auth/login", json={"phone": "9993000040", "name": "Chain Test Client", "role": "site_supervisor"}, timeout=20)
+    assert r.json()["user"]["role"] == "client"
     assert r.json()["user"]["workspace"] == "client"
 
 
@@ -206,11 +210,11 @@ def test_backend_is_the_single_source_of_truth(admin):
     """A role/workspace change is immediately visible via GET /api/me on
     the SAME token - no re-login needed. This is what the frontend's
     cache-refresh mechanism depends on; the backend must never be stale."""
-    user, headers = _login("supervisor", "9993000041", "Source of Truth Test")
-    requests.post(f"{API}/admin/users/{user['id']}/role", json={"role": "coordinator"},
+    user, headers = _login("site_supervisor", "9993000041", "Source of Truth Test")
+    requests.post(f"{API}/admin/users/{user['id']}/role", json={"role": "project_manager"},
                  headers=admin["headers"], timeout=20)
     me = requests.get(f"{API}/me", headers=headers, timeout=20)
-    assert me.json()["role"] == "coordinator"
+    assert me.json()["role"] == "project_manager"
 
 
 # --------------------------------------------------------------------------
@@ -246,10 +250,8 @@ def test_pm_assigns_supervisor_immediately_sees_it(admin, pm, supervisor):
 # --------------------------------------------------------------------------
 @pytest.fixture(scope="session")
 def client_user(admin):
-    u, h = _login("coordinator", "9993000050", "FAC03 Client")
-    requests.post(f"{API}/admin/users/{u['id']}/workspace", json={"workspace": "client"}, headers=admin["headers"], timeout=20)
-    u2, h2 = _login("coordinator", "9993000050", "FAC03 Client")
-    return {"user": u2, "headers": h2}
+    u, h = _login("client", "9993000050", "FAC03 Client")
+    return {"user": u, "headers": h}
 
 
 def test_client_cannot_acknowledge_work(pm, client_user):

@@ -1,12 +1,17 @@
 /**
  * Sprint 3 — Role-based workspaces.
  * Sprint 4 cleanup — removed the manual workspace selector on login.
+ * FAC-04 — Final Authorization Model Freeze: backend roles are now
+ * `management | project_manager | site_supervisor | client` — four
+ * first-class roles, each with its own dedicated workspace. The
+ * previous generic `coordinator` role (which covered both Project
+ * Manager and Client, distinguished only by a separately-assigned
+ * `workspace` field) is gone entirely.
  *
- * Frontend-only. Backend roles remain `supervisor | coordinator | management`.
- * We introduce a *view role* stored in AsyncStorage that governs which
- * navigation, screens and data filters the current user sees. The mapping
- * to backend roles is deliberately one-way: view roles derive backend
- * permissions but never contradict them.
+ * Frontend-only. We introduce a *view role* stored in AsyncStorage that
+ * governs which navigation, screens and data filters the current user
+ * sees. The mapping to backend roles is deliberately one-way: view
+ * roles derive backend permissions but never contradict them.
  *
  * Login used to ask the person to manually pick one of four workspaces
  * (Client / Supervisor / PM / Admin) and derived the backend role from that
@@ -35,14 +40,16 @@ export const VIEW_ROLE_ICON: Record<ViewRole, any> = {
   admin: 'shield-checkmark-outline',
 };
 
-/** Backend role each view role authenticates as. Kept for reference/symmetry
- * with DEFAULT_VIEW_ROLE_FOR below; login no longer reads this directly
- * (see resolveLoginRole/completeLoginRouting) since the workspace picker
- * this drove was removed in the Sprint 4 cleanup. */
+/** Backend role each view role authenticates as. FAC-04: now a clean 1:1
+ * mapping — each view role has exactly one, dedicated backend role, with
+ * zero sharing. Kept for reference/symmetry with DEFAULT_VIEW_ROLE_FOR
+ * below; login no longer reads this directly (see
+ * resolveLoginRole/completeLoginRouting) since the workspace picker this
+ * drove was removed in the Sprint 4 cleanup. */
 export const BACKEND_ROLE_FOR: Record<ViewRole, Role> = {
-  client: 'coordinator',   // read-mostly; the frontend hides everything operational
-  supervisor: 'supervisor',
-  pm: 'coordinator',
+  client: 'client',
+  supervisor: 'site_supervisor',
+  pm: 'project_manager',
   admin: 'management',
 };
 
@@ -57,10 +64,12 @@ export type ViewPerms = {
    * archive/delete projects & sites. Previously projects/index.tsx,
    * projects/[id].tsx, and ops.tsx each derived this from the raw backend
    * role (`user.role !== 'supervisor'`) instead of this abstraction —
-   * harmless today since Client and PM share backend role `coordinator`,
-   * but it meant a read-mostly Client workspace would get full management
-   * rights the moment it became reachable again. This is the single source
-   * of truth now. */
+   * a real gap FAC-04 found and closed at the backend layer too: Client
+   * and Project Manager used to share the generic `coordinator` backend
+   * role, so that check would have let a Client through. Backend now
+   * enforces this independently (routes/projects.py), and Client is its
+   * own first-class role — but this remains the single frontend source
+   * of truth for what to render. */
   canManageProjects: boolean;
   /** When set, proposals list is filtered to this category only. */
   proposalCategoryFilter?: string;
@@ -145,33 +154,19 @@ export async function clearViewRole() {
 // backend role to a workspace — screens must not duplicate this mapping.
 // ---------------------------------------------------------------------------
 
-/** Canonical backend role -> default workspace. `coordinator` collapses to
- * the fuller `pm` workspace: `client` was always a manually-chosen, more
- * restricted lens over the same backend role (there is no backend signal
- * that distinguishes a "client" coordinator from a "PM" coordinator), so it
- * is not something we can auto-detect. `client` remains fully supported in
- * VIEW_PERMS/TABS_FOR for any future flow that sets it explicitly (e.g. if a
- * dedicated backend distinction is ever added) — it is just no longer a
- * login auto-routing target. */
+/** Canonical backend role -> default workspace. FAC-04: this is now a
+ * clean, total 1:1 mapping — every role has exactly one correct
+ * workspace, always. Before this sprint, the generic `coordinator` role
+ * covered both Project Manager and Client with no backend signal to
+ * distinguish them, so `client` could never be auto-derived and instead
+ * required a separate, manually-assigned `workspace` field. That
+ * ambiguity is gone: Client is now its own role, so its workspace is
+ * just as automatically derivable as any other. */
 export const DEFAULT_VIEW_ROLE_FOR: Record<Role, ViewRole> = {
-  supervisor: 'supervisor',
-  coordinator: 'pm',
+  site_supervisor: 'supervisor',
+  project_manager: 'pm',
   management: 'admin',
-};
-
-/**
- * Sprint 4.3 — Identity & Access Foundation. Which workspace options are
- * valid to assign for a given backend role — mirrors
- * `backend/engines/memory_engine.py`'s `WORKSPACE_ROLE_MAP` exactly. Used
- * by the User Management "assign workspace" UI to only offer compatible
- * choices; the backend independently re-validates this on every request
- * (never trust client-side validation alone), so this is a UX convenience,
- * not the actual enforcement boundary.
- */
-export const WORKSPACE_OPTIONS_FOR_ROLE: Record<Role, ViewRole[]> = {
-  supervisor: ['supervisor'],
-  coordinator: ['client', 'pm'],
-  management: ['admin'],
+  client: 'client',
 };
 
 const KNOWN_ROLE_PREFIX = 'atlas.known_role.';
@@ -182,7 +177,7 @@ const KNOWN_ROLE_PREFIX = 'atlas.known_role.';
  * be shared across people with different phone numbers/roles. */
 async function getKnownRole(phone: string): Promise<Role | null> {
   const v = await AsyncStorage.getItem(KNOWN_ROLE_PREFIX + phone);
-  return v === 'supervisor' || v === 'coordinator' || v === 'management' ? v : null;
+  return v === 'management' || v === 'project_manager' || v === 'site_supervisor' || v === 'client' ? v : null;
 }
 
 async function setKnownRole(phone: string, role: Role): Promise<void> {
@@ -192,18 +187,19 @@ async function setKnownRole(phone: string, role: Role): Promise<void> {
 /**
  * Which backend role to authenticate as for this phone number, on this
  * device. Call BEFORE apiLogin(). The login API always requires a role
- * (backend contract unchanged — see routes/auth.py `Role = "supervisor"`
+ * (backend contract unchanged — see routes/auth.py `Role = "site_supervisor"`
  * default), so a role must be supplied either way; we supply the
  * previously-seen one for a returning phone number, or the same safe
- * default the backend itself uses for a brand-new one. This never
- * overrides an existing account's real role with a guess — it only ever
- * "guesses" for a phone+device combo we have never seen before, which is
- * exactly the situation the backend's own default already exists to
- * handle.
+ * default the backend itself uses for a brand-new one. FAC-03/FAC-04:
+ * this guess is never applied to an EXISTING account's stored role — the
+ * backend (memory_engine.upsert_user) makes zero writes to an existing
+ * account on login, full stop — it only ever supplies a starting role for
+ * a genuinely brand-new account created through /auth/register's
+ * approval flow, or a value the backend simply ignores for an existing one.
  */
 export async function resolveLoginRole(phone: string): Promise<Role> {
   const known = await getKnownRole(phone.trim());
-  return known || 'supervisor';
+  return known || 'site_supervisor';
 }
 
 /**
@@ -212,14 +208,13 @@ export async function resolveLoginRole(phone: string): Promise<Role> {
  * Remembers the role for next time and resolves + persists the workspace
  * the user should land in.
  *
- * Sprint 4.3 — Identity & Access Foundation: an Administrator can now
- * explicitly assign a workspace (`user.workspace`) that's independent of
- * the automatic role->workspace derivation below. If present, it wins. If
- * absent — every account that predates this feature, and any new account
- * an admin hasn't explicitly assigned a workspace to yet — falls back to
- * the exact same DEFAULT_VIEW_ROLE_FOR derivation used since Sprint 4,
- * so this is fully backward compatible with zero behaviour change for
- * every existing account.
+ * FAC-04: `user.workspace` is now ALWAYS correctly derived and stored by
+ * the backend from `user.role` (see memory_engine.WORKSPACE_FOR_ROLE) —
+ * there is no longer an independent "assign workspace" action that could
+ * ever leave the two fields inconsistent. The `|| DEFAULT_VIEW_ROLE_FOR[...]`
+ * fallback below is kept purely as a defensive backstop (e.g. a
+ * theoretical pre-migration document this session hasn't touched yet),
+ * not because it's expected to ever actually be needed.
  */
 export async function completeLoginRouting(
   phone: string,

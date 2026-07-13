@@ -8,9 +8,10 @@ import { clearAuth, loadAuth, saveAuth, apiUpdateMe, type User } from '@/src/api
 import { clearViewRole, getViewRole, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
 
 const ROLE_LABEL: Record<string, string> = {
-  supervisor: 'Site Supervisor',
-  coordinator: 'Project Coordinator',
   management: 'Management',
+  project_manager: 'Project Manager',
+  site_supervisor: 'Site Supervisor',
+  client: 'Client',
 };
 
 export default function ProfileScreen() {

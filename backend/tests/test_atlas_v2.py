@@ -60,7 +60,7 @@ def _seeded_admin_headers():
 @pytest.fixture(scope="session")
 def auth():
     """Login the seed test user and return (token, user, headers)."""
-    phone, name, role = "9999988888", "Test User", "supervisor"
+    phone, name, role = "9999988888", "Test User", "site_supervisor"
     r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": name, "role": role}, timeout=20)
     if r.status_code != 200:
         reg = requests.post(f"{API}/auth/register", json={"phone": phone, "name": name}, timeout=20)

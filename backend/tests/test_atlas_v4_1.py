@@ -91,7 +91,7 @@ def _login(role, phone, name):
 
 @pytest.fixture(scope="session")
 def supervisor():
-    u, h = _login("supervisor", "9999977777", "V41 Supervisor")
+    u, h = _login("site_supervisor", "9999977777", "V41 Supervisor")
     return {"user": u, "headers": h}
 
 
@@ -105,7 +105,7 @@ def admin():
 # Existing login behaviour for an already-provisioned account (regression guard)
 # --------------------------------------------------------------------------
 def test_existing_login_unchanged(supervisor):
-    assert supervisor["user"]["role"] == "supervisor"
+    assert supervisor["user"]["role"] == "site_supervisor"
     assert "phone" in supervisor["user"]
     assert "id" in supervisor["user"]
 
@@ -164,9 +164,9 @@ def test_full_approval_workflow(admin):
     assert r_approve.status_code == 200
     assert r_approve.json()["approval_status"] == "approved"
 
-    r_role = requests.post(f"{API}/admin/users/{uid}/role", json={"role": "coordinator"}, headers=h, timeout=20)
+    r_role = requests.post(f"{API}/admin/users/{uid}/role", json={"role": "project_manager"}, headers=h, timeout=20)
     assert r_role.status_code == 200
-    assert r_role.json()["role"] == "coordinator"
+    assert r_role.json()["role"] == "project_manager"
 
     projects = requests.get(f"{API}/projects", headers=h, timeout=20).json()
     if projects:
@@ -217,7 +217,7 @@ def test_update_own_name(supervisor):
     assert r.status_code == 200
     assert r.json()["name"] == "Renamed Supervisor"
     r2 = requests.get(f"{API}/me", headers=h, timeout=20)
-    assert r2.json()["role"] == "supervisor"  # unaffected
+    assert r2.json()["role"] == "site_supervisor"  # unaffected
 
 
 def test_update_own_name_rejects_empty(supervisor):

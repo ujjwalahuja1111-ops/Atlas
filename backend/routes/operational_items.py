@@ -9,19 +9,16 @@ router = APIRouter(prefix="/api", tags=["operations"])
 
 
 def _forbid_client(user: dict, action: str = "perform this action") -> None:
-    """Sprint 6.2 Client Permissions. Defense-in-depth: the frontend
-    (app/op/[id].tsx) already hides these controls for the client
-    workspace, but a client's backend `role` is `coordinator` — the same
-    role a Project Manager has — so nothing at the API layer previously
-    stopped a client account from calling these endpoints directly.
-    `workspace` (Sprint 4.3) is the only reliable signal that
-    distinguishes a client from a PM at the backend, so that is what
-    this checks, not `role`. Clients may still transition a
-    client_approval item to fulfilled/cancelled (approve/reject) and add
-    comments — see the `transition` and `comment` routes below, which do
-    NOT call this guard.
+    """Client permission guard. FAC-04 — Final Authorization Model Freeze:
+    Client is now a first-class backend role, so this checks `role`
+    directly. (Previously — Sprint 6.2 — a client's backend role was the
+    same generic `coordinator` a Project Manager had, so `workspace` was
+    the only reliable signal; that ambiguity no longer exists.) Clients
+    may still transition a client_approval item to fulfilled/cancelled
+    (approve/reject) and add comments — see the `transition` and
+    `comment` routes below, which do NOT call this guard.
     """
-    if user.get("workspace") == "client":
+    if user.get("role") == "client":
         raise HTTPException(status_code=403, detail=f"Clients cannot {action}.")
 
 
@@ -53,7 +50,7 @@ async def create_item(req: CreateItem, user: dict = Depends(get_current_user)):
             title=req.title,
             description=req.description,
             priority=req.priority,
-            origin_type=req.origin_type if user["role"] == "supervisor" else (
+            origin_type=req.origin_type if user["role"] == "site_supervisor" else (
                 req.origin_type if req.origin_type in operations_engine.ORIGIN_TYPES else user["role"]
             ),
             origin_reference_id=req.origin_reference_id,
@@ -108,11 +105,11 @@ class TransitionReq(BaseModel):
 
 @router.post("/operational-items/{item_id}/transition")
 async def transition(item_id: str, req: TransitionReq, user: dict = Depends(get_current_user)):
-    # Sprint 6.2 Client Permissions: a client may approve (-> fulfilled) or
-    # reject (-> cancelled) a client_approval item — nothing else. Every
-    # other transition (assignment lifecycle, closing, reopening, etc.) on
-    # any category is an operational action, not a client one.
-    if user.get("workspace") == "client":
+    # FAC-04: a client may approve (-> fulfilled) or reject (-> cancelled)
+    # a client_approval item — nothing else. Every other transition
+    # (assignment lifecycle, closing, reopening, etc.) on any category is
+    # an operational action, not a client one.
+    if user.get("role") == "client":
         item = await operations_engine.get_item(item_id)
         if not item:
             raise HTTPException(status_code=404, detail="Item not found")
@@ -135,6 +132,14 @@ class AssignReq(BaseModel):
 @router.post("/operational-items/{item_id}/assign")
 async def assign(item_id: str, req: AssignReq, user: dict = Depends(get_current_user)):
     _forbid_client(user, "assign or reassign work")
+    # FAC-04 — Final Authorization Model Freeze: "Site Supervisor must not
+    # assign work" is now enforced at the backend, not just implicitly
+    # absent from the frontend. Only management/project_manager may
+    # assign or reassign - the same allowlist already used for project/
+    # workflow/proposal management (routes/projects.py, routes/workflow.py,
+    # routes/ai_proposals.py).
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can assign or reassign work.")
     from core.db import db
     assignee = await db.users.find_one({"id": req.assigned_to_user_id}, {"_id": 0})
     if not assignee:

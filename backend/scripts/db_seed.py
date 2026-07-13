@@ -74,28 +74,32 @@ def _days_ago(n: int) -> str:
 # Users — two per role, predictable phone numbers, immediately approved
 # ---------------------------------------------------------------------------
 USER_SEED = [
-    # (phone, name, backend_role, explicit_workspace_or_None)
-    ("9000000001", "Atlas Admin 1", "management", None),
-    ("9000000002", "Atlas Admin 2", "management", None),
-    ("9000000011", "Project Manager 1", "coordinator", None),   # coordinator already defaults to 'pm'
-    ("9000000012", "Project Manager 2", "coordinator", None),
-    ("9000000021", "Site Supervisor 1", "supervisor", None),
-    ("9000000022", "Site Supervisor 2", "supervisor", None),
-    ("9000000031", "Client 1", "coordinator", "client"),         # needs the explicit override
-    ("9000000032", "Client 2", "coordinator", "client"),
+    # (phone, name, backend_role) — workspace is now purely derived from
+    # role (FAC-04), so there is no separate override to specify here.
+    ("9000000001", "Atlas Admin 1", "management"),
+    ("9000000002", "Atlas Admin 2", "management"),
+    ("9000000011", "Project Manager 1", "project_manager"),
+    ("9000000012", "Project Manager 2", "project_manager"),
+    ("9000000021", "Site Supervisor 1", "site_supervisor"),
+    ("9000000022", "Site Supervisor 2", "site_supervisor"),
+    ("9000000031", "Client 1", "client"),
+    ("9000000032", "Client 2", "client"),
 ]
 
 
 async def seed_users() -> dict[str, dict]:
     """Returns {name: user_doc}. upsert_user() is already idempotent by
-    phone (updates name/role in place rather than duplicating), which is
-    exactly the "no duplicate users after multiple runs" requirement —
-    reused as-is, not reimplemented."""
+    phone (updates name in place rather than duplicating — see Sprint 6.2
+    Identity Security: role is NOT updated on a repeat upsert, matching
+    login's own behaviour, so this also re-asserts the correct role via
+    set_user_role() below, which is idempotent and safe to call every
+    run), which is exactly the "no duplicate users after multiple runs"
+    requirement — reused as-is, not reimplemented."""
     users: dict[str, dict] = {}
-    for phone, name, role, workspace in USER_SEED:
+    for phone, name, role in USER_SEED:
         user = await memory_engine.upsert_user(phone=phone, name=name, role=role)
-        if workspace:
-            user = await memory_engine.set_user_workspace(user["id"], workspace)
+        if user["role"] != role:
+            user = await memory_engine.set_user_role(user["id"], role)
         users[name] = user
     print(f"  users: {len(users)} ready (2 admin, 2 PM, 2 supervisor, 2 client)")
     return users
@@ -512,8 +516,8 @@ async def main() -> None:
     await _print_summary()
 
     print("\nLog in with any of:")
-    for phone, name, role, workspace in USER_SEED:
-        print(f"  {phone}  {name}  ({workspace or role})")
+    for phone, name, role in USER_SEED:
+        print(f"  {phone}  {name}  ({role})")
 
     await close_client()
 

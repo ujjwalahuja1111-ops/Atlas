@@ -38,15 +38,13 @@ export async function apiAssignUserRole(id: string, role: Role): Promise<User> {
   return handle(r);
 }
 
-/** Sprint 4.3 — Identity & Access Foundation. Assign the admin-controlled
- * UI workspace. The backend validates it's compatible with the account's
- * current role (assign a compatible role first if this 400s). */
-export async function apiAssignUserWorkspace(id: string, workspace: 'client' | 'supervisor' | 'pm' | 'admin'): Promise<User> {
-  const r = await apiFetch(`${BACKEND}/api/admin/users/${id}/workspace`, {
-    method: 'POST', headers: await jsonHeaders(), body: JSON.stringify({ workspace }),
-  });
-  return handle(r);
-}
+// FAC-04 — Final Authorization Model Freeze: apiAssignUserWorkspace and its
+// backend endpoint (POST /api/admin/users/{id}/workspace) are removed.
+// Workspace is now a pure, deterministic function of role — assigning a
+// role (above) is the only identity-shaping action an admin takes; it
+// automatically re-derives and stores the correct workspace, so there is
+// no longer a second, independent action that could leave the two out of
+// sync.
 
 export async function apiAssignUserProjects(id: string, projectIds: string[]): Promise<User> {
   const r = await apiFetch(`${BACKEND}/api/admin/users/${id}/projects`, {

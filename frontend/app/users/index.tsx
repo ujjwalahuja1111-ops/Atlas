@@ -6,11 +6,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { getViewRole, DEFAULT_VIEW_ROLE_FOR, VIEW_ROLE_LABEL, WORKSPACE_OPTIONS_FOR_ROLE, type ViewRole } from '@/src/roles';
+import { getViewRole, DEFAULT_VIEW_ROLE_FOR, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
 import { apiListProjects, type Project, type User, type Role } from '@/src/api';
 import {
   apiListAdminUsers, apiApproveUser, apiRejectUser, apiAssignUserRole,
-  apiAssignUserWorkspace, apiAssignUserProjects, apiSetUserActive, type ApprovalStatus,
+  apiAssignUserProjects, apiSetUserActive, type ApprovalStatus,
 } from '@/src/admin_users_api';
 import { toCsv, exportCsv } from '@/src/csv';
 
@@ -21,7 +21,16 @@ const FILTERS: { key: ApprovalStatus | 'all'; label: string }[] = [
   { key: 'all', label: 'ALL' },
 ];
 
-const ROLE_OPTIONS: Role[] = ['supervisor', 'coordinator', 'management'];
+// FAC-04 — Final Authorization Model Freeze. Four first-class roles, each
+// with exactly one dedicated workspace (see src/roles.ts
+// DEFAULT_VIEW_ROLE_FOR) — assigning a role is now the ONLY identity
+// action an admin takes; there is no separate "assign workspace" step
+// anymore (see the removed onAssignWorkspace / apiAssignUserWorkspace).
+const ROLE_OPTIONS: Role[] = ['management', 'project_manager', 'site_supervisor', 'client'];
+const ROLE_LABEL: Record<Role, string> = {
+  management: 'Admin', project_manager: 'Project Manager',
+  site_supervisor: 'Site Supervisor', client: 'Client',
+};
 
 export default function UserManagementScreen() {
   const router = useRouter();
@@ -92,16 +101,6 @@ export default function UserManagementScreen() {
       setAssigningUser(updated);
       await load();
     } catch (e: any) { Alert.alert('Assign role failed', String(e?.message || e)); }
-    finally { setBusy(false); }
-  };
-
-  const onAssignWorkspace = async (u: User, workspace: ViewRole) => {
-    setBusy(true);
-    try {
-      const updated = await apiAssignUserWorkspace(u.id, workspace);
-      setAssigningUser(updated);
-      await load();
-    } catch (e: any) { Alert.alert('Assign workspace failed', String(e?.message || e)); }
     finally { setBusy(false); }
   };
 
@@ -336,34 +335,18 @@ export default function UserManagementScreen() {
                   <Pressable key={r} testID={`user-role-${r}`}
                     onPress={() => assigningUser && onAssignRole(assigningUser, r)}
                     style={[styles.roleChip, isActive && styles.roleChipActive]}>
-                    <Text style={[styles.roleChipText, isActive && styles.roleChipTextActive]}>{r.toUpperCase()}</Text>
+                    <Text style={[styles.roleChipText, isActive && styles.roleChipTextActive]}>{ROLE_LABEL[r].toUpperCase()}</Text>
                   </Pressable>
                 );
               })}
             </View>
-
-            <Text style={[styles.label, { marginTop: 14 }]}>Workspace</Text>
-            {assigningUser?.requested_workspace && !assigningUser.workspace && (
+            {/* FAC-04: workspace is now purely derived from role (see
+                src/roles.ts DEFAULT_VIEW_ROLE_FOR) - there is no longer a
+                separate assignment step here. */}
+            {assigningUser?.requested_workspace && (
               <Text style={styles.requestedHint}>
                 Requested at Sign Up: {VIEW_ROLE_LABEL[assigningUser.requested_workspace]}
               </Text>
-            )}
-            <View style={styles.roleRow}>
-              {assigningUser && WORKSPACE_OPTIONS_FOR_ROLE[assigningUser.role].map((w) => {
-                const isActive = assigningUser?.workspace === w;
-                return (
-                  <Pressable key={w} testID={`user-workspace-${w}`}
-                    onPress={() => assigningUser && onAssignWorkspace(assigningUser, w)}
-                    style={[styles.roleChip, isActive && styles.roleChipActive]}>
-                    <Text style={[styles.roleChipText, isActive && styles.roleChipTextActive]}>
-                      {VIEW_ROLE_LABEL[w].toUpperCase()}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            {assigningUser && WORKSPACE_OPTIONS_FOR_ROLE[assigningUser.role].length === 0 && (
-              <Text style={styles.emptyBody}>No workspace options for this role.</Text>
             )}
 
             <Text style={[styles.label, { marginTop: 14 }]}>Projects</Text>

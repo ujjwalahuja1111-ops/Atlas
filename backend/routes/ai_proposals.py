@@ -34,8 +34,8 @@ class AcceptReq(BaseModel):
 
 @router.post("/ai-proposals/{proposal_id}/accept")
 async def accept(proposal_id: str, req: AcceptReq, user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Only coordinators/management can accept proposals")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can accept proposals")
     edits = {k: v for k, v in req.model_dump().items() if v is not None and k != "assigned_to_user_id"}
     try:
         item = await operations_engine.accept_ai_proposal(
@@ -60,8 +60,8 @@ class RejectReq(BaseModel):
 
 @router.post("/ai-proposals/{proposal_id}/reject")
 async def reject(proposal_id: str, req: RejectReq, user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Only coordinators/management can reject proposals")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can reject proposals")
     try:
         return await operations_engine.reject_ai_proposal(
             proposal_id=proposal_id, actor=user, reason=req.reason,

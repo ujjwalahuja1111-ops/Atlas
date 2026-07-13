@@ -90,17 +90,16 @@ def admin():
 
 @pytest.fixture(scope="session")
 def pm():
-    u, h = _login("coordinator", "9970100002", "V62 PM")
+    u, h = _login("project_manager", "9970100002", "V62 PM")
     return {"user": u, "headers": h}
 
 
 @pytest.fixture(scope="session")
 def client_user(admin):
-    u, h = _login("coordinator", "9970100003", "V62 Client")
-    requests.post(f"{API}/admin/users/{u['id']}/workspace", json={"workspace": "client"},
-                 headers=admin["headers"], timeout=20)
-    u2, h2 = _login("coordinator", "9970100003", "V62 Client")
-    return {"user": u2, "headers": h2}
+    # FAC-04: Client is now a first-class role, directly assignable - no
+    # more separate workspace-assignment step.
+    u, h = _login("client", "9970100003", "V62 Client")
+    return {"user": u, "headers": h}
 
 
 @pytest.fixture(scope="session")
@@ -117,26 +116,26 @@ def project_and_site(admin):
 # --------------------------------------------------------------------------
 def test_login_does_not_modify_existing_account_name():
     phone = "9970100010"
-    _login("supervisor", phone, "Real Name")
-    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Typed Something Else", "role": "supervisor"}, timeout=20)
+    _login("site_supervisor", phone, "Real Name")
+    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Typed Something Else", "role": "site_supervisor"}, timeout=20)
     assert r.json()["user"]["name"] == "Real Name"
 
 
 def test_login_does_not_modify_existing_account_role():
     phone = "9970100011"
     _login("management", phone, "V62 Role Test")
-    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "V62 Role Test", "role": "supervisor"}, timeout=20)
+    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "V62 Role Test", "role": "site_supervisor"}, timeout=20)
     assert r.json()["user"]["role"] == "management"
 
 
 def test_profile_management_is_the_only_way_to_change_name(admin):
     phone = "9970100012"
-    user, headers = _login("supervisor", phone, "Before Edit")
+    user, headers = _login("site_supervisor", phone, "Before Edit")
     r = requests.patch(f"{API}/me", json={"name": "After Edit"}, headers=headers, timeout=20)
     assert r.status_code == 200
     assert r.json()["name"] == "After Edit"
 
-    r2 = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Attempted Revert", "role": "supervisor"}, timeout=20)
+    r2 = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Attempted Revert", "role": "site_supervisor"}, timeout=20)
     assert r2.json()["user"]["name"] == "After Edit"
 
 
@@ -146,7 +145,7 @@ def test_unknown_phone_rejected_not_auto_created():
     mechanic is gone). An unrecognized phone must be rejected outright;
     account creation is exclusively /auth/register's job."""
     phone = "9970100013"
-    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Brand New", "role": "coordinator"}, timeout=20)
+    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Brand New", "role": "project_manager"}, timeout=20)
     assert r.status_code == 401, r.text
 
 

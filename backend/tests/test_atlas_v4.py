@@ -97,13 +97,13 @@ def _login(role, phone, name):
 
 @pytest.fixture(scope="session")
 def supervisor():
-    u, h = _login("supervisor", "9999988888", "Test User")
+    u, h = _login("site_supervisor", "9999988888", "Test User")
     return {"user": u, "headers": h}
 
 
 @pytest.fixture(scope="session")
 def coordinator():
-    u, h = _login("coordinator", "9222222222", "Priya Coordinator")
+    u, h = _login("project_manager", "9222222222", "Priya Coordinator")
     return {"user": u, "headers": h}
 
 

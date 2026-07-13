@@ -89,7 +89,7 @@ def admin():
 
 @pytest.fixture(scope="session")
 def supervisor():
-    u, h = _login("supervisor", "9400000002", "V5 Supervisor")
+    u, h = _login("site_supervisor", "9400000002", "V5 Supervisor")
     return {"user": u, "headers": h}
 
 

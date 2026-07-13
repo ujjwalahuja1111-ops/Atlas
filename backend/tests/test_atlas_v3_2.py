@@ -96,13 +96,13 @@ def _wait_props(headers, eid, statuses=("generated", "empty", "failed"), timeout
 
 @pytest.fixture(scope="session")
 def supervisor():
-    u, h = _login("supervisor", "9999988888", "Test User")
+    u, h = _login("site_supervisor", "9999988888", "Test User")
     return {"user": u, "headers": h}
 
 
 @pytest.fixture(scope="session")
 def coordinator():
-    u, h = _login("coordinator", "9222222222", "Priya Coordinator")
+    u, h = _login("project_manager", "9222222222", "Priya Coordinator")
     return {"user": u, "headers": h}
 
 
@@ -149,9 +149,9 @@ class TestMultiIntent:
     def test_owner_role_mapping(self, multi_intent_event):
         roles = {p["category"]: p["suggested_owner_role"] for p in multi_intent_event["proposals"]}
         if "material_requirement" in roles:
-            assert roles["material_requirement"] == "coordinator"
+            assert roles["material_requirement"] == "project_manager"
         if "client_approval" in roles:
-            assert roles["client_approval"] == "client_coordinator"
+            assert roles["client_approval"] == "project_manager"
         if "site_issue" in roles:
             assert roles["site_issue"] == "site_engineer"
 
@@ -201,11 +201,11 @@ class TestUsers:
             assert set(u.keys()) == {"id", "name", "role"}, f"phone may have leaked: {u.keys()}"
 
     def test_users_role_filter(self, coordinator):
-        r = requests.get(f"{API}/users", params={"role": "coordinator"},
+        r = requests.get(f"{API}/users", params={"role": "project_manager"},
                          headers=coordinator["headers"], timeout=10)
         assert r.status_code == 200
         for u in r.json():
-            assert u["role"] == "coordinator"
+            assert u["role"] == "project_manager"
 
 
 # 4. Assignment workflow (append-only ledger)
@@ -272,7 +272,7 @@ class TestAcceptWithAssign:
         assert props, "no pending material proposal"
         pid = props[0]["id"]
 
-        users = requests.get(f"{API}/users", params={"role": "coordinator"},
+        users = requests.get(f"{API}/users", params={"role": "project_manager"},
                              headers=coordinator["headers"], timeout=10).json()
         if not users:
             users = requests.get(f"{API}/users", headers=coordinator["headers"], timeout=10).json()

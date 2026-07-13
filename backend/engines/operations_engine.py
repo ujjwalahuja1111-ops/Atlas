@@ -27,7 +27,7 @@ CATEGORIES = {
     "commitment", "inspection", "follow_up", "general",
 }
 ORIGIN_TYPES = {
-    "ai_proposal", "manual", "coordinator", "management",
+    "ai_proposal", "manual", "project_manager", "management",
     "client", "architect", "future_integration",
 }
 STATUSES = ["open", "assigned", "acknowledged", "in_progress",

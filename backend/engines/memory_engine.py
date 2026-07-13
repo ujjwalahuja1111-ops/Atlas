@@ -32,6 +32,52 @@ async def _insert(collection, doc: dict) -> dict:
 
 
 # ---------------- users ----------------
+async def migrate_legacy_role_vocabulary() -> dict:
+    """FAC-04 — Final Authorization Model Freeze. Runs once at every server
+    startup (see server.py's lifespan, right after ensure_indexes()) and
+    is fully idempotent — a no-op once every account has already been
+    migrated, safe to run on every restart forever.
+
+    Before this sprint, the backend only recognised three roles:
+    "management", "supervisor", and the generic "coordinator" — which
+    covered BOTH Project Manager and Client, distinguished only by a
+    separate `workspace` field. That is exactly the "unnecessary
+    permission complexity and future security risk" this sprint exists
+    to remove: Client is now a first-class role of its own, with zero
+    inherited permissions from Project Manager.
+
+    Migrates any account still using the old vocabulary:
+      - role "supervisor"                              -> "site_supervisor"
+      - role "coordinator", workspace "client"          -> "client"
+      - role "coordinator", anything else (workspace
+        "pm"/None/legacy)                               -> "project_manager"
+    `workspace` is re-derived from the new role in every case (see
+    WORKSPACE_FOR_ROLE), so the two fields can never end up inconsistent
+    post-migration.
+    """
+    migrated = {"site_supervisor": 0, "client": 0, "project_manager": 0}
+
+    r1 = await db.users.update_many(
+        {"role": "supervisor"},
+        {"$set": {"role": "site_supervisor", "workspace": WORKSPACE_FOR_ROLE["site_supervisor"]}},
+    )
+    migrated["site_supervisor"] = r1.modified_count
+
+    r2 = await db.users.update_many(
+        {"role": "coordinator", "workspace": "client"},
+        {"$set": {"role": "client", "workspace": WORKSPACE_FOR_ROLE["client"]}},
+    )
+    migrated["client"] = r2.modified_count
+
+    r3 = await db.users.update_many(
+        {"role": "coordinator"},  # whatever's left after the client migration above
+        {"$set": {"role": "project_manager", "workspace": WORKSPACE_FOR_ROLE["project_manager"]}},
+    )
+    migrated["project_manager"] = r3.modified_count
+
+    return migrated
+
+
 async def upsert_user(phone: str, name: str, role: str) -> dict:
     """Login upsert. For a brand-new phone number, creates the account
     with the given name and role (self-service account creation — the
@@ -73,6 +119,7 @@ async def upsert_user(phone: str, name: str, role: str) -> dict:
         "phone": phone,
         "name": name,
         "role": role,
+        "workspace": WORKSPACE_FOR_ROLE.get(role),
         "created_at": _now(),
     }
     return await _insert(db.users, doc)
@@ -117,20 +164,23 @@ async def get_user_by_phone(phone: str) -> Optional[dict]:
 # as already-approved and active — no migration script needed.
 APPROVAL_STATUSES = {"pending", "approved", "rejected"}
 
-# Sprint 4.3 — Identity & Access Foundation.
-# `workspace` is the admin-assigned UI experience (client/supervisor/pm/
-# admin) — a NEW, EXPLICIT field, distinct from the derived mapping
-# frontend/src/roles.ts has always used (DEFAULT_VIEW_ROLE_FOR[role]).
-# WORKSPACE_ROLE_MAP is the same conceptual pairing that mapping already
-# encodes; a workspace can only be assigned if it's compatible with the
-# account's current backend role, so it's never possible to end up with
-# (e.g.) workspace="admin" on a non-management account, which would show
-# Admin navigation while every admin-gated backend call still 403s.
+# FAC-04 — Final Authorization Model Freeze.
+# `workspace` is now a PURE, deterministic function of role — there is
+# exactly one correct workspace per role, so it is stored (for cheap
+# reads / API response compatibility) but NEVER independently assigned.
+# This replaces Sprint 4.3's WORKSPACE_ROLE_MAP/set_user_workspace, which
+# existed specifically to resolve an ambiguity that no longer exists:
+# the generic "coordinator" role used to cover BOTH Project Manager and
+# Client, so an explicit, separately-assigned workspace was the only way
+# to tell them apart. With Client now a first-class role of its own,
+# role IS the workspace — see ROLES/WORKSPACE_FOR_ROLE below.
+ROLES = {"management", "project_manager", "site_supervisor", "client"}
 WORKSPACES = {"client", "supervisor", "pm", "admin"}
-WORKSPACE_ROLE_MAP: dict[str, set[str]] = {
-    "supervisor": {"supervisor"},
-    "coordinator": {"client", "pm"},
-    "management": {"admin"},
+WORKSPACE_FOR_ROLE: dict[str, str] = {
+    "management": "admin",
+    "project_manager": "pm",
+    "site_supervisor": "supervisor",
+    "client": "client",
 }
 
 
@@ -141,9 +191,10 @@ async def register_user(phone: str, name: str, requested_workspace: Optional[str
 
     `requested_workspace` (Sprint 4.3 — "User Type" on the Sign Up form)
     is purely informational: it's shown to the Administrator to help them
-    decide, but is NEVER auto-applied to the real `workspace` field, which
-    starts unset. This is what makes "no workspace until assigned" literally
-    true even though Sign Up now collects a workspace preference.
+    decide, but is NEVER auto-applied to the real `role` (and therefore
+    `workspace`) field, which starts as an irrelevant placeholder until
+    approval. This is what makes "no role/workspace until assigned"
+    literally true even though Sign Up now collects a preference.
 
     `scope_projects=True` is what makes "no project access, no site access"
     literally true: list_projects()/list_sites() only apply this
@@ -156,15 +207,16 @@ async def register_user(phone: str, name: str, requested_workspace: Optional[str
         raise ValueError("An account with this phone number already exists. Please log in instead.")
     if requested_workspace and requested_workspace not in WORKSPACES:
         raise ValueError(f"Invalid requested_workspace '{requested_workspace}'. Must be one of {sorted(WORKSPACES)}")
+    placeholder_role = "site_supervisor"  # irrelevant until approved; admin assigns the real role
     doc = {
         "id": _new_id(),
         "phone": phone,
         "name": name,
-        "role": "supervisor",  # placeholder only — irrelevant until approved; admin assigns the real role
+        "role": placeholder_role,
+        "workspace": WORKSPACE_FOR_ROLE[placeholder_role],
         "approval_status": "pending",
         "is_active": True,
         "assigned_project_ids": [],
-        "workspace": None,
         "requested_workspace": requested_workspace,
         "scope_projects": True,
         "created_at": _now(),
@@ -173,13 +225,13 @@ async def register_user(phone: str, name: str, requested_workspace: Optional[str
 
 
 def _backfill_user_defaults(d: dict) -> dict:
-    """Single place applying every Sprint 4.1/4.3 backward-compatible
+    """Single place applying every Sprint 4.1/4.3/FAC-04 backward-compatible
     default, so list_users_admin/get_user can't drift out of sync with
     each other."""
     d.setdefault("approval_status", "approved")
     d.setdefault("is_active", True)
     d.setdefault("assigned_project_ids", [])
-    d.setdefault("workspace", None)
+    d.setdefault("workspace", WORKSPACE_FOR_ROLE.get(d.get("role"), None))
     d.setdefault("requested_workspace", None)
     d.setdefault("scope_projects", False)
     return d
@@ -206,35 +258,15 @@ async def set_user_approval(user_id: str, approval_status: str) -> Optional[dict
 
 
 async def set_user_role(user_id: str, role: str) -> Optional[dict]:
-    upd = {"role": role, "updated_at": _now()}
-    # Sprint 4.3: if the currently-stored workspace is no longer valid for
-    # the new role (e.g. role changed away from management while
-    # workspace="admin"), clear it rather than leave an inconsistent
-    # combination in place — the admin must explicitly re-assign a
-    # compatible workspace. Cheaper and safer than trying to guess a new one.
-    current = await get_user(user_id)
-    if current and current.get("workspace") and current["workspace"] not in WORKSPACE_ROLE_MAP.get(role, set()):
-        upd["workspace"] = None
+    """FAC-04: role is now the single source of truth for workspace — every
+    role change automatically re-derives and stores the correct workspace
+    via WORKSPACE_FOR_ROLE, so the two fields can never drift out of sync.
+    There is no longer a separate "assign workspace" action for an admin
+    to forget or get wrong."""
+    if role not in ROLES:
+        raise ValueError(f"Invalid role '{role}'. Must be one of {sorted(ROLES)}")
+    upd = {"role": role, "workspace": WORKSPACE_FOR_ROLE[role], "updated_at": _now()}
     await db.users.update_one({"id": user_id}, {"$set": upd})
-    return await get_user(user_id)
-
-
-async def set_user_workspace(user_id: str, workspace: str) -> Optional[dict]:
-    """Admin-assigns the UI workspace (Sprint 4.3). Validated against the
-    account's CURRENT role via WORKSPACE_ROLE_MAP — assign role first if
-    the desired workspace isn't yet compatible."""
-    if workspace not in WORKSPACES:
-        raise ValueError(f"Invalid workspace '{workspace}'. Must be one of {sorted(WORKSPACES)}")
-    current = await get_user(user_id)
-    if not current:
-        return None
-    role = current.get("role")
-    if workspace not in WORKSPACE_ROLE_MAP.get(role, set()):
-        raise ValueError(
-            f"Workspace '{workspace}' is not compatible with role '{role}'. "
-            f"Compatible workspaces for this role: {sorted(WORKSPACE_ROLE_MAP.get(role, set()))}"
-        )
-    await db.users.update_one({"id": user_id}, {"$set": {"workspace": workspace, "updated_at": _now()}})
     return await get_user(user_id)
 
 

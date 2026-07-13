@@ -90,7 +90,7 @@ def test_existing_account_role_survives_a_guessed_role_login():
     user, _ = _login("management", phone, "V6 Admin Test")
     assert user["role"] == "management"
 
-    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "V6 Admin Test", "role": "supervisor"}, timeout=20)
+    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "V6 Admin Test", "role": "site_supervisor"}, timeout=20)
     assert r.status_code == 200
     body = r.json()
 
@@ -107,11 +107,11 @@ def test_name_does_not_update_on_plain_login():
     modified by logging in. Only PATCH /api/me (self-service) or an
     admin action may change an existing account's identity."""
     phone = "9600100002"
-    _login("coordinator", phone, "Original Name")
-    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Someone Typed This", "role": "supervisor"}, timeout=20)
+    _login("project_manager", phone, "Original Name")
+    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Someone Typed This", "role": "site_supervisor"}, timeout=20)
     body = r.json()["user"]
     assert body["name"] == "Original Name"
-    assert body["role"] == "coordinator"
+    assert body["role"] == "project_manager"
 
 
 def test_unknown_phone_is_rejected_not_auto_created():
@@ -121,40 +121,38 @@ def test_unknown_phone_is_rejected_not_auto_created():
     phone number must now be rejected outright; account creation is
     exclusively /auth/register's job."""
     phone = "9600100003"
-    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Brand New", "role": "coordinator"}, timeout=20)
+    r = requests.post(f"{API}/auth/login", json={"phone": phone, "name": "Brand New", "role": "project_manager"}, timeout=20)
     assert r.status_code == 401, r.text
 
 
 def test_role_change_still_works_via_admin_endpoint():
     admin, admin_headers = _login("management", "9600100004", "V6 Admin")
-    target, _ = _login("supervisor", "9600100005", "V6 Target")
-    r = requests.post(f"{API}/admin/users/{target['id']}/role", json={"role": "coordinator"}, headers=admin_headers, timeout=20)
+    target, _ = _login("site_supervisor", "9600100005", "V6 Target")
+    r = requests.post(f"{API}/admin/users/{target['id']}/role", json={"role": "project_manager"}, headers=admin_headers, timeout=20)
     assert r.status_code == 200
-    assert r.json()["role"] == "coordinator"
+    assert r.json()["role"] == "project_manager"
 
 
 # --------------------------------------------------------------------------
 # Workspace routing resolves correctly once role is no longer corrupted
 # --------------------------------------------------------------------------
 def test_workspace_routing_for_every_role():
-    DEFAULT_VIEW_ROLE_FOR = {"supervisor": "supervisor", "coordinator": "pm", "management": "admin"}
-    admin, admin_headers = _login("management", "9600100010", "V6 Routing Admin")
+    # FAC-04: workspace is now a pure, total function of role - all four
+    # roles, including client, are directly assignable and auto-derive
+    # their one correct workspace.
+    default_view_role_for = {"site_supervisor": "supervisor", "project_manager": "pm",
+                             "management": "admin", "client": "client"}
+    _login("management", "9600100010", "V6 Routing Admin")
 
     for phone, name, role, expected_workspace in [
         ("9600100011", "V6 Admin", "management", "admin"),
-        ("9600100012", "V6 PM", "coordinator", "pm"),
-        ("9600100013", "V6 Sup", "supervisor", "supervisor"),
+        ("9600100012", "V6 PM", "project_manager", "pm"),
+        ("9600100013", "V6 Sup", "site_supervisor", "supervisor"),
+        ("9600100014", "V6 Client", "client", "client"),
     ]:
         user, _ = _login(role, phone, name)
-        resolved = user.get("workspace") or DEFAULT_VIEW_ROLE_FOR[user["role"]]
+        resolved = user.get("workspace") or default_view_role_for[user["role"]]
         assert resolved == expected_workspace, f"{name}: expected {expected_workspace}, got {resolved}"
-
-    client, _ = _login("coordinator", "9600100014", "V6 Client")
-    requests.post(f"{API}/admin/users/{client['id']}/workspace", json={"workspace": "client"}, headers=admin_headers, timeout=20)
-    r = requests.post(f"{API}/auth/login", json={"phone": "9600100014", "name": "V6 Client", "role": "supervisor"}, timeout=20)
-    user = r.json()["user"]
-    resolved = user.get("workspace") or DEFAULT_VIEW_ROLE_FOR[user["role"]]
-    assert resolved == "client"
 
 
 # --------------------------------------------------------------------------

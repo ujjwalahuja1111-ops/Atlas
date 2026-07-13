@@ -78,7 +78,7 @@ def _login(role, phone, name):
 
 @pytest.fixture(scope="session")
 def supervisor():
-    u, h = _login("supervisor", "9999955555", "V42 Supervisor")
+    u, h = _login("site_supervisor", "9999955555", "V42 Supervisor")
     return {"user": u, "headers": h}
 
 
@@ -188,5 +188,5 @@ def test_regression_existing_user_management_endpoints_unchanged(admin):
     reg = requests.post(f"{API}/auth/register", json={"phone": "9888800003", "name": "V42 Regression"}, timeout=20).json()
     uid = reg["user"]["id"]
     assert requests.post(f"{API}/admin/users/{uid}/approve", headers=h, timeout=20).status_code == 200
-    assert requests.post(f"{API}/admin/users/{uid}/role", json={"role": "coordinator"}, headers=h, timeout=20).status_code == 200
+    assert requests.post(f"{API}/admin/users/{uid}/role", json={"role": "project_manager"}, headers=h, timeout=20).status_code == 200
     assert requests.post(f"{API}/admin/users/{uid}/active", json={"is_active": False}, headers=h, timeout=20).status_code == 200

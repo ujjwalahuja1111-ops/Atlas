@@ -15,7 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from core.db import ensure_indexes, close_client
 from core.settings import PROJECT_NAME, APP_VERSION
-from engines import intelligence_engine
+from engines import intelligence_engine, memory_engine
 from routes import auth as auth_routes
 from routes import projects as projects_routes
 from routes import events as events_routes
@@ -40,6 +40,12 @@ logger = logging.getLogger("atlas")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await ensure_indexes()
+    # FAC-04 — Final Authorization Model Freeze. Idempotent; a no-op once
+    # every account has already been migrated, so this is safe to run on
+    # every restart forever, not just once.
+    migrated = await memory_engine.migrate_legacy_role_vocabulary()
+    if any(migrated.values()):
+        logger.info(f"FAC-04 role migration: {migrated}")
     await intelligence_engine.start_worker()
     logger.info(f"{PROJECT_NAME} {APP_VERSION} ready")
     yield

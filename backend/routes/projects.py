@@ -43,8 +43,8 @@ async def list_projects(include_archived: bool = False,
 
 @router.post("/projects")
 async def create_project(req: ProjectCreate, user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot create projects")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can create projects")
     return await memory_engine.insert_project(
         name=req.name, code=req.code, location=req.location, image_url=req.image_url
     )
@@ -53,8 +53,8 @@ async def create_project(req: ProjectCreate, user: dict = Depends(get_current_us
 @router.patch("/projects/{project_id}")
 async def update_project(project_id: str, req: ProjectUpdate,
                          user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot edit projects")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can edit projects")
     existing = await memory_engine.get_project(project_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -67,8 +67,8 @@ async def update_project(project_id: str, req: ProjectUpdate,
 
 @router.post("/projects/{project_id}/archive")
 async def archive_project(project_id: str, user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot archive projects")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can archive projects")
     existing = await memory_engine.get_project(project_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -77,8 +77,8 @@ async def archive_project(project_id: str, user: dict = Depends(get_current_user
 
 @router.post("/projects/{project_id}/unarchive")
 async def unarchive_project(project_id: str, user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot unarchive projects")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can unarchive projects")
     existing = await memory_engine.get_project(project_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -91,8 +91,8 @@ async def delete_project(project_id: str, user: dict = Depends(get_current_user)
     not). Returns 409 with the blocking counts otherwise; the UI should
     offer archive as the fallback path. Mirrors DELETE /sites/{id} exactly.
     """
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot delete projects")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can delete projects")
     existing = await memory_engine.get_project(project_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Project not found")
@@ -115,8 +115,8 @@ async def list_sites(project_id: Optional[str] = None,
 
 @router.post("/sites")
 async def create_site(req: SiteCreate, user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot create sites")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can create sites")
     return await memory_engine.insert_site(
         project_id=req.project_id, name=req.name, location=req.location, image_url=req.image_url
     )
@@ -125,8 +125,8 @@ async def create_site(req: SiteCreate, user: dict = Depends(get_current_user)):
 @router.patch("/sites/{site_id}")
 async def update_site(site_id: str, req: SiteUpdate,
                       user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot edit sites")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can edit sites")
     existing = await memory_engine.get_site(site_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -137,8 +137,8 @@ async def update_site(site_id: str, req: SiteUpdate,
 
 @router.post("/sites/{site_id}/archive")
 async def archive_site(site_id: str, user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot archive sites")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can archive sites")
     existing = await memory_engine.get_site(site_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -147,8 +147,8 @@ async def archive_site(site_id: str, user: dict = Depends(get_current_user)):
 
 @router.post("/sites/{site_id}/unarchive")
 async def unarchive_site(site_id: str, user: dict = Depends(get_current_user)):
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot unarchive sites")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can unarchive sites")
     existing = await memory_engine.get_site(site_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -162,8 +162,8 @@ async def delete_site(site_id: str, user: dict = Depends(get_current_user)):
     Returns 409 with the blocking counts otherwise; the UI should offer
     archive as the fallback path.
     """
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Supervisors cannot delete sites")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can delete sites")
     existing = await memory_engine.get_site(site_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Site not found")

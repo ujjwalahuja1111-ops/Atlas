@@ -82,7 +82,7 @@ def admin():
 
 @pytest.fixture(scope="session")
 def supervisor():
-    u, h = _login("supervisor", "9800100002", "V61 Supervisor")
+    u, h = _login("site_supervisor", "9800100002", "V61 Supervisor")
     return {"user": u, "headers": h}
 
 
@@ -223,5 +223,5 @@ def test_regression_full_stack_unaffected(admin, supervisor):
     assert requests.get(f"{API}/admin/users", headers=h, timeout=20).status_code == 200
     assert requests.get(f"{API}/admin/system-info", headers=h, timeout=20).status_code == 200
 
-    r = requests.post(f"{API}/auth/login", json={"phone": "9800100001", "name": "V61 Admin", "role": "supervisor"}, timeout=20)
+    r = requests.post(f"{API}/auth/login", json={"phone": "9800100001", "name": "V61 Admin", "role": "site_supervisor"}, timeout=20)
     assert r.json()["user"]["role"] == "management"

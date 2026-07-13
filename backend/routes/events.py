@@ -30,6 +30,14 @@ async def create_event(
     photos: List[UploadFile] = File(default_factory=list),
     user: dict = Depends(get_current_user),
 ):
+    # FAC-04 — Final Authorization Model Freeze: "Client must never capture
+    # events" is now enforced at the backend, not just by the frontend
+    # hiding the Capture tab (VIEW_PERMS.client.showCapture=false). A
+    # client account calling this endpoint directly was previously
+    # unrestricted.
+    if user.get("role") == "client":
+        raise HTTPException(status_code=403, detail="Clients cannot capture events.")
+
     site = await memory_engine.get_site(site_id)
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
@@ -89,10 +97,10 @@ async def regenerate_proposals(event_id: str, force: bool = False,
                                user: dict = Depends(get_current_user)):
     """Replay proposal generation off the canonical ai_analyses doc.
 
-    Coordinator/management only. Idempotent unless force=true.
+    Project Manager/management only. Idempotent unless force=true.
     """
-    if user["role"] == "supervisor":
-        raise HTTPException(status_code=403, detail="Only coordinators/management can regenerate proposals")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can regenerate proposals")
     event = await memory_engine.get_event(event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
