@@ -32,6 +32,27 @@ async def _insert(collection, doc: dict) -> dict:
 
 
 # ---------------- users ----------------
+async def migrate_unassigned_scoped_accounts() -> int:
+    """FAC-OPS-05 — Capture Site Discovery Regression. Companion to the
+    set_user_approval() fix above: that fix only prevents the problem
+    for FUTURE approvals. Any account already approved before this fix
+    shipped is still stuck with scope_projects=True and zero assigned
+    projects — silently seeing no projects/sites anywhere, including in
+    Capture — no matter how many times an admin re-saves their role.
+    Run automatically at every server startup (idempotent — a no-op once
+    every affected account has been fixed once, safe to run forever).
+    Deliberately scoped to APPROVED accounts only: a still-pending
+    account correctly sees nothing regardless (FAC-03), and this must
+    not silently grant access to someone an admin hasn't approved yet.
+    """
+    result = await db.users.update_many(
+        {"approval_status": "approved", "scope_projects": True,
+         "$or": [{"assigned_project_ids": {"$size": 0}}, {"assigned_project_ids": {"$exists": False}}]},
+        {"$set": {"scope_projects": False}},
+    )
+    return result.modified_count
+
+
 async def migrate_legacy_role_vocabulary() -> dict:
     """FAC-04 — Final Authorization Model Freeze. Runs once at every server
     startup (see server.py's lifespan, right after ensure_indexes()) and
@@ -251,9 +272,39 @@ async def get_user(user_id: str) -> Optional[dict]:
 
 
 async def set_user_approval(user_id: str, approval_status: str) -> Optional[dict]:
+    """FAC-OPS-05 fix: approving a user (moving pending -> approved) now
+    resets scope_projects to False (unrestricted) UNLESS the admin has
+    already explicitly assigned specific projects to this account (i.e.
+    assigned_project_ids is non-empty at approval time — a deliberate,
+    pre-approval scoping decision, which this preserves rather than
+    overriding).
+
+    Root cause this closes: register_user() defaults every self-
+    registered account to scope_projects=True (Sprint 4.3's "a pending
+    user sees nothing" intent — reasonable when they can't access
+    anything at all yet regardless). FAC-03 then removed the old
+    "any login auto-creates an unrestricted account" shortcut, making
+    /auth/register the ONLY way to create an account. Approving a user
+    and assigning their role (the two actions that make an account
+    genuinely usable) do not, on their own, ever touch
+    assigned_project_ids — "Assign Projects" is a separate, easy-to-miss
+    action. The result: every newly self-registered PM/Supervisor
+    account was silently and completely scoped to zero projects the
+    moment it became otherwise fully functional, with no indication why
+    capture — or anything else — showed nothing. Admin accounts were
+    never actually affected by this specific mechanism (management role
+    is unconditionally unrestricted regardless of scope_projects — see
+    _is_project_scoped) — an "admin" account exhibiting this symptom
+    has almost certainly never actually been assigned role=management.
+    """
     if approval_status not in APPROVAL_STATUSES:
         raise ValueError(f"Invalid approval_status '{approval_status}'. Must be one of {sorted(APPROVAL_STATUSES)}")
-    await db.users.update_one({"id": user_id}, {"$set": {"approval_status": approval_status, "updated_at": _now()}})
+    upd = {"approval_status": approval_status, "updated_at": _now()}
+    if approval_status == "approved":
+        current = await get_user(user_id)
+        if current and not current.get("assigned_project_ids"):
+            upd["scope_projects"] = False
+    await db.users.update_one({"id": user_id}, {"$set": upd})
     return await get_user(user_id)
 
 
@@ -271,7 +322,20 @@ async def set_user_role(user_id: str, role: str) -> Optional[dict]:
 
 
 async def set_user_projects(user_id: str, project_ids: list[str]) -> Optional[dict]:
-    await db.users.update_one({"id": user_id}, {"$set": {"assigned_project_ids": project_ids, "updated_at": _now()}})
+    """FAC-OPS-05 companion fix: calling this — the admin's explicit
+    "Assign Projects" action — is itself the deliberate act of scoping
+    a user to specific projects, so it always sets scope_projects=True.
+    Without this, assigning projects to an account that was unrestricted
+    (the new default after approval — see set_user_approval) would
+    silently have no visible effect: the assignment would be stored, but
+    the user would still see every project, since nothing had ever told
+    list_projects()/list_sites() to start honoring assigned_project_ids
+    for them at all.
+    """
+    await db.users.update_one(
+        {"id": user_id},
+        {"$set": {"assigned_project_ids": project_ids, "scope_projects": True, "updated_at": _now()}},
+    )
     return await get_user(user_id)
 
 

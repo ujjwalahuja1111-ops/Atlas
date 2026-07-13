@@ -46,6 +46,10 @@ async def lifespan(app: FastAPI):
     migrated = await memory_engine.migrate_legacy_role_vocabulary()
     if any(migrated.values()):
         logger.info(f"FAC-04 role migration: {migrated}")
+    # FAC-OPS-05 — Capture Site Discovery Regression. Also idempotent.
+    unscoped_count = await memory_engine.migrate_unassigned_scoped_accounts()
+    if unscoped_count:
+        logger.info(f"FAC-OPS-05 migration: unscoped {unscoped_count} approved account(s) with zero assigned projects")
     await intelligence_engine.start_worker()
     logger.info(f"{PROJECT_NAME} {APP_VERSION} ready")
     yield
