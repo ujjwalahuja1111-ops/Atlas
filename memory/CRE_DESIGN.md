@@ -3,6 +3,14 @@
 Branch: `innovation/construction-reasoning-engine` (independent; touches no
 authentication, user-management, or role logic; merges alongside FAC-line work).
 
+> **Sprint 01A refinement (see final section):** the insight schema
+> described below was refined to v2 — explicit evidence sections,
+> structured explainable confidence, the observation→risk→recommendation
+> →suggested-action chain, five-dimension health, feedback + relationship
+> substrates. The canonical architecture document for all future
+> intelligence work is **`CRE_ARCHITECTURE.md`**; this file records
+> sprint history and product rationale.
+
 ---
 
 ## Phase 1 — Repository review
@@ -246,3 +254,70 @@ first — pure, tested, idempotent — means the V2 trigger change is trivial
 and conflict-free later. The MVP's on-demand run + idempotent dedupe
 already behaves correctly under arbitrary trigger frequency, so the
 event-driven upgrade changes *when* reasoning happens, not *what* it does.
+
+---
+
+## Innovation Sprint 01A — Architectural refinement (no new rules)
+
+Objective: refine CRE into the long-term reasoning architecture while
+FAC-04 stabilization continues independently. No new rules, no new AI
+features, no operational workflow changes, no production branch changes.
+
+What changed (insight schema v1 → v2):
+
+1. **Evidence-based reasoning.** `evidence` became an explicit object
+   with seven always-present sections — workflow_activities,
+   operational_items, events, media, approvals, knowledge_items, and
+   `absences` (negative evidence: what was looked for and not found).
+   Site events linked to an activity (`events.activity_id`) and their
+   captured media now corroborate — or contradict — schedule and
+   construction-logic findings. Knowledge Core traceability
+   (`knowledge_activity_id`) is cited where the rule's logic came from it.
+2. **Structured confidence.** The single value became
+   `{level, reason, missing_evidence, assumptions, contradictions}` —
+   every insight answers "why did CRE reach this conclusion?"
+3. **Recommendation chain.** Findings separated from actions:
+   observation → risk → recommendation → suggested_operational_action
+   (reusing the Operations Engine's existing category vocabulary — no
+   new taxonomies) → suggested_responsible_role → suggested_due_date
+   (severity-scaled). All suggestions are inert data; CRE never executes.
+4. **Five-dimension health.** Schedule / Quality / Safety /
+   Communication / Operational, each {score, explanation,
+   contributing_factors}, computed purely from a fresh rule evaluation —
+   not AI, never stored, no new collections. Overall leans toward the
+   weakest dimension.
+5. **Canonical lifecycle** documented for all future intelligence
+   modules: open → acknowledged → operational_item_created → resolved /
+   dismissed / expired (today's `actioned` implements `resolved`;
+   `operational_item_created` and `expired` arrive with V2 flows).
+6. **Human feedback loop (preparation only).** Insights store
+   accepted / rejected / modified / ignored verdicts with optional human
+   reasoning and full history. Nothing reads feedback back — learning is
+   deliberately not implemented.
+7. **Insight relationships.** previous / duplicate / supports /
+   conflicts, same-project, idempotent; recurrence after human
+   resolution auto-links `previous`, so reasoning history forms a chain.
+8. **Explicit domain metadata.** Every rule registers with
+   `@rule(id, domain, description)`; findings are re-checked against
+   their rule's domain. `commercial`, `documentation`,
+   `resource_planning` reserved as metadata-only domains.
+9. **Stable knowledge interface.** All Mongo reads live in
+   `build_project_snapshot` (versioned contract); knowledge-derived
+   facts are read only through accessor helpers. Upstream schema
+   evolution is absorbed there; rules never change for schema reasons.
+10. **Canonical architecture document** — `CRE_ARCHITECTURE.md` —
+    including the permanent boundary: CRE remains a deterministic
+    construction reasoning layer; AI enhances explanation and
+    summarization and may add bounded, clearly-typed observations
+    (never operational suggestions); CRE must never evolve into a
+    general LLM agent.
+
+API additions: `POST /api/insights/{id}/feedback`,
+`POST /api/insights/{id}/relationships`; `/api/reasoning-meta` now
+exposes rules-with-domains, canonical lifecycle, evidence kinds,
+feedback verdicts, relation types, and health dimensions.
+
+Verification: 25 pure rule unit tests + 12 full-stack HTTP tests (real
+app on mongomock-motor) — 37/37 passing locally; live-deployment suite
+updated to the v2 contract. The two structural guarantees (read-only
+runs, no conclusions without evidence) are pinned by tests.

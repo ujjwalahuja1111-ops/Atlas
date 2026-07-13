@@ -69,6 +69,22 @@ class InsightStatusRequest(BaseModel):
     note: str = ""
 
 
+class InsightFeedbackRequest(BaseModel):
+    # Human feedback loop (Sprint 01A): accepted | rejected | modified |
+    # ignored, with optional human reasoning. Stored for a FUTURE
+    # learning layer; nothing reads it back today.
+    verdict: str
+    note: str = ""
+
+
+class InsightRelationshipRequest(BaseModel):
+    # previous | duplicate | supports | conflicts — substrate for future
+    # multi-step reasoning.
+    related_insight_id: str
+    relation: str
+    note: str = ""
+
+
 @router.post("/projects/{project_id}/reasoning/run", status_code=201)
 async def run_reasoning(project_id: str, req: RunReasoningRequest,
                         user: dict = Depends(get_current_user)):
@@ -133,15 +149,56 @@ async def set_insight_status(insight_id: str, req: InsightStatusRequest,
         _raise_for(e)
 
 
+@router.post("/insights/{insight_id}/feedback")
+async def record_insight_feedback(insight_id: str,
+                                  req: InsightFeedbackRequest,
+                                  user: dict = Depends(get_current_user)):
+    _forbid_client(user)
+    _require_coordination_role(user, "record feedback on reasoning insights")
+    try:
+        insight = await reasoning_engine.get_insight(insight_id)
+        if insight:
+            await reasoning_engine._assert_project_visible(
+                insight["project_id"], user)
+        return await reasoning_engine.record_insight_feedback(
+            insight_id, req.verdict, actor=user, note=req.note)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.post("/insights/{insight_id}/relationships")
+async def add_insight_relationship(insight_id: str,
+                                   req: InsightRelationshipRequest,
+                                   user: dict = Depends(get_current_user)):
+    _forbid_client(user)
+    _require_coordination_role(user, "relate reasoning insights")
+    try:
+        insight = await reasoning_engine.get_insight(insight_id)
+        if insight:
+            await reasoning_engine._assert_project_visible(
+                insight["project_id"], user)
+        return await reasoning_engine.add_insight_relationship(
+            insight_id, req.related_insight_id, req.relation,
+            actor=user, note=req.note)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/reasoning-meta")
 async def reasoning_meta(user: dict = Depends(get_current_user)):
     """Static vocab for a future Insights UI — matches the established
     GET /api/knowledge-meta and GET /api/workflow-meta convention."""
     _forbid_client(user)
     return {
+        "schema_version": reasoning_engine.INSIGHT_SCHEMA_VERSION,
         "domains": sorted(reasoning_engine.DOMAINS),
-        "confidences": reasoning_engine.CONFIDENCES,
+        "confidence_levels": reasoning_engine.CONFIDENCE_LEVELS,
         "severities": reasoning_engine.SEVERITIES,
         "insight_statuses": sorted(reasoning_engine.INSIGHT_STATUSES),
-        "rules": reasoning_engine.list_rule_ids(),
+        "canonical_lifecycle": reasoning_engine.CANONICAL_LIFECYCLE,
+        "evidence_kinds": reasoning_engine.EVIDENCE_KINDS,
+        "feedback_verdicts": sorted(reasoning_engine.FEEDBACK_VERDICTS),
+        "relation_types": sorted(reasoning_engine.RELATION_TYPES),
+        "health_dimensions": sorted(reasoning_engine.HEALTH_DIMENSIONS),
+        "rules": reasoning_engine.list_rules(),
     }

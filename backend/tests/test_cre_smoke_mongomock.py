@@ -165,9 +165,24 @@ async def test_reasoning_run_emits_contract_complete_insights(ctx):
             "safety.unresolved_high_priority",
             "procurement.material_lead_time"} <= rules_fired
     for ins in body["insights_new"]:
-        for key in ("observation", "evidence", "reasoning", "confidence",
-                    "recommended_action", "project_id", "status"):
+        # v2 reasoning chain
+        for key in ("observation", "risk", "recommendation",
+                    "project_id", "status"):
             assert ins.get(key), f"insight missing {key}"
+        # explicit evidence section — all kinds always present, none empty
+        # across the whole insight (no conclusions without evidence)
+        assert list(ins["evidence"].keys()) == reasoning_engine.EVIDENCE_KINDS
+        assert any(ins["evidence"].values())
+        # structured explainable confidence
+        assert ins["confidence"]["level"] in ("low", "medium", "high")
+        assert ins["confidence"]["reason"]
+        # deterministic rules always suggest an action, owner and due date
+        assert ins["suggested_operational_action"]["category"]
+        assert ins["suggested_responsible_role"]
+        assert ins["suggested_due_date"]
+        # feedback/relationship substrate present from birth
+        assert ins["feedback"] is None and ins["feedback_history"] == []
+        assert ins["related_insights"] == []
         assert ins["status"] == "open"
     ctx["first_run"] = body
 
@@ -207,13 +222,27 @@ async def test_insight_listing_and_domain_filter(ctx):
     assert bad.status_code == 400
 
 
-async def test_project_health_reflects_open_insights(ctx):
+async def test_project_health_is_reasoned_across_five_dimensions(ctx):
     c, pid = ctx["client"], ctx["world"]["project_id"]
     r = await c.get(f"/api/projects/{pid}/health", headers=ctx["admin"])
     assert r.status_code == 200
     h = r.json()
     assert h["status"] in ("amber", "red")
     assert h["score"] < 80
+    dims = h["dimensions"]
+    assert set(dims) == {"schedule", "quality", "safety",
+                         "communication", "operational"}
+    # scenario: critical safety observation, overdue material, stalled
+    # successor, missing inspection — each lands in its dimension
+    assert dims["safety"]["score"] < 100
+    assert dims["operational"]["score"] < 100
+    assert dims["schedule"]["score"] < 100
+    assert dims["quality"]["score"] < 100
+    assert dims["communication"]["score"] == 100
+    for dim in dims.values():
+        assert dim["explanation"]
+        assert isinstance(dim["contributing_factors"], list)
+    assert dims["safety"]["contributing_factors"][0]["severity"] == "critical"
     assert h["drivers"]
     assert h["progress"]["activities_total"] == 3
 
@@ -239,15 +268,82 @@ async def test_insight_lifecycle_and_invalid_transition(ctx):
     assert r.status_code == 409
 
 
-async def test_resolved_insight_reemits_as_new_if_condition_persists(ctx):
+async def test_resolved_insight_reemits_linked_to_its_predecessor(ctx):
     c, pid = ctx["client"], ctx["world"]["project_id"]
     r = await c.post(f"/api/projects/{pid}/reasoning/run", json={},
                      headers=ctx["admin"])
     assert r.status_code == 201
     body = r.json()
     # exactly one insight was actioned above; its condition still holds,
-    # so the run emits a FRESH insight for that dedupe_key
+    # so the run emits a FRESH insight for that dedupe_key...
     assert body["run"]["insights_new"] == 1
+    fresh = body["insights_new"][0]
+    actioned_id = ctx["first_run"]["insights_new"][0]["id"]
+    # ...auto-linked to the resolved predecessor: reasoning history forms
+    # a chain instead of resurrecting closed decisions
+    assert fresh["related_insights"] == [{
+        **fresh["related_insights"][0],
+        "insight_id": actioned_id, "relation": "previous"}]
+    assert fresh["dedupe_key"] == \
+        ctx["first_run"]["insights_new"][0]["dedupe_key"]
+    ctx["fresh_reemit"] = fresh
+
+
+async def test_feedback_loop_stores_verdicts_without_learning(ctx):
+    c = ctx["client"]
+    ins_id = ctx["first_run"]["insights_new"][1]["id"]
+    r = await c.post(f"/api/insights/{ins_id}/feedback",
+                     json={"verdict": "accepted",
+                           "note": "matches what we saw on site"},
+                     headers=ctx["pm"])
+    assert r.status_code == 200
+    body = r.json()
+    assert body["feedback"]["verdict"] == "accepted"
+    assert body["feedback"]["by_user_name"] == "CRE PM"
+    # feedback may be revised; history preserves both entries
+    r = await c.post(f"/api/insights/{ins_id}/feedback",
+                     json={"verdict": "modified",
+                           "note": "true but wrong owner suggested"},
+                     headers=ctx["pm"])
+    body = r.json()
+    assert body["feedback"]["verdict"] == "modified"
+    assert [f["verdict"] for f in body["feedback_history"]] == \
+        ["accepted", "modified"]
+    # invalid verdict -> 400; supervisors cannot record feedback -> 403
+    assert (await c.post(f"/api/insights/{ins_id}/feedback",
+                         json={"verdict": "loved_it"},
+                         headers=ctx["pm"])).status_code == 400
+    assert (await c.post(f"/api/insights/{ins_id}/feedback",
+                         json={"verdict": "accepted"},
+                         headers=ctx["sup"])).status_code == 403
+
+
+async def test_manual_insight_relationships(ctx):
+    c = ctx["client"]
+    a = ctx["first_run"]["insights_new"][1]["id"]
+    b = ctx["first_run"]["insights_new"][2]["id"]
+    r = await c.post(f"/api/insights/{a}/relationships",
+                     json={"related_insight_id": b, "relation": "supports",
+                           "note": "same root cause"},
+                     headers=ctx["pm"])
+    assert r.status_code == 200
+    rel = r.json()["related_insights"][-1]
+    assert rel["insight_id"] == b and rel["relation"] == "supports"
+    # idempotent per (target, relation) pair
+    r = await c.post(f"/api/insights/{a}/relationships",
+                     json={"related_insight_id": b, "relation": "supports"},
+                     headers=ctx["pm"])
+    assert len([x for x in r.json()["related_insights"]
+                if x["insight_id"] == b and x["relation"] == "supports"]) == 1
+    # self-link and unknown relation are rejected
+    assert (await c.post(f"/api/insights/{a}/relationships",
+                         json={"related_insight_id": a,
+                               "relation": "supports"},
+                         headers=ctx["pm"])).status_code == 400
+    assert (await c.post(f"/api/insights/{a}/relationships",
+                         json={"related_insight_id": b,
+                               "relation": "caused_by"},
+                         headers=ctx["pm"])).status_code == 400
 
 
 async def test_role_and_workspace_gates(ctx):
@@ -279,7 +375,22 @@ async def test_unknown_project_is_404_and_meta_lists_rules(ctx):
                          headers=ctx["pm"])).status_code == 404
     meta = await c.get("/api/reasoning-meta", headers=ctx["pm"])
     assert meta.status_code == 200
-    assert "construction_logic.successor_not_started" in meta.json()["rules"]
+    m = meta.json()
+    rules_by_id = {r["id"]: r for r in m["rules"]}
+    assert rules_by_id["construction_logic.successor_not_started"][
+        "domain"] == "construction_logic"
+    assert all(r["description"] for r in m["rules"])
+    assert m["canonical_lifecycle"] == [
+        "open", "acknowledged", "operational_item_created",
+        "resolved", "dismissed", "expired"]
+    assert set(m["feedback_verdicts"]) == {"accepted", "rejected",
+                                           "modified", "ignored"}
+    assert set(m["relation_types"]) == {"previous", "duplicate",
+                                        "supports", "conflicts"}
+    assert m["evidence_kinds"] == reasoning_engine.EVIDENCE_KINDS
+    # reserved metadata-only domains are already in the taxonomy
+    assert {"commercial", "documentation",
+            "resource_planning"} <= set(m["domains"])
 
 
 async def test_run_audit_trail_is_recorded(ctx):

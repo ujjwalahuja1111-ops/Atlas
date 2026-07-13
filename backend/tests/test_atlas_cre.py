@@ -209,11 +209,23 @@ def test_reasoning_run_produces_contract_complete_insights(world, pm):
     assert "procurement.material_lead_time" in fired
 
     for ins in result["insights_new"]:
-        for key in ("observation", "evidence", "reasoning", "confidence",
-                    "recommended_action", "project_id"):
+        # v2 reasoning chain: observation -> risk -> recommendation ->
+        # suggested action -> suggested role -> suggested due date
+        for key in ("observation", "risk", "recommendation", "project_id"):
             assert ins.get(key), f"insight missing '{key}': {ins}"
-        assert ins["confidence"] in ("low", "medium", "high")
-        assert isinstance(ins["evidence"], list) and ins["evidence"]
+        assert ins["suggested_operational_action"]["category"]
+        assert ins["suggested_responsible_role"] in (
+            "supervisor", "coordinator", "management")
+        assert ins["suggested_due_date"]
+        # structured explainable confidence
+        assert ins["confidence"]["level"] in ("low", "medium", "high")
+        assert ins["confidence"]["reason"]
+        # explicit evidence section, all kinds always present
+        assert list(ins["evidence"]) == [
+            "workflow_activities", "operational_items", "events", "media",
+            "approvals", "knowledge_items", "absences"]
+        assert any(ins["evidence"].values()), \
+            "conclusions alone are not allowed"
 
 
 def test_construction_logic_recommends_beginning_pcc(world, pm):
@@ -230,7 +242,7 @@ def test_construction_logic_recommends_beginning_pcc(world, pm):
                   if i["rule_id"] == "construction_logic.successor_not_started"]
     if logic_hits:
         assert world["pcc_name"] in logic_hits[0]["observation"] or \
-            world["pcc_name"] in logic_hits[0]["recommended_action"]
+            world["pcc_name"] in logic_hits[0]["recommendation"]
     else:
         wf = _get(pm["headers"], f"/projects/{world['project_id']}/workflow")
         pcc = next(a for a in wf if a["id"] == world["wfa_pcc"]["id"])
@@ -264,6 +276,16 @@ def test_project_health_endpoint(world, admin):
     h = _get(admin["headers"], f"/projects/{world['project_id']}/health")
     assert h["status"] in ("green", "amber", "red")
     assert 0 <= h["score"] <= 100
+    assert set(h["dimensions"]) == {"schedule", "quality", "safety",
+                                    "communication", "operational"}
+    for dim in h["dimensions"].values():
+        assert 0 <= dim["score"] <= 100
+        assert dim["explanation"]
+        assert isinstance(dim["contributing_factors"], list)
+    # the scenario carries schedule + quality + procurement problems
+    assert h["dimensions"]["schedule"]["score"] < 100
+    assert h["dimensions"]["quality"]["score"] < 100
+    assert h["dimensions"]["operational"]["score"] < 100
     assert h["progress"]["activities_total"] == 3
     assert h["open_insights"] >= 3
     assert h["score"] < 100 and h["drivers"]
@@ -323,8 +345,32 @@ def test_run_audit_and_meta(world, pm):
     assert len(runs) >= 2
     assert all(r["triggered_by_user_name"] for r in runs)
     meta = _get(pm["headers"], "/reasoning-meta")
-    assert "construction_logic.successor_not_started" in meta["rules"]
-    assert set(meta["confidences"]) == {"low", "medium", "high"}
+    rules_by_id = {r["id"]: r for r in meta["rules"]}
+    assert rules_by_id["construction_logic.successor_not_started"][
+        "domain"] == "construction_logic"
+    assert set(meta["confidence_levels"]) == {"low", "medium", "high"}
+    assert meta["canonical_lifecycle"][0] == "open"
+    assert set(meta["feedback_verdicts"]) == {"accepted", "rejected",
+                                              "modified", "ignored"}
+
+
+def test_feedback_and_relationships(world, pm):
+    insights = _get(pm["headers"],
+                    f"/projects/{world['project_id']}/insights")
+    assert len(insights) >= 2
+    a, b = insights[0]["id"], insights[1]["id"]
+    upd = _post(pm["headers"], f"/insights/{a}/feedback",
+                {"verdict": "accepted", "note": "confirmed on site"})
+    assert upd["feedback"]["verdict"] == "accepted"
+    assert upd["feedback_history"][-1]["note"] == "confirmed on site"
+    upd = _post(pm["headers"], f"/insights/{a}/relationships",
+                {"related_insight_id": b, "relation": "supports"})
+    assert any(r["insight_id"] == b and r["relation"] == "supports"
+               for r in upd["related_insights"])
+    r = requests.post(f"{API}/insights/{a}/relationships",
+                      json={"related_insight_id": a, "relation": "supports"},
+                      headers=pm["headers"], timeout=20)
+    assert r.status_code == 400
 
 
 def test_unknown_project_404(pm):
