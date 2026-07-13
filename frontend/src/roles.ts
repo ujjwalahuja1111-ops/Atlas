@@ -85,7 +85,17 @@ export type ViewPerms = {
 
 export const VIEW_PERMS: Record<ViewRole, ViewPerms> = {
   client: {
-    showProposals: true, showAssignments: false, showDashboards: false, showOpsBuckets: false,
+    // FOUNDER SPRINT — Operational Workflow Completion: showProposals is
+    // now false. It used to be true and drove the client's "Approvals"
+    // tab into ops.tsx's AI-proposal review flow (Accept/Reject a
+    // *proposal*, an internal PM decision about an AI guess) - the wrong
+    // concept entirely for a client, and one the backend now correctly
+    // 403s for a client role anyway (FAC-04). The client's Home tab
+    // (ClientDashboardScreen in index.tsx) now has its own dedicated
+    // "Pending Approvals" section built directly on operational_items
+    // (category=client_approval), routing into the existing, correctly-
+    // gated op/[id].tsx approve/reject/comment screen - never ops.tsx.
+    showProposals: false, showAssignments: false, showDashboards: false, showOpsBuckets: false,
     showCapture: false, canManageProjects: false, proposalCategoryFilter: 'client_approval',
     homeLabel: 'PROJECT UPDATES', opsLabel: 'APPROVALS',
   },
@@ -111,7 +121,6 @@ export type TabDef = { name: 'index' | 'ops' | 'capture' | 'profile'; label: str
 export const TABS_FOR: Record<ViewRole, TabDef[]> = {
   client:      [
     { name: 'index',   label: 'HOME',      icon: 'home' },
-    { name: 'ops',     label: 'APPROVALS', icon: 'checkmark-done' },
     { name: 'profile', label: 'PROFILE',   icon: 'person' },
   ],
   supervisor:  [

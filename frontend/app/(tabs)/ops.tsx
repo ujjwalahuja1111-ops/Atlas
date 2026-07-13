@@ -108,12 +108,23 @@ export default function OpsScreen() {
   useFocusEffect(useCallback(() => { load(); }, [load]));
 
   const dataForBucket = (): OperationalItem[] => {
+    // FOUNDER SPRINT — Operational Assignment fix: 'mine' (and any future
+    // bucket backed by its own fetch rather than the operational-center
+    // summary) must NOT depend on `center` being loaded. Supervisors have
+    // showOpsBuckets=false, so `center` is never fetched for them at all
+    // (see load() above) - it is always null. The previous ordering here
+    // returned [] unconditionally whenever center was null, BEFORE ever
+    // checking bucket==='mine', which discarded a supervisor's correctly-
+    // fetched assigned items at render time on every single load. This
+    // was the actual root cause of "assigned items are not visible" -
+    // the assignment itself, the API response, and the fetch call were
+    // all already correct; only this render-time check was wrong.
+    if (bucket === 'mine') return mine;
     if (!center) return [];
     if (bucket === 'overview') return center.recently_updated;
     if (bucket === 'overdue') return center.overdue;
     if (bucket === 'high_priority') return center.high_priority;
     if (bucket === 'awaiting') return center.awaiting_verification;
-    if (bucket === 'mine') return mine;
     return [];
   };
 

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Pressable, ScrollView,
   ActivityIndicator, RefreshControl,
@@ -8,12 +8,14 @@ import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { theme } from '@/src/theme';
-import { getViewRole, VIEW_PERMS } from '@/src/roles';
+import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
 import {
-  apiListSites, apiListProjects, apiTimeline, apiSeedDemo,
+  apiListSites, apiListProjects, apiTimeline, apiSeedDemo, apiProjectSummary,
   getActiveSite, setActiveSite,
-  type Site, type Project, type TimelineItem,
+  type Site, type Project, type TimelineItem, type ProjectSummary,
 } from '@/src/api';
+import { apiGetWorkflow, type WorkflowActivity } from '@/src/workflow_api';
+import { apiListItems, type OperationalItem } from '@/src/ops_api';
 
 const TYPE_ICON: Record<string, any> = {
   voice_note: 'mic', photo: 'camera', material_request: 'cube',
@@ -37,7 +39,26 @@ function timeAgo(iso: string) {
   return `${Math.floor(diff / 86400)}d ago`;
 }
 
-export default function TimelineScreen() {
+// FOUNDER SPRINT — Client Workspace: the Operations feed (and the raw
+// event timeline, which for a client was just "PROJECT UPDATES" over
+// the same low-level event feed) are replaced entirely with a
+// purpose-built dashboard for the client role. Every other role's Home
+// tab is completely unchanged below (TimelineScreen, untouched).
+export default function HomeScreen() {
+  const [viewRole, setViewRole] = useState<ViewRole | null>(null);
+  useEffect(() => { getViewRole().then(setViewRole); }, []);
+  if (viewRole === null) {
+    return (
+      <SafeAreaView style={styles.safe}>
+        <View style={styles.loader}><ActivityIndicator size="large" color={theme.color.brand} /></View>
+      </SafeAreaView>
+    );
+  }
+  if (viewRole === 'client') return <ClientDashboardScreen />;
+  return <TimelineScreen />;
+}
+
+function TimelineScreen() {
   const router = useRouter();
   const [sites, setSites] = useState<Site[]>([]);
   const [projectMap, setProjectMap] = useState<Record<string, Project>>({});
@@ -219,6 +240,279 @@ export default function TimelineScreen() {
   );
 }
 
+// ---------------------------------------------------------------------------
+// FOUNDER SPRINT — Client Dashboard. Replaces the client's previous
+// "PROJECT UPDATES" (raw event timeline) Home tab AND the separate
+// "APPROVALS" tab (the Operations feed, filtered) entirely. Built
+// entirely from existing endpoints already used elsewhere in the app —
+// project summary (Sprint 2), workflow activities (Sprint 5, doubling as
+// milestones), timeline photos (Sprint 1), and operational items scoped
+// to client_approval (Sprint 3/6.2/FAC-04) — no new backend endpoints.
+// AI daily/weekly summaries and Documents have no backend/data model yet
+// (summaries are an explicitly future, dedicated capability per prior
+// product direction; a documents store was never built) — both render
+// as honest, clearly-labelled placeholders rather than being invented
+// here, matching "this sprint is not about adding features."
+// ---------------------------------------------------------------------------
+function ClientDashboardScreen() {
+  const router = useRouter();
+  const [sites, setSites] = useState<Site[]>([]);
+  const [projectMap, setProjectMap] = useState<Record<string, Project>>({});
+  const [activeSiteId, setActiveSiteIdState] = useState<string | null>(null);
+  const [summary, setSummary] = useState<ProjectSummary | null>(null);
+  const [activities, setActivities] = useState<WorkflowActivity[]>([]);
+  const [photos, setPhotos] = useState<{ base64: string; eventId: string }[]>([]);
+  const [approvals, setApprovals] = useState<OperationalItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  const activeSite = sites.find((s) => s.id === activeSiteId);
+  const activeProject = activeSite ? projectMap[activeSite.project_id] : null;
+
+  const loadForSite = useCallback(async (siteId: string, projectId: string | undefined) => {
+    const [tl, items] = await Promise.all([
+      apiTimeline(siteId).catch(() => [] as TimelineItem[]),
+      apiListItems({ site_id: siteId, category: 'client_approval' }).catch(() => [] as OperationalItem[]),
+    ]);
+    const photoList: { base64: string; eventId: string }[] = [];
+    for (const t of tl) {
+      for (const p of t.photo_thumbs || []) {
+        photoList.push({ base64: p.base64, eventId: t.event.id });
+        if (photoList.length >= 12) break;
+      }
+      if (photoList.length >= 12) break;
+    }
+    setPhotos(photoList);
+    setApprovals(items.filter((i) => !['closed', 'archived', 'cancelled', 'duplicate'].includes(i.status)));
+
+    if (projectId) {
+      const [s, wf] = await Promise.all([
+        apiProjectSummary(projectId).catch(() => null),
+        apiGetWorkflow(projectId).catch(() => [] as WorkflowActivity[]),
+      ]);
+      setSummary(s);
+      setActivities(wf);
+    } else {
+      setSummary(null);
+      setActivities([]);
+    }
+  }, []);
+
+  const loadAll = useCallback(async () => {
+    setLoadError(null);
+    try {
+      const s = await apiListSites();
+      setSites(s);
+      const projects = await apiListProjects();
+      const pmap: Record<string, Project> = {};
+      for (const p of projects) pmap[p.id] = p;
+      setProjectMap(pmap);
+
+      const stored = await getActiveSite();
+      const active = stored && s.find((x) => x.id === stored) ? stored : s[0]?.id || null;
+      setActiveSiteIdState(active);
+      if (active) {
+        await setActiveSite(active);
+        const site = s.find((x) => x.id === active);
+        await loadForSite(active, site?.project_id);
+      }
+    } catch (e: any) {
+      console.warn(e);
+      setLoadError(e?.message || 'Could not load your project updates. Pull to retry.');
+    } finally {
+      setLoading(false); setRefreshing(false);
+    }
+  }, [loadForSite]);
+
+  useFocusEffect(useCallback(() => { loadAll(); }, [loadAll]));
+
+  const onSelectSite = async (id: string) => {
+    setActiveSiteIdState(id);
+    await setActiveSite(id);
+    setLoading(true);
+    const site = sites.find((x) => x.id === id);
+    await loadForSite(id, site?.project_id);
+    setLoading(false);
+  };
+
+  const completedCount = activities.filter((a) => a.status === 'completed').length;
+  const progressPct = activities.length > 0 ? Math.round((completedCount / activities.length) * 100) : null;
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <View style={styles.loader} testID="client-dashboard-loader">
+          <ActivityIndicator size="large" color={theme.color.brand} />
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.safe} edges={['top']}>
+      <View style={styles.header}>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.h1}>PROJECT UPDATES</Text>
+          <Text style={styles.h2} numberOfLines={1}>
+            {activeProject ? `${activeProject.name} · ` : ''}{activeSite?.name || 'No site'}
+          </Text>
+        </View>
+      </View>
+
+      {sites.length > 1 && (
+        <View style={styles.chipsContainer}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipsContent}>
+            {sites.map((s) => {
+              const active = s.id === activeSiteId;
+              return (
+                <Pressable key={s.id} testID={`client-site-chip-${s.id}`} onPress={() => onSelectSite(s.id)}
+                  style={[styles.chip, active && styles.chipActive]}>
+                  <Ionicons name="business" size={18} color={active ? theme.color.onBrand : theme.color.textMuted} />
+                  <Text style={[styles.chipText, active && styles.chipTextActive]} numberOfLines={1}>{s.name}</Text>
+                </Pressable>
+              );
+            })}
+          </ScrollView>
+        </View>
+      )}
+
+      {loadError && (
+        <Pressable testID="client-dashboard-load-error" onPress={() => { setLoading(true); loadAll(); }} style={styles.errorBanner}>
+          <Ionicons name="warning" size={16} color={theme.color.error} />
+          <Text style={styles.errorBannerText} numberOfLines={2}>{loadError} Tap to retry.</Text>
+        </Pressable>
+      )}
+
+      <ScrollView
+        contentContainerStyle={dash.body}
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => { setRefreshing(true); loadAll(); }} tintColor={theme.color.brand} />}
+      >
+        {!activeSite ? (
+          <View style={styles.empty} testID="client-dashboard-empty">
+            <Ionicons name="business-outline" size={80} color={theme.color.brand} />
+            <Text style={styles.emptyTitle}>No project yet</Text>
+            <Text style={styles.emptyBody}>Your project updates will appear here once a site is set up.</Text>
+          </View>
+        ) : (
+          <>
+            {/* Project progress */}
+            <DashCard title="PROJECT PROGRESS" icon="trending-up" testID="dash-progress">
+              {progressPct === null ? (
+                <Text style={dash.mutedText}>Progress tracking will appear once a workflow is set up for this project.</Text>
+              ) : (
+                <>
+                  <View style={dash.progressRow}>
+                    <View style={dash.progressBarBg}>
+                      <View style={[dash.progressBarFill, { width: `${progressPct}%` }]} />
+                    </View>
+                    <Text style={dash.progressPct}>{progressPct}%</Text>
+                  </View>
+                  <Text style={dash.mutedText}>{completedCount} of {activities.length} activities complete</Text>
+                </>
+              )}
+              {summary && (
+                <View style={dash.statRow}>
+                  <DashStat label="OPEN ITEMS" value={summary.open_tasks} />
+                  <DashStat label="SITES" value={summary.active_sites} />
+                </View>
+              )}
+            </DashCard>
+
+            {/* Milestones */}
+            {activities.length > 0 && (
+              <DashCard title="MILESTONES" icon="flag" testID="dash-milestones">
+                {activities.slice(0, 8).map((a) => (
+                  <View key={a.id} style={dash.milestoneRow}>
+                    <Ionicons
+                      name={a.status === 'completed' ? 'checkmark-circle' : a.status === 'in_progress' ? 'time' : 'ellipse-outline'}
+                      size={18}
+                      color={a.status === 'completed' ? theme.color.success : a.status === 'in_progress' ? theme.color.brand : theme.color.textDim}
+                    />
+                    <Text style={[dash.milestoneText, a.status === 'completed' && dash.milestoneDone]} numberOfLines={1}>
+                      {a.name}
+                    </Text>
+                  </View>
+                ))}
+              </DashCard>
+            )}
+
+            {/* Photos */}
+            <DashCard title="PHOTOS" icon="images" testID="dash-photos">
+              {photos.length === 0 ? (
+                <Text style={dash.mutedText}>No photos shared yet.</Text>
+              ) : (
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 8 }}>
+                  {photos.map((p, i) => (
+                    <Pressable key={`${p.eventId}-${i}`} onPress={() => router.push(`/event/${p.eventId}`)}>
+                      <ExpoImage source={{ uri: `data:image/jpeg;base64,${p.base64}` }} style={dash.photoThumb} contentFit="cover" />
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              )}
+            </DashCard>
+
+            {/* AI-generated summaries — placeholder; no summary-generation
+                engine exists yet (explicitly a future, dedicated capability) */}
+            <DashCard title="WEEKLY SUMMARY" icon="sparkles" testID="dash-ai-summary">
+              <View style={dash.placeholderBox}>
+                <Ionicons name="hourglass-outline" size={22} color={theme.color.textDim} />
+                <Text style={dash.mutedText}>
+                  AI-generated summaries are not available yet. Your project team can share updates directly in the meantime.
+                </Text>
+              </View>
+            </DashCard>
+
+            {/* Pending approvals */}
+            <DashCard title="PENDING APPROVALS" icon="checkmark-done" testID="dash-approvals">
+              {approvals.length === 0 ? (
+                <Text style={dash.mutedText}>Nothing needs your approval right now.</Text>
+              ) : (
+                approvals.map((item) => (
+                  <Pressable key={item.id} testID={`dash-approval-${item.id}`}
+                    onPress={() => router.push(`/op/${item.id}`)} style={dash.approvalRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={dash.approvalTitle} numberOfLines={1}>{item.title}</Text>
+                      {item.description ? <Text style={dash.mutedText} numberOfLines={1}>{item.description}</Text> : null}
+                    </View>
+                    <Ionicons name="chevron-forward" size={20} color={theme.color.textDim} />
+                  </Pressable>
+                ))
+              )}
+            </DashCard>
+
+            {/* Documents — placeholder; no documents store exists yet */}
+            <DashCard title="DOCUMENTS" icon="document-text" testID="dash-documents">
+              <Text style={dash.mutedText}>No documents shared yet.</Text>
+            </DashCard>
+          </>
+        )}
+      </ScrollView>
+    </SafeAreaView>
+  );
+}
+
+function DashCard({ title, icon, testID, children }: { title: string; icon: any; testID: string; children: ReactNode }) {
+  return (
+    <View style={dash.card} testID={testID}>
+      <View style={dash.cardHead}>
+        <Ionicons name={icon} size={18} color={theme.color.brand} />
+        <Text style={dash.cardTitle}>{title}</Text>
+      </View>
+      {children}
+    </View>
+  );
+}
+
+function DashStat({ label, value }: { label: string; value: number }) {
+  return (
+    <View style={dash.stat}>
+      <Text style={dash.statValue}>{value}</Text>
+      <Text style={dash.statLabel}>{label}</Text>
+    </View>
+  );
+}
+
 function TimelineRow({ item, isLast, onPress }: { item: TimelineItem; isLast: boolean; onPress: () => void }) {
   const evt = item.event;
   const analysis = item.analysis;
@@ -353,4 +647,33 @@ const rowStyles = StyleSheet.create({
   foot: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4, flexWrap: 'wrap' },
   byline: { color: theme.color.textDim, fontSize: 13, fontWeight: '600' },
   dot: { color: theme.color.textDim, marginHorizontal: 4 },
+});
+
+const dash = StyleSheet.create({
+  body: { padding: theme.spacing.md, paddingBottom: 120, gap: theme.spacing.md },
+  card: {
+    backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
+    borderWidth: 1, borderColor: theme.color.border, padding: theme.spacing.md, gap: theme.spacing.sm,
+  },
+  cardHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
+  cardTitle: { color: theme.color.text, fontSize: 13, fontWeight: '900', letterSpacing: 1 },
+  mutedText: { color: theme.color.textMuted, fontSize: 14, lineHeight: 20 },
+  progressRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  progressBarBg: { flex: 1, height: 10, borderRadius: 5, backgroundColor: theme.color.surface3, overflow: 'hidden' },
+  progressBarFill: { height: '100%', backgroundColor: theme.color.brand, borderRadius: 5 },
+  progressPct: { color: theme.color.text, fontSize: 14, fontWeight: '900', minWidth: 40, textAlign: 'right' },
+  statRow: { flexDirection: 'row', gap: theme.spacing.lg, marginTop: 8 },
+  stat: { alignItems: 'center' },
+  statValue: { color: theme.color.text, fontSize: 22, fontWeight: '900' },
+  statLabel: { color: theme.color.textDim, fontSize: 10, fontWeight: '800', letterSpacing: 0.5, marginTop: 2 },
+  milestoneRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  milestoneText: { color: theme.color.text, fontSize: 14, flex: 1 },
+  milestoneDone: { color: theme.color.textDim, textDecorationLine: 'line-through' },
+  photoThumb: { width: 100, height: 100, borderRadius: theme.radius.sm },
+  placeholderBox: { flexDirection: 'row', alignItems: 'flex-start', gap: 10 },
+  approvalRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 10,
+    borderTopWidth: 1, borderTopColor: theme.color.border,
+  },
+  approvalTitle: { color: theme.color.text, fontSize: 15, fontWeight: '700' },
 });
