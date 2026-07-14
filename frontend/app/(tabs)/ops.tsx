@@ -7,8 +7,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { theme } from '@/src/theme';
-import { loadAuth, type User } from '@/src/api';
-import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
+import { loadAuth, type User, type Role } from '@/src/api';
+import { getViewRole, VIEW_PERMS, ROLE_LABEL, type ViewRole } from '@/src/roles';
 import {
   apiOperationalCenter, apiListItems, apiListUsers, apiAssignItem,
   apiListProposals, apiAcceptProposal, apiRejectProposal,
@@ -59,12 +59,23 @@ export default function OpsScreen() {
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  const loadUsers = useCallback(async () => {
-    if (users.length > 0) return users;
-    const list = await apiListUsers();
+  const loadUsers = useCallback(async (projectId?: string) => {
+    // FAC-OPS-06 fix: previously `if (users.length > 0) return users;`
+    // cached the assignee list for the ENTIRE lifetime of this screen
+    // instance. Since Operations is a persistent tab screen (it stays
+    // mounted across tab switches, not remounted each time), that cache
+    // never refreshed after the first picker open — an admin approving
+    // a user and assigning them Management/Project Manager in the Users
+    // screen, then switching back to Operations, would still see
+    // whatever role that user had the first time the picker was opened
+    // this session. The assignee picker is opened rarely enough that
+    // always fetching fresh has no real cost, and is the only way to
+    // reliably "display the current backend role everywhere." Passing
+    // projectId also scopes results to eligible (same-project) users only.
+    const list = await apiListUsers(undefined, projectId);
     setUsers(list);
     return list;
-  }, [users]);
+  }, []);
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -129,12 +140,12 @@ export default function OpsScreen() {
   };
 
   const openAssign = async (item: OperationalItem) => {
-    try { await loadUsers(); } catch {}
+    try { await loadUsers(item.project_id); } catch {}
     setAssigningItem(item);
   };
 
   const openProposalReview = async (proposal: AiProposal) => {
-    try { await loadUsers(); } catch {}
+    try { await loadUsers(proposal.project_id || undefined); } catch {}
     setProposalEdit({
       title: proposal.title,
       description: proposal.description || '',
@@ -469,7 +480,7 @@ function ProposalReviewModal({ proposal, edit, setEdit, users, busy, close, acce
                       color={edit.assigned_to_user_id === u.id ? theme.color.brand : theme.color.textMuted}
                     />
                     <Text style={styles.pickName}>{u.name}</Text>
-                    <Text style={styles.pickRole}>{u.role}</Text>
+                    <Text style={styles.pickRole}>{ROLE_LABEL[u.role as Role] || u.role}</Text>
                   </Pressable>
                 ))}
               </ScrollView>
@@ -519,7 +530,7 @@ function AssignModal({ item, users, close, assign }: {
                   <Ionicons name="person-circle-outline" size={20}
                     color={suggested ? theme.color.brand : theme.color.textMuted} />
                   <Text style={styles.pickName}>{u.name}</Text>
-                  <Text style={styles.pickRole}>{u.role}{suggested ? ' *' : ''}</Text>
+                  <Text style={styles.pickRole}>{ROLE_LABEL[u.role as Role] || u.role}{suggested ? ' *' : ''}</Text>
                 </Pressable>
               );
             })}

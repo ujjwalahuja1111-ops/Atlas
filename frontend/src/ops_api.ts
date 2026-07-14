@@ -86,8 +86,11 @@ export type AiProposal = {
 
 export type AssignableUser = { id: string; name: string; role: string };
 
-export async function apiListUsers(role?: string): Promise<AssignableUser[]> {
-  const qs = role ? `?role=${encodeURIComponent(role)}` : '';
+export async function apiListUsers(role?: string, projectId?: string): Promise<AssignableUser[]> {
+  const params = new URLSearchParams();
+  if (role) params.set('role', role);
+  if (projectId) params.set('project_id', projectId);
+  const qs = params.toString() ? `?${params.toString()}` : '';
   const r = await apiFetch(`${BACKEND}/api/users${qs}`, { headers: await headers() });
   if (!r.ok) throw new Error('users');
   return r.json();
@@ -228,12 +231,27 @@ export async function apiEditItem(id: string, edits: EditItemInput): Promise<Ope
   return r.json();
 }
 
-export async function apiVoiceUpdate(id: string, audioUri: string): Promise<{
-  item: OperationalItem; audio_asset_id: string; transcript: string; summary: string | null; language: string | null;
-}> {
+export type ItemUpdateResult = {
+  item: OperationalItem; audio_asset_id: string | null; transcript: string; summary: string | null; language: string | null;
+};
+
+export async function apiVoiceUpdate(id: string, audioUri: string): Promise<ItemUpdateResult> {
   const form = new FormData();
   // @ts-ignore RN FormData file shape
   form.append('audio', { uri: audioUri, name: 'voice.m4a', type: 'audio/m4a' });
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/voice-update`, {
+    method: 'POST', headers: await headers(), body: form as any,
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+/** FAC-OPS-06 — text sibling of apiVoiceUpdate, same endpoint, same
+ * response shape. Support: Voice, Text - "do not build a second
+ * recording flow" for voice; text needs no recording at all. */
+export async function apiTextUpdate(id: string, text: string): Promise<ItemUpdateResult> {
+  const form = new FormData();
+  form.append('text', text);
   const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/voice-update`, {
     method: 'POST', headers: await headers(), body: form as any,
   });

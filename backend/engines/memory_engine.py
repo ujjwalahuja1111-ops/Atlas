@@ -374,6 +374,56 @@ def _is_project_scoped(user: dict) -> bool:
     return bool(user.get("scope_projects", False))
 
 
+# FAC-OPS-06 — Normalized identity model: Role determines WHAT a user may
+# do (an operational role, capable of being assigned work at all — a
+# client never is, regardless of project). Project Membership determines
+# WHERE (unrestricted accounts may be assigned anywhere; scoped accounts
+# only within their assigned projects). These are deliberately two
+# independent checks below, not combined into one condition, so each
+# stays easy to reason about and reuse on its own.
+ASSIGNABLE_ROLES = {"management", "project_manager", "site_supervisor"}
+
+
+def is_eligible_assignee(candidate: dict, project_id: Optional[str] = None) -> bool:
+    """Single source of truth for "can this user be assigned operational
+    work [in this project]" — used by BOTH the assignee picker listing
+    (list_users, so ineligible users are never shown) and the assign
+    action itself (so the backend enforces the identical rule the picker
+    used to decide what to display, per "Enforce the same validation in
+    the backend" — not a second, separately-maintained copy of it).
+    """
+    # Active — an operational role account explicitly deactivated by an
+    # admin is never assignable, regardless of role or project.
+    if not candidate.get("is_active", True):
+        return False
+    # Correct role — permissions (what a role may do) are evaluated
+    # independently of where; a client is never assignable, period.
+    if candidate.get("role") not in ASSIGNABLE_ROLES:
+        return False
+    # Same project — membership (where a user may act) is evaluated
+    # independently of role; an unrestricted account (see
+    # _is_project_scoped) is eligible everywhere, a scoped account only
+    # within its explicitly assigned projects.
+    if project_id is not None and _is_project_scoped(candidate):
+        if project_id not in (candidate.get("assigned_project_ids") or []):
+            return False
+    return True
+
+
+async def list_assignable_users(role: Optional[str] = None, project_id: Optional[str] = None) -> list[dict]:
+    """Backing function for GET /api/users. Filters to eligible assignees
+    only (see is_eligible_assignee) — ineligible users (inactive, wrong
+    role, or not a member of the given project) are never returned, so
+    the picker can never display someone who couldn't actually be
+    assigned.
+    """
+    q: dict = {}
+    if role:
+        q["role"] = role
+    docs = await db.users.find(q, {"_id": 0}).to_list(500)
+    return [d for d in docs if is_eligible_assignee(d, project_id)]
+
+
 async def list_projects(include_archived: bool = False, *, user: Optional[dict] = None) -> list[dict]:
     q: dict = {} if include_archived else {"archived_at": None}
     if user and _is_project_scoped(user):

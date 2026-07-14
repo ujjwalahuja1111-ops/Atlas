@@ -7,14 +7,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
-import {
-  useAudioRecorder, AudioModule, RecordingPresets, setAudioModeAsync,
-} from 'expo-audio';
 import { theme } from '@/src/theme';
-import { getViewRole, type ViewRole } from '@/src/roles';
+import { getViewRole, ROLE_LABEL, type ViewRole } from '@/src/roles';
+import { useVoiceRecorder } from '@/src/useVoiceRecorder';
+import type { Role } from '@/src/api';
 import {
   apiGetItem, apiTransitionItem, apiCommentItem, apiSetBlocker, apiClearBlocker,
-  apiListUsers, apiAssignItem, apiEditItem, apiVoiceUpdate, apiMarkDuplicate, apiListItems,
+  apiListUsers, apiAssignItem, apiEditItem, apiVoiceUpdate, apiTextUpdate, apiMarkDuplicate, apiListItems,
   type OperationalItem, type OperationalEvent, type AssignableUser,
 } from '@/src/ops_api';
 import { humanBlocker } from '../(tabs)/ops';
@@ -77,11 +76,12 @@ export default function OpDetail() {
   const [editing, setEditing] = useState<any | null>(null);
   const [showDupPicker, setShowDupPicker] = useState(false);
   const [dupCandidates, setDupCandidates] = useState<OperationalItem[]>([]);
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const [recording, setRecording] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
+  // FAC-OPS-06 — shared with app/(tabs)/capture.tsx, instead of a second,
+  // separate recording flow.
+  const { recording, elapsed, start: startRecordRaw, stop: stopRecordRaw, cancel: cancelRecordRaw } = useVoiceRecorder();
   const [uploadingVoice, setUploadingVoice] = useState(false);
-  const timerRef = useRef<any>(null);
+  const [showTextUpdate, setShowTextUpdate] = useState(false);
+  const [textUpdateNote, setTextUpdateNote] = useState('');
   // Sprint 6.2 Client Permissions
   const [viewRole, setViewRole] = useState<ViewRole | null>(null);
   const [clientNote, setClientNote] = useState('');
@@ -95,15 +95,6 @@ export default function OpDetail() {
   };
   useEffect(() => { load(); }, [id]);
   useEffect(() => { getViewRole().then(setViewRole); }, []);
-  useEffect(() => {
-    (async () => {
-      try {
-        await AudioModule.requestRecordingPermissionsAsync();
-        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      } catch {}
-    })();
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
-  }, []);
 
   if (!item) {
     return (
@@ -134,9 +125,13 @@ export default function OpDetail() {
     } finally { setBusy(false); }
   };
   const openAssign = async () => {
-    if (users.length === 0) {
-      try { setUsers(await apiListUsers()); } catch {}
-    }
+    // FAC-OPS-06 fix — see the identical fix + full rationale in
+    // (tabs)/ops.tsx's loadUsers(): the previous `if (users.length ===
+    // 0)` guard cached the assignee list for this screen's entire
+    // lifetime, showing a stale role for anyone whose role changed
+    // after the picker was first opened. Also scopes to eligible
+    // (same-project) users only.
+    try { setUsers(await apiListUsers(undefined, item.project_id)); } catch {}
     setShowAssignPicker(true);
   };
   const onAssign = async (u: AssignableUser) => {
@@ -200,19 +195,12 @@ export default function OpDetail() {
   };
 
   const startRecord = async () => {
-    try {
-      await recorder.prepareToRecordAsync();
-      recorder.record();
-      setRecording(true); setElapsed(0);
-      timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
-    } catch (e: any) { Alert.alert('Recording failed', String(e?.message || e)); }
+    const ok = await startRecordRaw();
+    if (!ok) Alert.alert('Recording failed', 'Could not start recording');
   };
   const stopAndUpload = async () => {
     try {
-      await recorder.stop();
-      setRecording(false);
-      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
-      const uri = recorder.uri;
+      const uri = await stopRecordRaw();
       if (!uri) return;
       setUploadingVoice(true);
       await apiVoiceUpdate(item.id, uri);
@@ -221,9 +209,20 @@ export default function OpDetail() {
     finally { setUploadingVoice(false); }
   };
   const cancelRecord = async () => {
-    try { await recorder.stop(); } catch {}
-    setRecording(false);
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    await cancelRecordRaw();
+  };
+  // FAC-OPS-06 — text sibling of the voice update, same ledger entry,
+  // same "Support: Voice, Text" requirement as Capture's own text option.
+  const submitTextUpdate = async () => {
+    if (!textUpdateNote.trim()) return;
+    setUploadingVoice(true);
+    try {
+      await apiTextUpdate(item.id, textUpdateNote.trim());
+      setTextUpdateNote('');
+      setShowTextUpdate(false);
+      await load();
+    } catch (e: any) { Alert.alert('Text update failed', String(e?.message || e)); }
+    finally { setUploadingVoice(false); }
   };
 
   const openDuplicatePicker = async () => {
@@ -417,14 +416,26 @@ export default function OpDetail() {
                     </Pressable>
                   </>
                 ) : (
-                  <Pressable testID="voice-update" onPress={startRecord}
-                    disabled={busy || uploadingVoice || item.status === 'closed'}
-                    style={[styles.actionBtn, { borderColor: theme.color.brand, backgroundColor: theme.color.surface2 }]}>
-                    <Ionicons name={uploadingVoice ? 'sync' : 'mic'} size={18} color={theme.color.brand} />
-                    <Text style={[styles.actionLabel, { color: theme.color.brand }]}>
-                      {uploadingVoice ? 'TRANSCRIBING…' : 'VOICE UPDATE'}
-                    </Text>
-                  </Pressable>
+                  <>
+                    <Pressable testID="voice-update" onPress={startRecord}
+                      disabled={busy || uploadingVoice || item.status === 'closed'}
+                      style={[styles.actionBtn, { borderColor: theme.color.brand, backgroundColor: theme.color.surface2 }]}>
+                      <Ionicons name={uploadingVoice ? 'sync' : 'mic'} size={18} color={theme.color.brand} />
+                      <Text style={[styles.actionLabel, { color: theme.color.brand }]}>
+                        {uploadingVoice ? 'TRANSCRIBING…' : 'VOICE UPDATE'}
+                      </Text>
+                    </Pressable>
+                    <Pressable testID="text-update-toggle" onPress={() => setShowTextUpdate((v) => !v)}
+                      disabled={busy || uploadingVoice || item.status === 'closed'}
+                      style={[styles.actionBtn, showTextUpdate
+                        ? { borderColor: theme.color.brand, backgroundColor: theme.color.brand }
+                        : { borderColor: theme.color.brand, backgroundColor: theme.color.surface2 }]}>
+                      <Ionicons name="create-outline" size={18} color={showTextUpdate ? theme.color.onBrand : theme.color.brand} />
+                      <Text style={[styles.actionLabel, { color: showTextUpdate ? theme.color.onBrand : theme.color.brand }]}>
+                        TEXT UPDATE
+                      </Text>
+                    </Pressable>
+                  </>
                 )}
                 {item.status !== 'duplicate' && item.status !== 'closed' && item.status !== 'archived' && (
                   <Pressable testID="mark-duplicate" onPress={openDuplicatePicker} disabled={busy}
@@ -448,6 +459,28 @@ export default function OpDetail() {
                   </Pressable>
                 )}
               </View>
+
+              {showTextUpdate && (
+                <View style={styles.clientDecisionBox}>
+                  <TextInput
+                    testID="text-update-input"
+                    value={textUpdateNote}
+                    onChangeText={setTextUpdateNote}
+                    placeholder="Type an update…"
+                    placeholderTextColor={theme.color.textDim}
+                    style={styles.clientDecisionInput}
+                    multiline
+                    autoFocus
+                  />
+                  <Pressable testID="text-update-send" onPress={submitTextUpdate}
+                    disabled={uploadingVoice || !textUpdateNote.trim()}
+                    style={[styles.primary, { height: 44 }, (uploadingVoice || !textUpdateNote.trim()) && { opacity: 0.4 }]}>
+                    {uploadingVoice ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : (
+                      <Text style={[styles.primaryText, { fontSize: 14 }]}>ADD UPDATE</Text>
+                    )}
+                  </Pressable>
+                </View>
+              )}
             </>
           )}
 
@@ -480,7 +513,7 @@ export default function OpDetail() {
                         color={suggested ? theme.color.brand : theme.color.textMuted} />
                       <Text style={styles.blockerLabel}>{u.name}</Text>
                       <Text style={{ color: theme.color.textDim, fontSize: 11, marginLeft: 'auto' }}>
-                        {u.role}{suggested ? '  ★' : ''}
+                        {ROLE_LABEL[u.role as Role] || u.role}{suggested ? '  ★' : ''}
                       </Text>
                     </Pressable>
                   );

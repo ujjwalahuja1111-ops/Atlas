@@ -9,12 +9,10 @@ import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { Image as ExpoImage } from 'expo-image';
-import {
-  useAudioRecorder, AudioModule, RecordingPresets, setAudioModeAsync,
-} from 'expo-audio';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
+import { useVoiceRecorder } from '@/src/useVoiceRecorder';
 import {
   apiCreateEvent, apiListSites, apiListProjects,
   getActiveSite, setActiveSite,
@@ -23,9 +21,9 @@ import {
 
 export default function CaptureScreen() {
   const router = useRouter();
-  const recorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
-  const [recording, setRecording] = useState(false);
-  const [elapsed, setElapsed] = useState(0);
+  // FAC-OPS-06 — shared with app/op/[id].tsx's voice update, instead of
+  // each screen maintaining its own separate useAudioRecorder instance.
+  const { recording, elapsed, start: startRecordingRaw, stop: stopRecordingRaw, cancel: cancelRecordingRaw } = useVoiceRecorder();
   const [photoUris, setPhotoUris] = useState<string[]>([]);
   const [sites, setSites] = useState<Site[]>([]);
   const [projectMap, setProjectMap] = useState<Record<string, Project>>({});
@@ -41,16 +39,10 @@ export default function CaptureScreen() {
   // independent of audio/photos — no backend change needed here).
   const [showTextInput, setShowTextInput] = useState(false);
   const [textNote, setTextNote] = useState('');
-  const timerRef = useRef<any>(null);
-
   useEffect(() => { getViewRole().then(setViewRole); }, []);
 
   useEffect(() => {
     (async () => {
-      try {
-        await AudioModule.requestRecordingPermissionsAsync();
-        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
-      } catch {}
       try {
         const list = await apiListSites();
         setSites(list);
@@ -68,7 +60,6 @@ export default function CaptureScreen() {
         setStatus(e?.message || 'Could not load sites. Pull down on Home to retry.');
       }
     })();
-    return () => { if (timerRef.current) clearInterval(timerRef.current); };
   }, []);
 
   const tryCaptureGps = async () => {
@@ -84,34 +75,23 @@ export default function CaptureScreen() {
 
   const startRecording = async () => {
     tryCaptureGps();
-    try {
-      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
-      await recorder.prepareToRecordAsync();
-      recorder.record();
-      setRecording(true);
-      setElapsed(0);
-      setStatus('Recording…');
-      timerRef.current = setInterval(() => setElapsed((s) => s + 1), 1000);
-    } catch {
-      setStatus('Could not start recording');
-    }
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
+    const ok = await startRecordingRaw();
+    if (ok) setStatus('Recording…');
+    else setStatus('Could not start recording');
   };
 
   const stopAndSubmit = async () => {
     if (!siteId) { setStatus('Pick a site first'); return; }
     try {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      if (timerRef.current) clearInterval(timerRef.current);
-      setRecording(false);
-      await recorder.stop();
-      const uri = recorder.uri;
+      const uri = await stopRecordingRaw();
       if (!uri && photoUris.length === 0) { setStatus('Nothing to send'); return; }
       setSubmitting(true);
       setStatus('Saving…');
       await apiCreateEvent({ siteId, audioUri: uri, photoUris, gps });
       setStatus('Saved! AI analyzing in background…');
       setPhotoUris([]);
-      setElapsed(0);
       setTimeout(() => {
         setStatus('');
         router.push('/(tabs)');
@@ -121,13 +101,9 @@ export default function CaptureScreen() {
     } finally { setSubmitting(false); }
   };
 
-  // Sprint 6.2 — mirrors the existing cancelRecord pattern already used
-  // in app/op/[id].tsx's voice-update flow.
   const cancelRecording = async () => {
-    try { await recorder.stop(); } catch {}
-    setRecording(false);
+    await cancelRecordingRaw();
     setStatus('');
-    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
   };
 
   const pickPhoto = async () => {

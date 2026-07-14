@@ -53,6 +53,22 @@ export const BACKEND_ROLE_FOR: Record<ViewRole, Role> = {
   admin: 'management',
 };
 
+/** FAC-OPS-06 — human-readable label for a raw backend Role. The single
+ * canonical source: previously duplicated (and prone to drifting out of
+ * sync with each other or with the Role type itself) in app/users/
+ * index.tsx and app/(tabs)/profile.tsx, and not used at all by the
+ * assignee pickers (app/(tabs)/ops.tsx, app/op/[id].tsx), which rendered
+ * the raw snake_case role string directly. "Display the current backend
+ * role everywhere" means both fresh AND readable — this is the readable
+ * half; the freshness half is fixed at each picker's own data-loading
+ * call site. */
+export const ROLE_LABEL: Record<Role, string> = {
+  management: 'Management',
+  project_manager: 'Project Manager',
+  site_supervisor: 'Site Supervisor',
+  client: 'Client',
+};
+
 /** Per-view-role visibility flags. Screens read these to decide what to render. */
 export type ViewPerms = {
   showProposals: boolean;

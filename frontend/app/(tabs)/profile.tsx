@@ -5,14 +5,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { clearAuth, loadAuth, saveAuth, apiUpdateMe, type User } from '@/src/api';
-import { clearViewRole, getViewRole, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
-
-const ROLE_LABEL: Record<string, string> = {
-  management: 'Management',
-  project_manager: 'Project Manager',
-  site_supervisor: 'Site Supervisor',
-  client: 'Client',
-};
+import { clearViewRole, getViewRole, VIEW_ROLE_LABEL, ROLE_LABEL, type ViewRole } from '@/src/roles';
 
 export default function ProfileScreen() {
   const router = useRouter();

@@ -1,5 +1,5 @@
 """Operational Items routes (V3)."""
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from pydantic import BaseModel
 from typing import Optional, Literal
 from core.auth import get_current_user
@@ -140,10 +140,21 @@ async def assign(item_id: str, req: AssignReq, user: dict = Depends(get_current_
     # routes/ai_proposals.py).
     if user["role"] not in ("management", "project_manager"):
         raise HTTPException(status_code=403, detail="Only Project Managers/management can assign or reassign work.")
+    item_for_scope = await operations_engine.get_item(item_id)
+    if not item_for_scope:
+        raise HTTPException(status_code=404, detail="Item not found")
     from core.db import db
     assignee = await db.users.find_one({"id": req.assigned_to_user_id}, {"_id": 0})
     if not assignee:
         raise HTTPException(status_code=404, detail="Assignee not found")
+    # FAC-OPS-06: enforce the identical eligibility rule the picker used
+    # to decide who to display — active, an operational role, a member
+    # of this item's project — so assignment can never succeed for
+    # someone the picker would have hidden. Same function, not a
+    # separately-maintained copy of the same three checks.
+    if not memory_engine.is_eligible_assignee(assignee, item_for_scope.get("project_id")):
+        raise HTTPException(status_code=400, detail="This user is not eligible to be assigned this item "
+                             "(inactive, wrong role, or not a member of this project).")
     try:
         item = await operations_engine.assign_item(
             item_id=item_id, assignee=assignee, actor=user, note=req.note,
@@ -226,13 +237,15 @@ async def escalate(item_id: str, req: EscalateReq, user: dict = Depends(get_curr
 
 
 @router.get("/users")
-async def list_users(role: Optional[str] = None, user: dict = Depends(get_current_user)):
-    """List users (for assignment pickers). Strips phone for privacy in pilot."""
-    from core.db import db
-    q: dict = {}
-    if role:
-        q["role"] = role
-    docs = await db.users.find(q, {"_id": 0}).to_list(500)
+async def list_users(role: Optional[str] = None, project_id: Optional[str] = None,
+                     user: dict = Depends(get_current_user)):
+    """List users (for assignment pickers). Strips phone for privacy in
+    pilot. FAC-OPS-06: only returns ELIGIBLE assignees — active, an
+    operational role, and (when project_id is given) a member of that
+    project — see memory_engine.is_eligible_assignee for the single
+    source of truth this and the assign action below both use.
+    """
+    docs = await memory_engine.list_assignable_users(role=role, project_id=project_id)
     return [{"id": d["id"], "name": d["name"], "role": d["role"]} for d in docs]
 
 
@@ -271,67 +284,84 @@ async def edit_item(item_id: str, req: EditItemReq,
 
 @router.post("/operational-items/{item_id}/voice-update", status_code=201)
 async def voice_update(item_id: str,
-                       audio: UploadFile = File(...),
+                       audio: Optional[UploadFile] = File(None),
+                       text: Optional[str] = Form(None),
                        user: dict = Depends(get_current_user)):
-    _forbid_client(user, "add voice updates")
-    """Accept an audio note, persist as raw_asset, transcribe via Whisper,
-    and append a voice_update activity entry on the item ledger.
+    """Add an update to an operational item — voice OR manually-typed
+    text, at least one required (mirrors POST /api/events' exact
+    audio-or-text pattern). A voice note is persisted as a raw_asset and
+    transcribed via Whisper; typed text needs no transcription step at
+    all — it already is the text. Both paths converge on the same
+    voice_update_item() ledger entry and response shape, so the activity
+    feed renders either identically.
 
-    The original asset stays linked via payload.audio_asset_id; transcript
-    and AI summary are stored alongside so the activity feed can render them
-    without re-running Whisper.
+    FAC-OPS-06 — reuses the Capture screen's exact recording component
+    (src/useVoiceRecorder.ts) on the frontend rather than a second,
+    separate recording flow; this is the one backend endpoint both the
+    voice and text paths call.
     """
+    _forbid_client(user, "add voice updates")
     item = await operations_engine.get_item(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
 
-    audio_bytes = await audio.read()
-    if not audio_bytes:
-        raise HTTPException(status_code=400, detail="Empty audio payload")
+    if audio is None and (not text or not text.strip()):
+        raise HTTPException(status_code=400, detail="Provide audio or text")
 
-    # Persist the raw asset (event_id=None — this asset belongs to an
-    # operational item update, not a construction event).
-    asset = await memory_engine.put_asset(
-        event_id=f"op:{item_id}",
-        kind="audio",
-        mime=audio.content_type or "audio/m4a",
-        raw_bytes=audio_bytes,
-    )
+    if text and text.strip():
+        transcript = text.strip()
+        summary = None
+        language = None
+        asset_id = None
+    else:
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio payload")
 
-    # Transcribe via Whisper. Run async, do not block beyond what Whisper takes.
-    from engines import intelligence_engine
-    transcript = ""
-    summary = None
-    language = None
-    try:
-        transcript = await intelligence_engine.transcribe_audio_bytes(
-            audio_bytes, audio.content_type or "audio/m4a"
+        # Persist the raw asset (event_id=None — this asset belongs to an
+        # operational item update, not a construction event).
+        asset = await memory_engine.put_asset(
+            event_id=f"op:{item_id}",
+            kind="audio",
+            mime=audio.content_type or "audio/m4a",
+            raw_bytes=audio_bytes,
         )
-    except Exception as e:
-        # Capture the failure but still append the activity so the audio is not lost.
-        transcript = ""
-        summary = f"(transcription failed: {type(e).__name__})"
+        asset_id = asset["id"]
 
-    # Lightweight summary — short, English, no LLM call if transcript empty or
-    # already short.
-    if transcript:
+        # Transcribe via Whisper. Run async, do not block beyond what Whisper takes.
+        from engines import intelligence_engine
+        transcript = ""
+        summary = None
+        language = None
         try:
-            summary, language = await intelligence_engine.summarise_voice_update(
-                transcript=transcript, item=item,
+            transcript = await intelligence_engine.transcribe_audio_bytes(
+                audio_bytes, audio.content_type or "audio/m4a"
             )
-        except Exception:
-            summary = transcript[:160]
+        except Exception as e:
+            # Capture the failure but still append the activity so the audio is not lost.
+            transcript = ""
+            summary = f"(transcription failed: {type(e).__name__})"
+
+        # Lightweight summary — short, English, no LLM call if transcript empty or
+        # already short.
+        if transcript:
+            try:
+                summary, language = await intelligence_engine.summarise_voice_update(
+                    transcript=transcript, item=item,
+                )
+            except Exception:
+                summary = transcript[:160]
 
     try:
         updated = await operations_engine.voice_update_item(
             item_id=item_id, actor=user,
-            audio_asset_id=asset["id"],
             transcript=transcript,
+            audio_asset_id=asset_id,
             summary=summary,
             language=language,
         )
         return {"item": operations_engine.enrich(updated),
-                "audio_asset_id": asset["id"],
+                "audio_asset_id": asset_id,
                 "transcript": transcript,
                 "summary": summary,
                 "language": language}

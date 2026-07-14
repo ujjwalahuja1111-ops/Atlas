@@ -6,7 +6,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { getViewRole, DEFAULT_VIEW_ROLE_FOR, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
+import { getViewRole, DEFAULT_VIEW_ROLE_FOR, VIEW_ROLE_LABEL, ROLE_LABEL, type ViewRole } from '@/src/roles';
 import { apiListProjects, type Project, type User, type Role } from '@/src/api';
 import {
   apiListAdminUsers, apiApproveUser, apiRejectUser, apiAssignUserRole,
@@ -26,11 +26,12 @@ const FILTERS: { key: ApprovalStatus | 'all'; label: string }[] = [
 // DEFAULT_VIEW_ROLE_FOR) — assigning a role is now the ONLY identity
 // action an admin takes; there is no separate "assign workspace" step
 // anymore (see the removed onAssignWorkspace / apiAssignUserWorkspace).
+// FAC-OPS-06: ROLE_LABEL itself now comes from src/roles.ts (the single
+// canonical source — this file previously had its own local copy that
+// said "Admin" for the management role, while profile.tsx's separate
+// copy correctly said "Management"; two labels for the same role is
+// exactly the kind of duplicated concept this ticket asks to clean up).
 const ROLE_OPTIONS: Role[] = ['management', 'project_manager', 'site_supervisor', 'client'];
-const ROLE_LABEL: Record<Role, string> = {
-  management: 'Admin', project_manager: 'Project Manager',
-  site_supervisor: 'Site Supervisor', client: 'Client',
-};
 
 export default function UserManagementScreen() {
   const router = useRouter();

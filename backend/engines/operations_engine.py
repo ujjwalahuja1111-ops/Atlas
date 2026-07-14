@@ -578,12 +578,23 @@ async def edit_item(*, item_id: str, actor: dict, edits: dict,
 
 
 async def voice_update_item(*, item_id: str, actor: dict,
-                            audio_asset_id: str, transcript: str,
+                            transcript: str,
+                            audio_asset_id: Optional[str] = None,
                             summary: Optional[str] = None,
                             language: Optional[str] = None) -> dict:
-    """Append a voice_update activity entry. The original asset stays linked
-    via payload.audio_asset_id; transcript and AI summary are stored alongside
-    so the activity feed can render them without re-running Whisper."""
+    """Append a voice_update activity entry. The original asset (if any)
+    stays linked via payload.audio_asset_id; transcript and AI summary
+    are stored alongside so the activity feed can render them without
+    re-running Whisper.
+
+    FAC-OPS-06: audio_asset_id is now optional — a manually-typed text
+    update (no recording at all) reuses this exact same function and
+    ledger-entry shape, with audio_asset_id=None and transcript set
+    directly to what was typed. There is no meaningful difference
+    between "the text of what was said" and "the text that was typed"
+    once it reaches this point, so there is no reason for two separate
+    code paths.
+    """
     item = await get_item(item_id)
     if not item:
         raise ValueError("item not found")
