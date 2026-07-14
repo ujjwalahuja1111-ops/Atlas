@@ -290,12 +290,48 @@ stale. None of it is AI.
 | learning (V3) | a separate layer consuming `feedback_history` + outcomes, tuning rule parameters | rule structure, evidence, the deterministic core |
 | AI explanation/summarization | presentation of deterministic findings | `suggested_*` fields, finding content, health |
 
-## 12. Verification obligations for future intelligence work
+## 12. Integration seams (audited Sprint 01C)
+
+Each planned integration has exactly ONE place it plugs in. If a future
+change needs to touch more than its seam, the design is wrong.
+
+| Future integration | The seam | What stays untouched |
+|---|---|---|
+| **AI Gateway** | `_ai_review()` is the only function that talks to an LLM; model/prompt constants sit beside it and every AI-inclusive run records `ai_prompt {name, version, model}` in its audit doc. Gateway integration = swap the transport inside `_ai_review`. | rules, projections, persistence, routes — and the boundary: AI findings can never carry suggested actions/owners/dates |
+| **Context Builder** | `build_project_snapshot()` is the only database read path and the snapshot (versioned, `SNAPSHOT_SCHEMA_VERSION`) is the only contract rules see. A Context Builder replaces/wraps this one function. | every rule and projection — they are pure over the snapshot dict |
+| **Construction Knowledge Graph** | the knowledge accessors (`_act_requires_inspection`, `_act_dependency_ids`, `_act_knowledge_ref`) and `stage_of_activity()` are the only places knowledge-derived facts are interpreted. A graph swaps their internals. | rule logic, stage consumers, readiness checks |
+| **Construction Memory expansion** | `build_memory_record()` (+ `MEMORY_SCHEMA_VERSION`) defines the record; `_capture_construction_memory()` is the only writer; capture counts are audited per run. Expansion = new fields + version bump. | reasoning — nothing reads memory back until the learning layer exists under §7's boundary |
+
+Index strategy until merge: CRE ensures its own indexes lazily
+(`_ensure_indexes_once`) so `core/db.py` stays byte-identical to `main`
+— the branch's entire shared-file merge surface is server.py's two
+router lines. Moving the index registrations into `ensure_indexes()` is
+part of the merge commit itself.
+
+Role model: CRE's gates and `SUGGESTED_ROLES` follow FAC-04's frozen
+vocabulary (`management`, `project_manager`, `site_supervisor`,
+`client`; workspace is a function of role). A guard test pins CRE to
+`memory_engine.ROLES` so drift fails the suite, not production.
+
+## 13. Verification obligations for future intelligence work
 
 Anything extending CRE inherits the three-layer verification convention:
 pure unit tests for reasoning logic (no DB), full-stack HTTP tests
 against the real app (mongomock-motor), and the live-deployment suite.
-Two structural tests must never be weakened: the read-only guarantee
-(reasoning runs change nothing outside CRE's collections) and the
-contract test (no conclusions without evidence, no unexplained
-confidence).
+Structural tests that must never be weakened: the read-only guarantee
+(runtime: reasoning runs change nothing outside CRE's collections;
+source-level: `test_cre_architecture_guards.py` scans that the engine
+mutates only its own collections, the projection layer performs no I/O,
+and routes never touch the database), the full-registry contract test
+(every rule fires against one guard snapshot; no conclusions without
+evidence, no unexplained confidence), the determinism/replay test
+(identical snapshot -> byte-identical reasoning, snapshot never
+mutated, all reasoning anchored to the snapshot's own clock), and the
+non-contradiction test (overlapping rules pull in the same direction).
+
+---
+
+**The standing instruction for everyone who works on CRE:**
+
+> When in doubt, prefer deleting, simplifying or consolidating over
+> adding new code.

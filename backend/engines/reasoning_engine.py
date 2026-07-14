@@ -101,7 +101,7 @@ from core.db import db
 from core.settings import EMERGENT_LLM_KEY
 from engines import memory_engine
 from engines import reasoning_projections as projections
-from engines.reasoning_projections import _iso, _now, _parse_iso
+from engines.reasoning_projections import (_iso, _now, _parse_iso, snapshot_now)
 
 logger = logging.getLogger(__name__)
 
@@ -153,8 +153,10 @@ FEEDBACK_VERDICTS = {"accepted", "rejected", "modified", "ignored"}
 RELATION_TYPES = {"previous", "duplicate", "supports", "conflicts"}
 
 # Suggestion vocabulary. Suggested actions reuse the Operations Engine's
-# existing category vocabulary — no new collections, no new taxonomies.
-SUGGESTED_ROLES = {"supervisor", "coordinator", "management"}
+# existing category vocabulary; suggested roles are exactly the internal
+# roles of FAC-04's frozen model (memory_engine.ROLES minus client) — a
+# guard test pins this so the two can never drift.
+SUGGESTED_ROLES = {"site_supervisor", "project_manager", "management"}
 _DUE_DAYS_BY_SEVERITY = {"critical": 1, "warning": 3, "advisory": 7, "info": 14}
 
 # Tunables
@@ -333,7 +335,7 @@ def _suggested_action(category: str, title: str, description: str) -> dict:
 
 
 def _due_date(snap: dict, severity: str) -> str:
-    now = _parse_iso(snap["generated_at"])
+    now = snapshot_now(snap)
     return _iso(now + timedelta(days=_DUE_DAYS_BY_SEVERITY[severity]))
 
 
@@ -404,16 +406,10 @@ def rule(rule_id: str, domain: str, description: str):
     return _register
 
 
-def _active(items: list[dict]) -> list[dict]:
-    terminal = {"fulfilled", "verified", "closed", "archived",
-                "cancelled", "duplicate"}
-    return [i for i in items if i.get("status") not in terminal]
-
-
 @rule("schedule.planned_start_missed", "schedule",
       "An activity's planned start date has passed but work has not begun.")
 def _r_planned_start_missed(snap: dict) -> list[dict]:
-    now = _parse_iso(snap["generated_at"])
+    now = snapshot_now(snap)
     out = []
     for a in snap["workflow_activities"]:
         start = _parse_iso(a.get("planned_start"))
@@ -441,7 +437,7 @@ def _r_planned_start_missed(snap: dict) -> list[dict]:
                 "follow_up", f"Confirm start of '{a['name']}'",
                 f"Planned start was {a.get('planned_start')}; verify site "
                 "status and record actual start or the blocking reason."),
-            suggested_responsible_role="coordinator",
+            suggested_responsible_role="project_manager",
             suggested_due_date=_due_date(snap, sev),
             confidence=_confidence(
                 "high",
@@ -475,7 +471,7 @@ def _r_planned_start_missed(snap: dict) -> list[dict]:
 @rule("schedule.planned_finish_missed", "schedule",
       "An activity is past its planned finish date and not complete.")
 def _r_planned_finish_missed(snap: dict) -> list[dict]:
-    now = _parse_iso(snap["generated_at"])
+    now = snapshot_now(snap)
     out = []
     for a in snap["workflow_activities"]:
         finish = _parse_iso(a.get("planned_finish"))
@@ -510,7 +506,7 @@ def _r_planned_finish_missed(snap: dict) -> list[dict]:
                 "follow_up", f"Completion forecast for '{a['name']}'",
                 f"Planned finish {a.get('planned_finish')} has passed; "
                 "obtain a revised forecast and re-plan dependents."),
-            suggested_responsible_role="coordinator",
+            suggested_responsible_role="project_manager",
             suggested_due_date=_due_date(snap, sev),
             confidence=_confidence(
                 "high",
@@ -541,7 +537,7 @@ def _r_planned_finish_missed(snap: dict) -> list[dict]:
       "(generalized 'excavation done -> begin PCC', from the project's own "
       "dependency graph).")
 def _r_successor_not_started(snap: dict) -> list[dict]:
-    now = _parse_iso(snap["generated_at"])
+    now = snapshot_now(snap)
     by_id = {a["id"]: a for a in snap["workflow_activities"]}
     out = []
     for a in snap["workflow_activities"]:
@@ -559,7 +555,31 @@ def _r_successor_not_started(snap: dict) -> list[dict]:
         dep_names = ", ".join(d["name"] for d in deps)
         sev = "warning" if idle_days < 7 else "critical"
         ev_events, ev_media = _corroboration(snap, a["id"])
-        kref = _act_knowledge_ref(a)
+        # Readiness-aware recommendation: if execution-readiness gaps
+        # exist (materials, inspections, approvals, drawings), the advice
+        # is to CLEAR them then begin — never a bare "begin" that would
+        # contradict procurement.frontier_material_gap's "hold the start".
+        gaps = [c["detail"] for c in
+                projections.activity_readiness(snap, a)
+                if c["status"] == "not_ready"]
+        if gaps:
+            recommendation = (
+                f"Clear what is holding '{a['name']}' "
+                f"({'; '.join(gaps[:3])}), then begin it — or record it "
+                "blocked so the delay is visible and attributable.")
+            action = _suggested_action(
+                "follow_up", f"Prepare and start '{a['name']}'",
+                f"Sequence allows '{a['name']}' ({dep_names} completed) but "
+                f"readiness gaps remain: {'; '.join(gaps[:3])}. Clear them, "
+                "then begin.")
+        else:
+            recommendation = (
+                f"Begin '{a['name']}', or record the reason it cannot start "
+                "(mark it blocked) so the delay is visible and attributable.")
+            action = _suggested_action(
+                "follow_up", f"Start '{a['name']}'",
+                f"The construction sequence allows '{a['name']}' to proceed "
+                f"({dep_names} completed). Begin it or record the blocker.")
         out.append(_finding(
             rule_id="construction_logic.successor_not_started",
             domain="construction_logic", severity=sev,
@@ -568,14 +588,9 @@ def _r_successor_not_started(snap: dict) -> list[dict]:
             risk=(f"{idle_days} idle day(s) since the last dependency "
                   "finished is unrecovered time on this chain of work — "
                   "float is being consumed with nothing to show for it."),
-            recommendation=(f"Begin '{a['name']}', or record the reason it "
-                            "cannot start (mark it blocked) so the delay is "
-                            "visible and attributable."),
-            suggested_operational_action=_suggested_action(
-                "follow_up", f"Start '{a['name']}'",
-                f"The construction sequence allows '{a['name']}' to proceed "
-                f"({dep_names} completed). Begin it or record the blocker."),
-            suggested_responsible_role="supervisor",
+            recommendation=recommendation,
+            suggested_operational_action=action,
+            suggested_responsible_role="site_supervisor",
             suggested_due_date=_due_date(snap, sev),
             confidence=_confidence(
                 "high",
@@ -601,9 +616,7 @@ def _r_successor_not_started(snap: dict) -> list[dict]:
                 events=ev_events, media=ev_media,
                 knowledge_items=[_ref(_act_knowledge_ref(d),
                                       f"Activity Library source of '{d['name']}'")
-                                 for d in deps + [a] if _act_knowledge_ref(d)]
-                                if kref or any(_act_knowledge_ref(d) for d in deps)
-                                else [],
+                                 for d in deps + [a] if _act_knowledge_ref(d)],
             ),
             subject_id=a["id"],
             affected_activity_id=a["id"], affected_activity_name=a["name"],
@@ -634,7 +647,7 @@ def _r_activity_blocked(snap: dict) -> list[dict]:
                 f"Marked blocked at {blocked_since} by "
                 f"{a.get('status_updated_by_user_name') or 'unknown'}; "
                 "identify the cause and clear it or re-sequence."),
-            suggested_responsible_role="coordinator",
+            suggested_responsible_role="project_manager",
             suggested_due_date=_due_date(snap, "warning"),
             confidence=_confidence(
                 "high",
@@ -686,7 +699,7 @@ def _r_completed_without_inspection(snap: dict) -> list[dict]:
                 "Activity is flagged requires_inspection in the Activity "
                 "Library and is complete with no inspection recorded; "
                 "verify or perform the inspection."),
-            suggested_responsible_role="supervisor",
+            suggested_responsible_role="site_supervisor",
             suggested_due_date=_due_date(snap, "warning"),
             confidence=_confidence(
                 "medium",
@@ -720,9 +733,9 @@ def _r_completed_without_inspection(snap: dict) -> list[dict]:
       "A high/critical safety observation has been open beyond the "
       "resolution window.")
 def _r_safety_unresolved(snap: dict) -> list[dict]:
-    now = _parse_iso(snap["generated_at"])
+    now = snapshot_now(snap)
     out = []
-    for i in _active(snap["operational_items"]):
+    for i in projections.active_items(snap["operational_items"]):
         if i.get("category") != "safety_observation":
             continue
         if i.get("priority") not in ("high", "critical"):
@@ -770,9 +783,9 @@ def _r_safety_unresolved(snap: dict) -> list[dict]:
       "An open material requirement is inside (or past) the procurement "
       "lead-time window.")
 def _r_material_lead_time(snap: dict) -> list[dict]:
-    now = _parse_iso(snap["generated_at"])
+    now = snapshot_now(snap)
     out = []
-    for i in _active(snap["operational_items"]):
+    for i in projections.active_items(snap["operational_items"]):
         if i.get("category") != "material_requirement":
             continue
         req = _parse_iso(i.get("required_by"))
@@ -802,7 +815,7 @@ def _r_material_lead_time(snap: dict) -> list[dict]:
                 "follow_up", f"Confirm delivery: {i.get('title')}",
                 f"Required by {i.get('required_by')}; verify PO and delivery "
                 "date with the vendor, re-sequence if it will slip."),
-            suggested_responsible_role="coordinator",
+            suggested_responsible_role="project_manager",
             suggested_due_date=_due_date(snap, sev),
             confidence=_confidence(
                 "high",
@@ -829,9 +842,9 @@ def _r_material_lead_time(snap: dict) -> list[dict]:
       "An open operational item has had no activity beyond the staleness "
       "window.")
 def _r_stale_open_item(snap: dict) -> list[dict]:
-    now = _parse_iso(snap["generated_at"])
+    now = snapshot_now(snap)
     out = []
-    for i in _active(snap["operational_items"]):
+    for i in projections.active_items(snap["operational_items"]):
         last = _parse_iso(i.get("last_updated_at")) or _parse_iso(i.get("created_at"))
         if not last:
             continue
@@ -853,7 +866,7 @@ def _r_stale_open_item(snap: dict) -> list[dict]:
                 "follow_up", f"Chase stale item: {i.get('title')}",
                 f"No activity for {idle_days} days; confirm real status "
                 "with the owner and update or close."),
-            suggested_responsible_role="coordinator",
+            suggested_responsible_role="project_manager",
             suggested_due_date=_due_date(snap, "advisory"),
             confidence=_confidence(
                 "high",
@@ -876,7 +889,7 @@ def _r_stale_open_item(snap: dict) -> list[dict]:
       "Meaningful completion momentum with no client-facing item raised "
       "since.")
 def _r_client_update_due(snap: dict) -> list[dict]:
-    now = _parse_iso(snap["generated_at"])
+    now = snapshot_now(snap)
     recent_done = [
         a for a in snap["workflow_activities"]
         if a.get("status") == "completed"
@@ -934,7 +947,10 @@ def _r_client_update_due(snap: dict) -> list[dict]:
             absences=[_ref(None, "no client_approval item created after the "
                                  "oldest recent completion")],
         ),
-        subject_id=f"{proj.get('id')}:{now.date().isocalendar()[:2]}",
+        # subject is the PROJECT: while this insight is open, reruns must
+        # refresh it, not mint a weekly sibling (the old key rotated with
+        # the ISO week, defeating idempotency for long-open insights).
+        subject_id=proj.get("id"),
     )]
 
 
@@ -1001,12 +1017,12 @@ def _r_forecast_finish_slip(snap: dict) -> list[dict]:
       "The construction sequence allows the next activity to start, but "
       "the material pipeline has unfulfilled requirements in the window.")
 def _r_frontier_material_gap(snap: dict) -> list[dict]:
-    now = _parse_iso(snap["generated_at"])
-    frontier = projections._frontier(snap["workflow_activities"])
+    now = snapshot_now(snap)
+    frontier = projections.frontier(snap["workflow_activities"])
     if not frontier:
         return []
     gaps = [
-        i for i in _active(snap["operational_items"])
+        i for i in projections.active_items(snap["operational_items"])
         if i.get("category") == "material_requirement"
         and i.get("required_by")
         and (_parse_iso(i.get("required_by")) or now)
@@ -1034,7 +1050,7 @@ def _r_frontier_material_gap(snap: dict) -> list[dict]:
             "follow_up", f"Clear material pipeline before '{lead['name']}'",
             "Verify delivery of: "
             + ", ".join(i.get("title", i["id"]) for i in gaps[:5])),
-        suggested_responsible_role="coordinator",
+        suggested_responsible_role="project_manager",
         suggested_due_date=_due_date(snap, "warning"),
         confidence=_confidence(
             "medium",
@@ -1086,9 +1102,6 @@ def list_rules() -> list[dict]:
     return [{"id": r["id"], "domain": r["domain"],
              "description": r["description"]} for r in _RULES]
 
-
-def list_rule_ids() -> list[str]:
-    return [r["id"] for r in _RULES]
 
 
 # ---------------------------------------------------------------------------
@@ -1230,6 +1243,29 @@ def _snapshot_digest(snapshot: dict, findings: list[dict]) -> str:
     return json.dumps(digest, default=str)
 
 
+# Atlas id prefixes are deterministic (memory/knowledge/workflow/
+# operations engines) — AI-cited references are routed into the correct
+# evidence sections by prefix, never guessed.
+_ID_PREFIX_TO_EVIDENCE_KIND = {
+    "wfa_": "workflow_activities", "op_": "operational_items",
+    "evt_": "events", "ast_": "media", "prop_": "approvals",
+    "kn_": "knowledge_items",
+}
+
+
+def _ai_cited_evidence(ref_ids: list[str]) -> dict:
+    kinds: dict[str, list] = {k: [] for k in EVIDENCE_KINDS}
+    for rid in ref_ids:
+        kind = next((v for p, v in _ID_PREFIX_TO_EVIDENCE_KIND.items()
+                     if rid.startswith(p)), None)
+        if kind:
+            kinds[kind].append(_ref(rid, "cited by AI reviewer"))
+        else:
+            kinds["absences"].append(
+                _ref(None, f"AI cited unrecognized reference '{rid[:40]}'"))
+    return _evidence(**{k: v for k, v in kinds.items()})
+
+
 async def _ai_review(snapshot: dict, findings: list[dict]) -> list[dict]:
     """Optional LLM pass. Total failure isolation: any exception returns
     [] and the deterministic findings stand alone."""
@@ -1275,11 +1311,8 @@ async def _ai_review(snapshot: dict, findings: list[dict]) -> list[dict]:
                     assumptions=["AI review output is advisory context, "
                                  "subordinate to deterministic findings"],
                 ),
-                evidence=_evidence(
-                    approvals=[],
-                    events=[_ref(str(r), "cited by AI reviewer")
-                            for r in (obs.get("evidence_ids") or [])[:8]],
-                ),
+                evidence=_ai_cited_evidence(
+                    [str(r) for r in (obs.get("evidence_ids") or [])[:8]]),
                 subject_id=f"{snapshot['project'].get('id')}:ai:{idx}:"
                            f"{snapshot['generated_at'][:10]}",
             ))
@@ -1293,6 +1326,29 @@ async def _ai_review(snapshot: dict, findings: list[dict]) -> list[dict]:
 # Run orchestration + persistence (the ONLY writes CRE performs)
 # ---------------------------------------------------------------------------
 
+_indexes_ready = False
+
+
+async def _ensure_indexes_once() -> None:
+    """Lazy, idempotent index creation for ALL CRE-owned collections.
+    Deliberately NOT in core/db.py: keeping that file byte-identical to
+    main reduces the branch's shared-file merge surface to server.py's
+    two router lines. Registration moves into ensure_indexes() as part
+    of the merge itself."""
+    global _indexes_ready
+    if _indexes_ready:
+        return
+    await db.reasoning_insights.create_index(
+        [("project_id", 1), ("status", 1), ("created_at", -1)])
+    await db.reasoning_insights.create_index(
+        [("project_id", 1), ("dedupe_key", 1), ("status", 1)])
+    await db.reasoning_runs.create_index(
+        [("project_id", 1), ("started_at", -1)])
+    await db.construction_memory.create_index(
+        [("project_id", 1), ("activity_id", 1)])
+    _indexes_ready = True
+
+
 async def run_reasoning(project_id: str, *, actor: dict,
                         include_ai: bool = False) -> dict:
     """One reasoning pass: snapshot -> rules (-> optional AI) -> dedupe
@@ -1301,6 +1357,7 @@ async def run_reasoning(project_id: str, *, actor: dict,
     Recurrence after human resolution emits a fresh insight auto-linked
     to its predecessor (`previous` relationship)."""
     project = await _assert_project_visible(project_id, actor)
+    await _ensure_indexes_once()
     snapshot = await build_project_snapshot(project_id)
 
     findings = evaluate_rules(snapshot)
@@ -1383,7 +1440,9 @@ async def run_reasoning(project_id: str, *, actor: dict,
         "finished_at": _iso(_now()),
         "include_ai": include_ai,
         "ai_findings_count": len(ai_findings),
-        "rules_evaluated": list_rule_ids(),
+        "ai_prompt": ({"name": AI_PROMPT_NAME, "version": AI_PROMPT_VERSION,
+                       "model": AI_MODEL} if include_ai else None),
+        "rules_evaluated": [r["id"] for r in _RULES],
         "snapshot_stats": {
             "sites": len(snapshot["sites"]),
             "workflow_activities": len(snapshot["workflow_activities"]),
@@ -1394,14 +1453,12 @@ async def run_reasoning(project_id: str, *, actor: dict,
         "insights_refreshed": len(refreshed_ids),
         "new_insight_ids": new_ids,
     }
+    run_doc["memory_records_captured"] = \
+        await _capture_construction_memory(snapshot)
     await db.reasoning_runs.insert_one({**run_doc})
 
-    # Sprint 01B: construction memory — capture the learning substrate
-    # for every newly completed activity (CRE-owned collection; NOTHING
-    # reads these records back in this sprint).
-    await _capture_construction_memory(snapshot)
-
-    open_now = await list_insights(project_id, status="open")
+    open_now = await list_insights(project_id, user=actor,
+                                    status="open")
     return {
         "run": run_doc,
         "health": compute_project_health(
@@ -1410,9 +1467,11 @@ async def run_reasoning(project_id: str, *, actor: dict,
     }
 
 
-async def list_insights(project_id: str, *, status: Optional[str] = None,
+async def list_insights(project_id: str, *, user: dict,
+                        status: Optional[str] = None,
                         domain: Optional[str] = None,
                         limit: int = 500) -> list[dict]:
+    await _assert_project_visible(project_id, user)
     q: dict = {"project_id": project_id}
     if status:
         if status not in INSIGHT_STATUSES:
@@ -1442,6 +1501,7 @@ async def set_insight_status(insight_id: str, new_status: str, *,
     insight = await get_insight(insight_id)
     if not insight:
         raise ReasoningNotFoundError(f"Insight '{insight_id}' not found")
+    await _assert_project_visible(insight["project_id"], actor)
     current = insight.get("status", "open")
     if new_status not in _ALLOWED_TRANSITIONS.get(current, set()):
         raise InvalidInsightTransitionError(
@@ -1479,6 +1539,7 @@ async def record_insight_feedback(insight_id: str, verdict: str, *,
     insight = await get_insight(insight_id)
     if not insight:
         raise ReasoningNotFoundError(f"Insight '{insight_id}' not found")
+    await _assert_project_visible(insight["project_id"], actor)
     entry = {
         "verdict": verdict,
         "note": note or None,
@@ -1508,6 +1569,7 @@ async def add_insight_relationship(insight_id: str, related_insight_id: str,
     insight = await get_insight(insight_id)
     if not insight:
         raise ReasoningNotFoundError(f"Insight '{insight_id}' not found")
+    await _assert_project_visible(insight["project_id"], actor)
     related = await get_insight(related_insight_id)
     if not related:
         raise ReasoningNotFoundError(
@@ -1529,9 +1591,8 @@ async def add_insight_relationship(insight_id: str, related_insight_id: str,
 
 
 async def project_health(project_id: str, *, user: dict) -> dict:
-    await _assert_project_visible(project_id, user)
     snapshot = await build_project_snapshot(project_id)
-    open_now = await list_insights(project_id, status="open")
+    open_now = await list_insights(project_id, user=user, status="open")
     return compute_project_health(snapshot, open_insight_count=len(open_now))
 
 
@@ -1549,17 +1610,7 @@ async def list_runs(project_id: str, *, user: dict, limit: int = 50) -> list[dic
 # learning layer consumes them under the CRE_ARCHITECTURE.md boundary.
 # ---------------------------------------------------------------------------
 
-_memory_indexes_ready = False
-
-
 async def _capture_construction_memory(snapshot: dict) -> int:
-    global _memory_indexes_ready
-    if not _memory_indexes_ready:
-        # lazy, idempotent — keeps core/db.py untouched this sprint;
-        # registration moves into ensure_indexes() at merge time.
-        await db.construction_memory.create_index(
-            [("project_id", 1), ("activity_id", 1)])
-        _memory_indexes_ready = True
     captured = 0
     for a in snapshot["workflow_activities"]:
         if a.get("status") != "completed":
@@ -1604,7 +1655,7 @@ async def project_forecast_view(project_id: str, *, user: dict) -> dict:
 async def project_briefing_view(project_id: str, *, user: dict) -> dict:
     await _assert_project_visible(project_id, user)
     snapshot = await build_project_snapshot(project_id)
-    open_now = await list_insights(project_id, status="open")
+    open_now = await list_insights(project_id, user=user, status="open")
     return projections.compose_daily_briefing(snapshot, open_now)
 
 
@@ -1683,7 +1734,8 @@ async def executive_answer(question: str, *, user: dict) -> dict:
 
     elif question == "greatest_risk":
         ranked = sorted((p["digest"] for p in portfolio),
-                        key=lambda d: d["health_score"])
+                        key=lambda d: (d["health_score"],
+                                       d["project_id"]))
         answer = {"ranking": ranked,
                   "greatest_risk": ranked[0] if ranked else None}
         explanation = ("Projects ranked by reasoned health score "
@@ -1697,7 +1749,8 @@ async def executive_answer(question: str, *, user: dict) -> dict:
                 blockers.append({**b,
                                  "project_id": p["digest"]["project_id"],
                                  "project_name": p["digest"]["project_name"]})
-        blockers.sort(key=lambda b: -b["downstream_activities_held"])
+        blockers.sort(key=lambda b: (-b["downstream_activities_held"],
+                                     b["activity_id"]))
         answer = {"blockers": blockers[:10],
                   "top": blockers[0] if blockers else None}
         explanation = ("Blocked or overdue activities ranked by how many "
@@ -1711,8 +1764,7 @@ async def executive_answer(question: str, *, user: dict) -> dict:
                 if i.get("category") not in ("client_approval",
                                              "drawing_request"):
                     continue
-                if i.get("status") in ("fulfilled", "verified", "closed",
-                                       "archived", "cancelled", "duplicate"):
+                if i.get("status") in projections.TERMINAL_ITEM_STATUSES:
                     continue
                 req = _parse_iso(i.get("required_by"))
                 created = _parse_iso(i.get("created_at"))
@@ -1762,15 +1814,14 @@ async def executive_answer(question: str, *, user: dict) -> dict:
         for p in portfolio:
             for i in p["snapshot"]["operational_items"]:
                 uid = i.get("assigned_to_user_id")
-                if not uid or i.get("status") in (
-                        "fulfilled", "verified", "closed", "archived",
-                        "cancelled", "duplicate"):
+                if not uid or i.get("status") in \
+                        projections.TERMINAL_ITEM_STATUSES:
                     continue
                 c = counts.setdefault(uid, {"open_items": 0, "projects": set()})
                 c["open_items"] += 1
                 c["projects"].add(p["digest"]["project_id"])
         users = await db.users.find(
-            {"id": {"$in": list(counts)}, "role": "supervisor"},
+            {"id": {"$in": list(counts)}, "role": "site_supervisor"},
             {"_id": 0, "id": 1, "name": 1},
         ).to_list(200)
         load = sorted(
@@ -1778,7 +1829,7 @@ async def executive_answer(question: str, *, user: dict) -> dict:
               "open_items": counts[u["id"]]["open_items"],
               "projects": len(counts[u["id"]]["projects"])}
              for u in users),
-            key=lambda x: -x["open_items"])
+            key=lambda x: (-x["open_items"], x["user_id"]))
         answer = {"supervisors": load,
                   "most_loaded": load[0] if load else None}
         explanation = ("Supervisors ranked by open operational items "

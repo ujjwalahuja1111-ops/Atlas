@@ -88,13 +88,14 @@ def admin():
 
 @pytest.fixture(scope="session")
 def pm():
-    u, h = _login("coordinator", "9995100002", "CRE PM")
+    # FAC-04 frozen role model
+    u, h = _login("project_manager", "9995100002", "CRE PM")
     return {"user": u, "headers": h}
 
 
 @pytest.fixture(scope="session")
 def supervisor():
-    u, h = _login("supervisor", "9995100003", "CRE Supervisor")
+    u, h = _login("site_supervisor", "9995100003", "CRE Supervisor")
     return {"user": u, "headers": h}
 
 
@@ -322,12 +323,11 @@ def test_supervisor_can_read_but_not_trigger_or_decide(world, supervisor):
         assert r.status_code == 403
 
 
-def test_client_workspace_is_blocked_everywhere(world, admin):
+def test_client_role_is_blocked_everywhere(world, admin):
+    # FAC-04: client is a first-class role; workspace is derived from it
+    # (the separate assign-workspace endpoint no longer exists).
     tag = uuid.uuid4().hex[:6]
-    u, h = _login("coordinator", f"99952{tag[:5]}", f"CRE Client {tag}")
-    requests.post(f"{API}/admin/users/{u['id']}/workspace",
-                  json={"workspace": "client"},
-                  headers=admin["headers"], timeout=20)
+    u, h = _login("client", f"99952{tag[:5]}", f"CRE Client {tag}")
     pid = world["project_id"]
     for method, path in (("post", f"/projects/{pid}/reasoning/run"),
                          ("get", f"/projects/{pid}/insights"),

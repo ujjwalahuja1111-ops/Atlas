@@ -249,7 +249,7 @@ def test_successor_not_started_fires_after_stall_window():
     assert f["affected_activity_name"] == "PCC"
     assert "Begin 'PCC'" in f["recommendation"]
     assert f["suggested_operational_action"]["title"] == "Start 'PCC'"
-    assert f["suggested_responsible_role"] == "supervisor"
+    assert f["suggested_responsible_role"] == "site_supervisor"
     # evidence references successor + completed dependency + the
     # Knowledge Core items the sequence came from
     assert set(ev_ids(f, "workflow_activities")) == {"a1", "a2"}
@@ -298,6 +298,7 @@ def test_completed_without_inspection_explains_its_uncertainty():
     assert f["evidence"]["absences"]
     assert ev_ids(f, "knowledge_items") == ["ki_slab"]
     assert f["suggested_operational_action"]["category"] == "inspection"
+    assert f["suggested_responsible_role"] == "site_supervisor"
 
 
 def test_inspection_item_after_activity_start_suppresses_quality_finding():

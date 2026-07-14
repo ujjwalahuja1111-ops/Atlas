@@ -388,3 +388,110 @@ registration deferred via lazy in-engine ensure), zero auth changes,
 zero operational-engine changes; server.py untouched (router was already
 wired). Verification: 25 + 15 + 19 = 59 tests passing locally across
 three layers; live suite extended with the 01B surface.
+
+---
+
+## Innovation Sprint 01C — Merge Readiness (architectural audit)
+
+No new features. Every change below exists to make CRE safer to merge
+and cheaper to maintain; each entry states the WHY.
+
+**Synchronization.** `main` moved during the innovation track
+(75fb789 → 42fe7e7: FAC-04 Final Authorization Model Freeze, FAC-OPS
+sprints). The branch was **rebased onto the new main** so all testing
+runs against the real production base, not a stale one. The full suite
+passed post-rebase unchanged — which itself exposed the audit's most
+important finding: CRE's role gates were testing against their own stale
+seeds, not the frozen model.
+
+**1. FAC-04 role-model alignment** *(merge-critical correctness)*
+- Route gates: `workspace == "client"` → `role == "client"` (client is a
+  first-class role; workspace is derived); supervisor-deny →
+  management/project_manager allowlist, mirroring main's own routes.
+- `SUGGESTED_ROLES` → `{site_supervisor, project_manager, management}`;
+  every rule's suggested owner updated; executive supervisor-load
+  queries `role == "site_supervisor"`.
+- All three test suites seed the frozen vocabulary; a guard test pins
+  `SUGGESTED_ROLES` and route role-literals to `memory_engine.ROLES`, so
+  the next vocabulary change fails CI instead of shipping stale gates.
+
+**2. Shared-file merge surface minimized** — CRE's four index lines
+removed from `core/db.py` (now byte-identical to main); the engine
+ensures all its indexes lazily (`_ensure_indexes_once`). The branch's
+entire shared diff is server.py's two additive router lines. WHY: the
+smaller the shared surface, the smaller the conflict space for every
+parallel FAC sprint between now and merge.
+
+**3. Single responsibility / interface audit**
+- Project-visibility enforcement moved fully INSIDE the engine
+  (`list_insights` now takes `user`; status/feedback/relationship assert
+  the insight's project); routes no longer call the engine's private
+  `_assert_project_visible` or prefetch insights. WHY: one place owns
+  authorization-adjacent logic; routes are pure HTTP translation (and a
+  guard test now enforces that routes never touch db or engine privates).
+- Routes' import edge reduced to `reasoning_engine` only (projection
+  vocab reached through the engine). WHY: one dependency direction.
+- Deleted overlapping public API `list_rule_ids` (kept `list_rules`).
+
+**4. Duplication consolidated**
+- One `TERMINAL_ITEM_STATUSES` + `active_items()` (projections), used by
+  rules, readiness, briefing and executive answers — previously three
+  copies of the terminal-status tuple.
+- One snapshot clock: `snapshot_now()` replaces six repetitions of
+  `_parse_iso(snap["generated_at"]) or _now()`. WHY: replayability is a
+  property of having exactly one clock.
+- `frontier()` made public (it was cross-module private access).
+- Dead code deleted: no-op branch in `project_lookahead`, unused `kref`,
+  redundant conditional around successor knowledge evidence,
+  `blocking_impact`'s per-iteration map rebuild hoisted.
+
+**5. Idempotency bug fixed** — the client-communication insight's dedupe
+key embedded the ISO week, so a long-open insight re-emitted every week
+as a duplicate. Subject is now the project id; a guard test pins the
+stable key. WHY: dedupe keys are identity — identity must not rotate
+with the calendar.
+
+**6. Contradiction eliminated** — `successor_not_started` could say
+"Begin PCC" while `frontier_material_gap` said "hold the start until
+materials clear". The successor rule is now readiness-aware: with gaps
+it recommends clearing them then beginning; clean pipeline restores the
+plain "Begin". A guard test asserts the two rules can never pull in
+opposite directions.
+
+**7. AI evidence honesty** — AI-cited references were dumped under the
+`events` evidence kind. They are now classified into the correct kinds
+by Atlas' deterministic id prefixes (wfa_/op_/evt_/ast_/prop_/kn_);
+unrecognized citations are named as such under `absences`. AI-inclusive
+runs record `ai_prompt {name, version, model}` in the run audit
+(intelligence-engine convention) — making the previously-unused prompt
+constants purposeful and the AI Gateway seam fully auditable. Run docs
+also record `memory_records_captured`.
+
+**8. Determinism hardened** — tie-breaker keys added to every ranked
+output (forecast per-activity, blocking impact, executive rankings and
+load) so equal scores order identically on every replay.
+
+**9. New guard infrastructure** (`test_cre_architecture_guards.py`,
+9 tests): layer-purity source scans (projections: no I/O of any kind;
+engine mutates only its three collections; routes: no db), role-drift
+guard, a full-registry contract snapshot that fires ALL 11 rules and
+validates the complete schema-v2 contract on each, byte-identical
+determinism + snapshot-immutability + snapshot-clock replay tests, the
+non-contradiction test, and the dedupe-stability regression. WHY: the
+permanent boundaries are now machine-verified on every run, not
+documented aspirations.
+
+**10. Integration seams documented** (CRE_ARCHITECTURE.md §12): AI
+Gateway → `_ai_review` only; Context Builder → `build_project_snapshot`
+only; Knowledge Graph → knowledge accessors + `stage_of_activity` only;
+Memory expansion → `build_memory_record` + schema version only. If a
+future integration needs to touch more than its seam, the design is
+wrong.
+
+**Regression:** 68/68 locally (25 rules + 15 projections + 9 guards +
+19 full-stack HTTP on the real app), pyflakes-clean, app boots on the
+FAC-04 base with all 14 CRE endpoints registered. Live suite updated to
+frozen-model bootstrap (no workspace endpoint).
+
+> When in doubt, prefer deleting, simplifying or consolidating over
+> adding new code.

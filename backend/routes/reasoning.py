@@ -27,7 +27,6 @@ from pydantic import BaseModel
 from typing import Optional
 from core.auth import get_current_user
 from engines import reasoning_engine
-from engines import reasoning_projections
 from engines.reasoning_engine import (
     ReasoningNotFoundError, InvalidInsightTransitionError,
 )
@@ -46,16 +45,22 @@ def _raise_for(e: ValueError) -> None:
 
 
 def _forbid_client(user: dict) -> None:
-    if user.get("workspace") == "client":
+    # FAC-04 froze the role model: client is a first-class backend role
+    # and workspace is a derived function of role — so the gate checks
+    # `role` directly, exactly like routes/operational_items.py on main.
+    if user.get("role") == "client":
         raise HTTPException(
             status_code=403,
             detail="Clients cannot access project reasoning.")
 
 
 def _require_coordination_role(user: dict, action: str) -> None:
-    if user["role"] == "supervisor":
+    # Same allowlist convention as workflow generation on main
+    # (FAC-04: management + project_manager are the coordination roles).
+    if user["role"] not in ("management", "project_manager"):
         raise HTTPException(
-            status_code=403, detail=f"Supervisors cannot {action}.")
+            status_code=403,
+            detail=f"Only management and project managers can {action}.")
 
 
 class RunReasoningRequest(BaseModel):
@@ -105,9 +110,8 @@ async def list_insights(project_id: str,
                         user: dict = Depends(get_current_user)):
     _forbid_client(user)
     try:
-        await reasoning_engine._assert_project_visible(project_id, user)
         return await reasoning_engine.list_insights(
-            project_id, status=status, domain=domain)
+            project_id, user=user, status=status, domain=domain)
     except ValueError as e:
         _raise_for(e)
 
@@ -219,12 +223,6 @@ async def set_insight_status(insight_id: str, req: InsightStatusRequest,
     _forbid_client(user)
     _require_coordination_role(user, "decide reasoning insights")
     try:
-        # Project visibility: resolve the insight's project and apply the
-        # same scoping rule as every read endpoint above.
-        insight = await reasoning_engine.get_insight(insight_id)
-        if insight:
-            await reasoning_engine._assert_project_visible(
-                insight["project_id"], user)
         return await reasoning_engine.set_insight_status(
             insight_id, req.status, actor=user, note=req.note)
     except ValueError as e:
@@ -238,10 +236,6 @@ async def record_insight_feedback(insight_id: str,
     _forbid_client(user)
     _require_coordination_role(user, "record feedback on reasoning insights")
     try:
-        insight = await reasoning_engine.get_insight(insight_id)
-        if insight:
-            await reasoning_engine._assert_project_visible(
-                insight["project_id"], user)
         return await reasoning_engine.record_insight_feedback(
             insight_id, req.verdict, actor=user, note=req.note)
     except ValueError as e:
@@ -255,10 +249,6 @@ async def add_insight_relationship(insight_id: str,
     _forbid_client(user)
     _require_coordination_role(user, "relate reasoning insights")
     try:
-        insight = await reasoning_engine.get_insight(insight_id)
-        if insight:
-            await reasoning_engine._assert_project_visible(
-                insight["project_id"], user)
         return await reasoning_engine.add_insight_relationship(
             insight_id, req.related_insight_id, req.relation,
             actor=user, note=req.note)
@@ -282,9 +272,9 @@ async def reasoning_meta(user: dict = Depends(get_current_user)):
         "feedback_verdicts": sorted(reasoning_engine.FEEDBACK_VERDICTS),
         "relation_types": sorted(reasoning_engine.RELATION_TYPES),
         "health_dimensions": sorted(reasoning_engine.HEALTH_DIMENSIONS),
-        "stages": reasoning_projections.STAGE_ORDER,
-        "stage_labels": reasoning_projections.STAGE_LABELS,
+        "stages": reasoning_engine.projections.STAGE_ORDER,
+        "stage_labels": reasoning_engine.projections.STAGE_LABELS,
         "executive_questions": reasoning_engine.EXECUTIVE_QUESTIONS,
-        "memory_schema_version": reasoning_projections.MEMORY_SCHEMA_VERSION,
+        "memory_schema_version": reasoning_engine.projections.MEMORY_SCHEMA_VERSION,
         "rules": reasoning_engine.list_rules(),
     }

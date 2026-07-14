@@ -65,6 +65,14 @@ def _days(a: datetime, b: datetime) -> float:
     return (b - a).total_seconds() / 86400.0
 
 
+def snapshot_now(snapshot: dict):
+    """The single clock for all reasoning over a snapshot: its own
+    generated_at. Reasoning must be replayable — evaluate the same
+    snapshot next year and get the same answer — so wall-clock time is
+    only a last-resort fallback for malformed hand-built snapshots."""
+    return _parse_iso(snapshot.get("generated_at")) or _now()
+
+
 # ---------------------------------------------------------------------------
 # 1. Construction stage awareness
 # ---------------------------------------------------------------------------
@@ -180,12 +188,15 @@ def infer_project_stage(activities: list[dict]) -> dict:
 # Shared micro-logic
 # ---------------------------------------------------------------------------
 
-_TERMINAL_ITEM_STATUSES = {"fulfilled", "verified", "closed", "archived",
-                           "cancelled", "duplicate"}
+TERMINAL_ITEM_STATUSES = {"fulfilled", "verified", "closed", "archived",
+                          "cancelled", "duplicate"}
 
 
-def _active_items(items: list[dict]) -> list[dict]:
-    return [i for i in items if i.get("status") not in _TERMINAL_ITEM_STATUSES]
+def active_items(items: list[dict]) -> list[dict]:
+    """Operational items still demanding attention. THE single definition
+    of item-terminality inside CRE (rules, readiness, briefing, executive
+    answers all share it)."""
+    return [i for i in items if i.get("status") not in TERMINAL_ITEM_STATUSES]
 
 
 def inspection_covered(activity: dict, items: list[dict]) -> bool:
@@ -201,7 +212,7 @@ def inspection_covered(activity: dict, items: list[dict]) -> bool:
                for i in inspections)
 
 
-def _frontier(activities: list[dict]) -> list[dict]:
+def frontier(activities: list[dict]) -> list[dict]:
     """Activities the construction sequence allows to start now: not yet
     begun, with every dependency completed (or no dependencies)."""
     by_id = {a["id"]: a for a in activities}
@@ -226,7 +237,7 @@ def activity_readiness(snapshot: dict, activity: dict) -> list[dict]:
     detail}. Checks that Atlas cannot yet model are reported `unknown`
     with an honest detail rather than silently omitted."""
     acts = {a["id"]: a for a in snapshot["workflow_activities"]}
-    items = _active_items(snapshot["operational_items"])
+    items = active_items(snapshot["operational_items"])
     all_items = snapshot["operational_items"]
     checks = []
 
@@ -271,7 +282,7 @@ def activity_readiness(snapshot: dict, activity: dict) -> list[dict]:
                    "no client approvals pending"),
     })
 
-    now = _parse_iso(snapshot["generated_at"]) or _now()
+    now = snapshot_now(snapshot)
     material_gaps = [
         i for i in items
         if i.get("category") == "material_requirement"
@@ -314,16 +325,12 @@ def project_lookahead(snapshot: dict) -> dict:
 
     upcoming = []
     ready_names = []
-    for a in _frontier(snapshot["workflow_activities"])[:5]:
+    for a in frontier(snapshot["workflow_activities"])[:5]:
         deps = [by_id[d] for d in (a.get("depends_on_activity_ids") or [])
                 if d in by_id]
         checks = activity_readiness(snapshot, a)
         gaps = [c for c in checks if c["status"] == "not_ready"]
         prep = [f"Resolve: {c['detail']}" for c in gaps]
-        if any(d.get("requires_inspection") and d.get("status") == "completed"
-               and not inspection_covered(d, snapshot["operational_items"])
-               for d in deps):
-            pass  # already covered by predecessor_inspection gap -> prep
         if not gaps:
             ready_names.append(a["name"])
         entry = {
@@ -384,7 +391,7 @@ def delay_forecast(snapshot: dict) -> dict:
     carries planned dates — and its reason, assumptions, and missing
     evidence are stated."""
     acts = snapshot["workflow_activities"]
-    now = _parse_iso(snapshot["generated_at"]) or _now()
+    now = snapshot_now(snapshot)
 
     samples = []
     for a in acts:
@@ -438,7 +445,8 @@ def delay_forecast(snapshot: dict) -> dict:
                 "forecast_finish": _iso(ff),
                 "forecast_slip_days": round(_days(pf, ff), 1),
             })
-    per_activity.sort(key=lambda x: -x["forecast_slip_days"])
+    per_activity.sort(key=lambda x: (-x["forecast_slip_days"],
+                                     x["activity_id"]))
 
     planned_all = [_parse_iso(a.get("planned_finish")) for a in acts]
     planned_all = [p for p in planned_all if p]
@@ -495,9 +503,9 @@ def delay_forecast(snapshot: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 def compose_daily_briefing(snapshot: dict, open_insights: list[dict]) -> dict:
-    now = _parse_iso(snapshot["generated_at"]) or _now()
+    now = snapshot_now(snapshot)
     acts = snapshot["workflow_activities"]
-    items = _active_items(snapshot["operational_items"])
+    items = active_items(snapshot["operational_items"])
     look = project_lookahead(snapshot)
     sev_rank = {"critical": 0, "warning": 1, "advisory": 2, "info": 3}
 
@@ -577,7 +585,7 @@ def compose_client_summary(snapshot: dict) -> dict:
     facts (never raw operational data, safety items, or internal ids in
     the text). Always a DRAFT for human review — CRE prepares the words;
     a human decides to send them."""
-    now = _parse_iso(snapshot["generated_at"]) or _now()
+    now = snapshot_now(snapshot)
     acts = snapshot["workflow_activities"]
     look = project_lookahead(snapshot)
     stage = look["stage"]
@@ -650,7 +658,7 @@ def blocking_impact(snapshot: dict) -> list[dict]:
     work it is holding up (transitive downstream dependents). Answers
     'which activity is blocking the most work?' deterministically."""
     acts = snapshot["workflow_activities"]
-    now = _parse_iso(snapshot["generated_at"]) or _now()
+    now = snapshot_now(snapshot)
     children: dict[str, list[str]] = {}
     for a in acts:
         for d in (a.get("depends_on_activity_ids") or []):
@@ -666,15 +674,15 @@ def blocking_impact(snapshot: dict) -> list[dict]:
             stack.extend(children.get(x, []))
         return seen
 
+    by_id = {b["id"]: b for b in acts}
     out = []
     for a in acts:
         overdue = (a.get("status") != "completed" and a.get("planned_finish")
                    and (_parse_iso(a.get("planned_finish")) or now) < now)
         if a.get("status") != "blocked" and not overdue:
             continue
-        blocked_ids = _downstream(a["id"])
-        incomplete = [x for x in blocked_ids
-                      if {b["id"]: b for b in acts}[x].get("status") != "completed"]
+        incomplete = [x for x in _downstream(a["id"])
+                      if by_id[x].get("status") != "completed"]
         out.append({
             "activity_id": a["id"], "name": a["name"],
             "status": a.get("status"),
@@ -682,7 +690,8 @@ def blocking_impact(snapshot: dict) -> list[dict]:
                       else "past planned finish",
             "downstream_activities_held": len(incomplete),
         })
-    return sorted(out, key=lambda x: -x["downstream_activities_held"])
+    return sorted(out, key=lambda x: (-x["downstream_activities_held"],
+                                      x["activity_id"]))
 
 
 def project_digest(snapshot: dict, findings: list[dict],

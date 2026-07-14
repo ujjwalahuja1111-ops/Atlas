@@ -66,14 +66,15 @@ def iso_days_ahead(n: float) -> str:
     return (NOW + timedelta(days=n)).isoformat()
 
 
-async def _seed_user(user_id: str, name: str, role: str,
-                     workspace: str | None = None) -> dict:
+async def _seed_user(user_id: str, name: str, role: str) -> dict:
+    # FAC-04 frozen model: role is the single source of truth and
+    # workspace is derived from it — seeds mirror memory_engine exactly.
     doc = {
         "id": user_id, "phone": f"9{user_id[-9:]:>09}", "name": name,
-        "role": role, "approval_status": "approved", "is_active": True,
+        "role": role,
+        "workspace": memory_engine.WORKSPACE_FOR_ROLE[role],
+        "approval_status": "approved", "is_active": True,
     }
-    if workspace:
-        doc["workspace"] = workspace
     await _mock_db.users.insert_one({**doc})
     return {"Authorization": f"Bearer {core_auth.create_token(user_id)}"}
 
@@ -141,10 +142,10 @@ async def ctx(anyio_backend):
                                  base_url="http://cre-smoke") as client:
         world = await _seed_world()
         admin = await _seed_user("usr_admin", "CRE Admin", "management")
-        pm = await _seed_user("usr_pm", "CRE PM", "coordinator")
-        sup = await _seed_user("usr_sup", "CRE Supervisor", "supervisor")
-        cli = await _seed_user("usr_cli", "CRE Client", "coordinator",
-                               workspace="client")
+        pm = await _seed_user("usr_pm", "CRE PM", "project_manager")
+        sup = await _seed_user("usr_sup", "CRE Supervisor",
+                               "site_supervisor")
+        cli = await _seed_user("usr_cli", "CRE Client", "client")
         yield {"client": client, "world": world, "admin": admin,
                "pm": pm, "sup": sup, "cli": cli}
 
@@ -346,9 +347,9 @@ async def test_manual_insight_relationships(ctx):
                          headers=ctx["pm"])).status_code == 400
 
 
-async def test_role_and_workspace_gates(ctx):
+async def test_role_gates_follow_the_frozen_model(ctx):
     c, pid = ctx["client"], ctx["world"]["project_id"]
-    # supervisor: may read, may not trigger or decide
+    # site supervisor: may read, may not trigger or decide
     assert (await c.post(f"/api/projects/{pid}/reasoning/run", json={},
                          headers=ctx["sup"])).status_code == 403
     ins_id = ctx["first_run"]["insights_new"][-1]["id"]
@@ -357,7 +358,7 @@ async def test_role_and_workspace_gates(ctx):
                          headers=ctx["sup"])).status_code == 403
     assert (await c.get(f"/api/projects/{pid}/insights",
                         headers=ctx["sup"])).status_code == 200
-    # client workspace: blocked from every reasoning endpoint
+    # client role (FAC-04 first-class): blocked from every endpoint
     for method, url in (("post", f"/api/projects/{pid}/reasoning/run"),
                         ("get", f"/api/projects/{pid}/insights"),
                         ("get", f"/api/projects/{pid}/health"),
