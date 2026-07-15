@@ -114,7 +114,21 @@ export type EventDoc = {
   app_version: string | null;
   ai_status: AiStatus;
   ai_analysis_id: string | null;
+  requires_client_approval: boolean;
 };
+
+/** Client Approval Workflow — the ONE implementation both "send
+ * immediately after capture" and "send later from Event Details" call.
+ * Idempotent on the backend: calling it twice for the same event
+ * returns the existing request rather than creating a duplicate. */
+export async function apiRequestApproval(eventId: string, message?: string): Promise<any> {
+  const r = await apiFetch(`${BACKEND}/api/events/${eventId}/request-approval`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ message: message || null }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
 
 export type AiAnalysis = {
   id: string;
@@ -155,6 +169,8 @@ export type TimelineItem = {
   analysis: AiAnalysis | null;
   corrections: Correction[];
   photo_thumbs: { asset_id: string; base64: string }[];
+  approval_status: string | null;
+  approval_item_id: string | null;
 };
 
 const TOKEN_KEY = 'atlas_token';
@@ -381,6 +397,7 @@ export async function apiCreateEvent(opts: {
   audioUri?: string | null;
   photoUris?: string[];
   gps?: { lat: number; lng: number; accuracy?: number } | null;
+  requiresApproval?: boolean;
 }): Promise<EventDoc> {
   const form = new FormData();
   form.append('site_id', opts.siteId);
@@ -388,6 +405,7 @@ export async function apiCreateEvent(opts: {
   if (opts.gps) form.append('gps', JSON.stringify(opts.gps));
   form.append('client_created_at', new Date().toISOString());
   form.append('app_version', APP_VERSION);
+  if (opts.requiresApproval) form.append('requires_client_approval', 'true');
   if (opts.audioUri) {
     // @ts-ignore RN FormData file shape
     form.append('audio', { uri: opts.audioUri, name: 'voice.m4a', type: 'audio/m4a' });

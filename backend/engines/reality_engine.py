@@ -27,6 +27,7 @@ async def capture(
     client_created_at: Optional[str],
     app_version: Optional[str],
     activity_id: Optional[str] = None,
+    requires_client_approval: bool = False,
 ) -> dict:
     """Persist a construction event and queue it for AI analysis.
 
@@ -44,6 +45,15 @@ async def capture(
     Neither changes the capture pipeline itself — same inputs, same
     <300ms return, same Golden Rule (event saved before the AI worker is
     enqueued).
+
+    Client Approval Workflow — `requires_client_approval` is purely a
+    marker stored on the event; it never blocks or slows the save (same
+    Golden Rule). Setting it does NOT itself create a client approval
+    request — that is a deliberate, separate action (see
+    routes/events.py's request-approval endpoint, called either
+    immediately after this returns or later from Event Details), so a
+    checked checkbox can never turn capture into a multi-step,
+    blockable operation.
     """
     server_created_at = datetime.now(timezone.utc).isoformat()
     event_id = memory_engine._new_id("evt_")
@@ -105,6 +115,7 @@ async def capture(
         "ai_analysis_id": None,
         "proposals_status": "pending",
         "proposals_error": None,
+        "requires_client_approval": requires_client_approval,
     }
     await memory_engine.insert_event(event_doc)
 

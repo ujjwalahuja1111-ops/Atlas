@@ -302,6 +302,34 @@ async def create_item(*, actor: dict, site_id: str,
 _FALLBACK_TITLE_MAX = 60
 
 
+async def find_open_item_for_event(event_id: str, *, category: str) -> Optional[dict]:
+    """Client Approval Workflow — used to make request_client_approval
+    idempotent. Deliberately category-scoped: an event can already have
+    an unrelated item linked via inherited_evidence_event_id (e.g. the
+    AI-unavailable fallback note, category "general" — see
+    create_fallback_note_item below), which must never be mistaken for
+    an existing approval request just because it points at the same
+    event.
+    """
+    return await db.operational_items.find_one(
+        {"inherited_evidence_event_id": event_id, "category": category},
+        {"_id": 0},
+    )
+
+
+async def find_items_for_events(event_ids: list[str], *, category: str) -> dict[str, dict]:
+    """Batch form of find_open_item_for_event, for the timeline (avoids
+    an N+1 query per event when resolving each event's linked approval
+    status)."""
+    if not event_ids:
+        return {}
+    docs = await db.operational_items.find(
+        {"inherited_evidence_event_id": {"$in": event_ids}, "category": category},
+        {"_id": 0},
+    ).to_list(len(event_ids))
+    return {d["inherited_evidence_event_id"]: d for d in docs}
+
+
 async def create_fallback_note_item(*, actor: dict, site_id: str, text: str, event_id: str) -> Optional[dict]:
     """Sprint 6.2 Founder Verification fix — Manual Text Capture Processing.
 
@@ -607,6 +635,31 @@ async def voice_update_item(*, item_id: str, actor: dict,
     ev = await append_event(item_id=item_id, kind="voice_update", actor=actor,
                             prev_status=item["status"], new_status=item["status"],
                             payload=payload)
+    item["last_updated_at"] = _iso(_now())
+    item["last_derived_from_op_event_id"] = ev["id"]
+    await _save_item(item)
+    return item
+
+
+async def request_clarification(*, item_id: str, actor: dict, note: str) -> dict:
+    """Client Approval Workflow — 'Request Clarification' is deliberately
+    NOT a status transition: approve (fulfilled) and reject (cancelled)
+    are the only two terminal decisions a client_approval item has
+    (FAC-04's transition guard already enforces this). Clarification
+    keeps the item exactly where it is — open, still awaiting the
+    client's real decision — while making it clearly visible to the PM
+    that the client has questions before they can decide. Reuses the
+    same append-only ledger `voice_update_item` writes to (kind
+    "clarification_requested"), not a new mechanism.
+    """
+    item = await get_item(item_id)
+    if not item:
+        raise ValueError("item not found")
+    if item["category"] != "client_approval":
+        raise ValueError("clarification can only be requested on a client approval item")
+    ev = await append_event(item_id=item_id, kind="clarification_requested", actor=actor,
+                            prev_status=item["status"], new_status=item["status"],
+                            payload={"note": note})
     item["last_updated_at"] = _iso(_now())
     item["last_derived_from_op_event_id"] = ev["id"]
     await _save_item(item)

@@ -149,6 +149,18 @@ export async function apiCommentItem(id: string, text: string) {
   return r.json();
 }
 
+/** Client Approval Workflow — "Request Clarification". Does not change
+ * item status; see routes/operational_items.py's request-clarification
+ * endpoint. */
+export async function apiRequestClarification(id: string, note: string) {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/request-clarification`, {
+    method: 'POST', headers: await jheaders(),
+    body: JSON.stringify({ note }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function apiSetBlocker(id: string, category: string, note?: string) {
   const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/blocker`, {
     method: 'POST', headers: await jheaders(),

@@ -177,6 +177,32 @@ async def comment(item_id: str, req: CommentReq, user: dict = Depends(get_curren
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class ClarificationReq(BaseModel):
+    note: str
+
+
+@router.post("/operational-items/{item_id}/request-clarification", status_code=201)
+async def request_clarification(item_id: str, req: ClarificationReq, user: dict = Depends(get_current_user)):
+    """Client Approval Workflow. Deliberately client-callable — unlike
+    every other mutation on this file, this does NOT call
+    _forbid_client(): "Request Clarification" is one of the three
+    actions (approve, reject, request clarification) the client is
+    explicitly allowed to take on a client_approval item. Any other
+    role attempting it is rejected below just as clearly, since
+    clarification is specifically the client's own question, not an
+    internal action."""
+    if user.get("role") != "client":
+        raise HTTPException(status_code=403, detail="Only the client can request clarification.")
+    if not req.note or not req.note.strip():
+        raise HTTPException(status_code=400, detail="A note is required to request clarification.")
+    try:
+        item = await operations_engine.request_clarification(
+            item_id=item_id, actor=user, note=req.note.strip())
+        return operations_engine.enrich(item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 class BlockerReq(BaseModel):
     category: str
     note: Optional[str] = None
@@ -300,10 +326,16 @@ async def voice_update(item_id: str,
     separate recording flow; this is the one backend endpoint both the
     voice and text paths call.
     """
-    _forbid_client(user, "add voice updates")
     item = await operations_engine.get_item(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+
+    # Client Approval Workflow: a client may leave voice/text feedback on
+    # THEIR OWN client_approval items — the exact same category exception
+    # already applied to `transition` above. Every other category/role
+    # combination remains forbidden, unchanged.
+    if user.get("role") == "client" and item["category"] != "client_approval":
+        raise HTTPException(status_code=403, detail="Clients cannot add voice updates.")
 
     if audio is None and (not text or not text.strip()):
         raise HTTPException(status_code=400, detail="Provide audio or text")

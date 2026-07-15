@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image as ExpoImage } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { apiGetEvent, apiGetPlatformStatus, type TimelineItem } from '@/src/api';
+import { apiGetEvent, apiGetPlatformStatus, apiRequestApproval, type TimelineItem } from '@/src/api';
+import { getViewRole, type ViewRole } from '@/src/roles';
 
 const TYPE_LABEL: Record<string, string> = {
   voice_note: 'VOICE NOTE', photo: 'PHOTO', material_request: 'MATERIAL REQUEST',
@@ -37,6 +38,12 @@ export default function EventDetail() {
   const [item, setItem] = useState<TimelineItem | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [aiUnavailable, setAiUnavailable] = useState(false);
+  // Client Approval Workflow — "send later from Event Details" path.
+  const [viewRole, setViewRole] = useState<ViewRole | null>(null);
+  const [sendingApproval, setSendingApproval] = useState(false);
+  const [approvalMessage, setApprovalMessage] = useState('');
+  const [showApprovalForm, setShowApprovalForm] = useState(false);
+  useEffect(() => { getViewRole().then(setViewRole); }, []);
   // Sprint 4.1 fix (audit H1): the interval below used to read `item` from
   // a closure captured once at effect-creation time — since the effect's
   // dependency array never actually changed (the old `tick` state was never
@@ -85,6 +92,24 @@ export default function EventDetail() {
     }, 3000);
     return () => { cancelled = true; clearInterval(t); };
   }, [id]);
+
+  // Client Approval Workflow — the SAME apiRequestApproval call the
+  // Capture screen's "send immediately" path uses (see capture.tsx).
+  const sendForApproval = async () => {
+    if (!id) return;
+    setSendingApproval(true);
+    try {
+      await apiRequestApproval(id, approvalMessage.trim() || undefined);
+      const fresh = await apiGetEvent(id);
+      setItem(fresh);
+      setShowApprovalForm(false);
+      setApprovalMessage('');
+    } catch (e: any) {
+      setLoadError(e?.message || 'Could not send for approval');
+    } finally {
+      setSendingApproval(false);
+    }
+  };
 
   if (loadError && !item) {
     return (
@@ -178,6 +203,48 @@ export default function EventDetail() {
               <Text style={styles.langText}>{a.language_detected}</Text>
             </View>
           ) : null}
+
+          {/* Client Approval Workflow */}
+          {viewRole && viewRole !== 'client' && (
+            item.approval_status ? (
+              <View style={[styles.approvalBadge, {
+                borderColor: item.approval_status === 'fulfilled' ? theme.color.success
+                  : item.approval_status === 'cancelled' ? theme.color.error : theme.color.brand,
+              }]} testID="approval-status-badge">
+                <Ionicons
+                  name={item.approval_status === 'fulfilled' ? 'checkmark-circle' : item.approval_status === 'cancelled' ? 'close-circle' : 'time'}
+                  size={16}
+                  color={item.approval_status === 'fulfilled' ? theme.color.success : item.approval_status === 'cancelled' ? theme.color.error : theme.color.brand}
+                />
+                <Text style={styles.approvalBadgeText}>
+                  Approval: {item.approval_status === 'fulfilled' ? 'Approved' : item.approval_status === 'cancelled' ? 'Rejected' : 'Pending'}
+                </Text>
+              </View>
+            ) : showApprovalForm ? (
+              <View style={styles.approvalForm}>
+                <TextInput
+                  testID="approval-message-input"
+                  value={approvalMessage}
+                  onChangeText={setApprovalMessage}
+                  placeholder="Optional message for the client…"
+                  placeholderTextColor={theme.color.textDim}
+                  style={styles.approvalInput}
+                  multiline
+                />
+                <Pressable testID="send-approval-confirm" onPress={sendForApproval} disabled={sendingApproval}
+                  style={[styles.approvalSendBtn, sendingApproval && { opacity: 0.5 }]}>
+                  {sendingApproval ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : (
+                    <Text style={styles.approvalSendBtnText}>SEND FOR APPROVAL</Text>
+                  )}
+                </Pressable>
+              </View>
+            ) : (
+              <Pressable testID="send-approval-toggle" onPress={() => setShowApprovalForm(true)} style={styles.approvalRequestLink}>
+                <Ionicons name="paper-plane-outline" size={16} color={theme.color.brand} />
+                <Text style={styles.approvalRequestLinkText}>Send for Client Approval</Text>
+              </Pressable>
+            )
+          )}
 
           {a?.transcript ? (
             <Section icon="mic" title="TRANSCRIPT">
@@ -347,6 +414,23 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10, paddingVertical: 4,
   },
   langText: { color: theme.color.brand, fontSize: 12, fontWeight: '800', letterSpacing: 1 },
+  approvalBadge: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+    borderWidth: 1, borderRadius: theme.radius.sm, paddingHorizontal: 10, paddingVertical: 6, marginTop: 10,
+  },
+  approvalBadgeText: { color: theme.color.text, fontSize: 13, fontWeight: '700' },
+  approvalRequestLink: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
+  approvalRequestLinkText: { color: theme.color.brand, fontSize: 14, fontWeight: '700' },
+  approvalForm: { marginTop: 10, gap: 8 },
+  approvalInput: {
+    color: theme.color.text, backgroundColor: theme.color.surface2, borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.color.border, padding: 10, minHeight: 44, fontSize: 14,
+  },
+  approvalSendBtn: {
+    backgroundColor: theme.color.brand, borderRadius: theme.radius.sm, paddingVertical: 10,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  approvalSendBtnText: { color: theme.color.onBrand, fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
   section: {
     marginTop: theme.spacing.sm, padding: theme.spacing.md, borderRadius: theme.radius.md,
     backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border, gap: theme.spacing.sm,

@@ -1668,6 +1668,38 @@ async def client_summary_view(project_id: str, *, user: dict) -> dict:
     return projections.compose_client_summary(snapshot)
 
 
+async def client_dashboard_view(project_id: str, *, user: dict) -> dict:
+    """CRE Integration (client dashboard cards: Progress Summary, Current
+    Stage, Upcoming Milestones). The ONLY reasoning view a client account
+    may call directly — every other endpoint in this file remains
+    internal-only (see routes/reasoning.py's _forbid_client).
+
+    This is presentation, not reasoning: it calls the exact same,
+    unmodified projection functions every internal view already uses
+    (compose_client_summary, project_lookahead) and returns an explicitly
+    reduced projection of their output — stage label, plain-English
+    sentences, and milestone NAMES only. It never returns rule ids,
+    confidence, evidence, readiness-check detail, or any operational
+    item/event id — the fields compose_client_summary already avoids by
+    design, plus the additional stripping below for the milestones list,
+    which project_lookahead does not itself limit to client-safe fields
+    (it is written for internal readiness/preparation use).
+    """
+    await _assert_project_visible(project_id, user)
+    snapshot = await build_project_snapshot(project_id)
+    summary = projections.compose_client_summary(snapshot)
+    look = projections.project_lookahead(snapshot)
+    milestones = [{"name": a["name"]} for a in look.get("upcoming", [])[:5]]
+    return {
+        "project_id": summary["project_id"],
+        "project_name": summary["project_name"],
+        "stage": summary["stage"],
+        "summary_text": summary["summary_text"],
+        "upcoming_milestones": milestones,
+        "generated_at": summary["generated_at"],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Executive reasoning (Sprint 01B item 8) — reusable deterministic
 # answers to portfolio-level management questions. No conversational AI:

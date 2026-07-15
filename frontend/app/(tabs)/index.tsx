@@ -9,12 +9,14 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
+import { ManagementCreCards, PmCreCards, SupervisorCreCards } from '@/src/CreDashboard';
 import {
   apiListSites, apiListProjects, apiTimeline, apiSeedDemo, apiProjectSummary,
   getActiveSite, setActiveSite,
   type Site, type Project, type TimelineItem, type ProjectSummary,
 } from '@/src/api';
 import { apiGetWorkflow, type WorkflowActivity } from '@/src/workflow_api';
+import { apiClientDashboard, type ClientDashboard } from '@/src/cre_api';
 import { apiListItems, type OperationalItem } from '@/src/ops_api';
 
 const TYPE_ICON: Record<string, any> = {
@@ -68,9 +70,14 @@ function TimelineScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [canCapture, setCanCapture] = useState(true);
+  const [viewRole, setViewRoleState] = useState<ViewRole | null>(null);
   const pollRef = useRef<any>(null);
 
-  useEffect(() => { getViewRole().then((vr) => setCanCapture(VIEW_PERMS[vr].showCapture)); }, []);
+  useEffect(() => { getViewRole().then((vr) => { setCanCapture(VIEW_PERMS[vr].showCapture); setViewRoleState(vr); }); }, []);
+  // CRE Integration — the active site's project, if any. Cards for
+  // internal roles are per-project, matching every other per-project
+  // screen's existing "active site" convention (capture.tsx, etc.).
+  const activeProjectId = sites.find((s) => s.id === activeSiteId)?.project_id || null;
 
   const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
@@ -225,6 +232,12 @@ function TimelineScreen() {
           testID="timeline-list"
           data={items}
           keyExtractor={(i) => i.event.id}
+          ListHeaderComponent={
+            viewRole === 'admin' ? <ManagementCreCards projectId={activeProjectId} /> :
+            viewRole === 'pm' ? <PmCreCards projectId={activeProjectId} /> :
+            viewRole === 'supervisor' ? <SupervisorCreCards projectId={activeProjectId} /> :
+            null
+          }
           renderItem={({ item, index }) => (
             <TimelineRow item={item} isLast={index === items.length - 1} onPress={() => router.push(`/event/${item.event.id}`)} />
           )}
@@ -261,6 +274,7 @@ function ClientDashboardScreen() {
   const [activeSiteId, setActiveSiteIdState] = useState<string | null>(null);
   const [summary, setSummary] = useState<ProjectSummary | null>(null);
   const [activities, setActivities] = useState<WorkflowActivity[]>([]);
+  const [creDash, setCreDash] = useState<ClientDashboard | null>(null);
   const [photos, setPhotos] = useState<{ base64: string; eventId: string }[]>([]);
   const [approvals, setApprovals] = useState<OperationalItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -287,15 +301,18 @@ function ClientDashboardScreen() {
     setApprovals(items.filter((i) => !['closed', 'archived', 'cancelled', 'duplicate'].includes(i.status)));
 
     if (projectId) {
-      const [s, wf] = await Promise.all([
+      const [s, wf, cd] = await Promise.all([
         apiProjectSummary(projectId).catch(() => null),
         apiGetWorkflow(projectId).catch(() => [] as WorkflowActivity[]),
+        apiClientDashboard(projectId).catch(() => null),
       ]);
       setSummary(s);
       setActivities(wf);
+      setCreDash(cd);
     } else {
       setSummary(null);
       setActivities([]);
+      setCreDash(null);
     }
   }, []);
 
@@ -396,8 +413,11 @@ function ClientDashboardScreen() {
           </View>
         ) : (
           <>
-            {/* Project progress */}
+            {/* Project progress + CRE current stage / plain-English summary */}
             <DashCard title="PROJECT PROGRESS" icon="trending-up" testID="dash-progress">
+              {creDash?.stage?.current_label && (
+                <Text style={dash.stageLabel} testID="dash-current-stage">{creDash.stage.current_label}</Text>
+              )}
               {progressPct === null ? (
                 <Text style={dash.mutedText}>Progress tracking will appear once a workflow is set up for this project.</Text>
               ) : (
@@ -411,6 +431,9 @@ function ClientDashboardScreen() {
                   <Text style={dash.mutedText}>{completedCount} of {activities.length} activities complete</Text>
                 </>
               )}
+              {creDash?.summary_text && (
+                <Text style={[dash.mutedText, { marginTop: 4 }]} testID="dash-summary-text">{creDash.summary_text}</Text>
+              )}
               {summary && (
                 <View style={dash.statRow}>
                   <DashStat label="OPEN ITEMS" value={summary.open_tasks} />
@@ -419,21 +442,33 @@ function ClientDashboardScreen() {
               )}
             </DashCard>
 
-            {/* Milestones */}
-            {activities.length > 0 && (
+            {/* Milestones — prefers the CRE-reasoned "what's coming next"
+                (dependency-aware, not just the raw activity list) when
+                available; falls back to the plain workflow list if CRE
+                has not run for this project yet. */}
+            {(creDash?.upcoming_milestones?.length || activities.length > 0) && (
               <DashCard title="MILESTONES" icon="flag" testID="dash-milestones">
-                {activities.slice(0, 8).map((a) => (
-                  <View key={a.id} style={dash.milestoneRow}>
-                    <Ionicons
-                      name={a.status === 'completed' ? 'checkmark-circle' : a.status === 'in_progress' ? 'time' : 'ellipse-outline'}
-                      size={18}
-                      color={a.status === 'completed' ? theme.color.success : a.status === 'in_progress' ? theme.color.brand : theme.color.textDim}
-                    />
-                    <Text style={[dash.milestoneText, a.status === 'completed' && dash.milestoneDone]} numberOfLines={1}>
-                      {a.name}
-                    </Text>
-                  </View>
-                ))}
+                {creDash?.upcoming_milestones?.length ? (
+                  creDash.upcoming_milestones.map((m, i) => (
+                    <View key={i} style={dash.milestoneRow}>
+                      <Ionicons name="ellipse-outline" size={18} color={theme.color.brand} />
+                      <Text style={dash.milestoneText} numberOfLines={1}>{m.name}</Text>
+                    </View>
+                  ))
+                ) : (
+                  activities.slice(0, 8).map((a) => (
+                    <View key={a.id} style={dash.milestoneRow}>
+                      <Ionicons
+                        name={a.status === 'completed' ? 'checkmark-circle' : a.status === 'in_progress' ? 'time' : 'ellipse-outline'}
+                        size={18}
+                        color={a.status === 'completed' ? theme.color.success : a.status === 'in_progress' ? theme.color.brand : theme.color.textDim}
+                      />
+                      <Text style={[dash.milestoneText, a.status === 'completed' && dash.milestoneDone]} numberOfLines={1}>
+                        {a.name}
+                      </Text>
+                    </View>
+                  ))
+                )}
               </DashCard>
             )}
 
@@ -657,6 +692,7 @@ const dash = StyleSheet.create({
   },
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 4 },
   cardTitle: { color: theme.color.text, fontSize: 13, fontWeight: '900', letterSpacing: 1 },
+  stageLabel: { color: theme.color.brand, fontSize: 15, fontWeight: '800', marginBottom: 2 },
   mutedText: { color: theme.color.textMuted, fontSize: 14, lineHeight: 20 },
   progressRow: { flexDirection: 'row', alignItems: 'center', gap: 10 },
   progressBarBg: { flex: 1, height: 10, borderRadius: 5, backgroundColor: theme.color.surface3, overflow: 'hidden' },

@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from core.auth import get_current_user
-from engines import memory_engine, reality_engine, timeline_engine
+from engines import memory_engine, reality_engine, timeline_engine, operations_engine
 
 router = APIRouter(prefix="/api", tags=["events"])
 
@@ -26,6 +26,8 @@ async def create_event(
     # can associate an event with a specific Construction Workflow
     # activity without a schema change then.
     activity_id: Optional[str] = Form(None),
+    # Client Approval Workflow — purely a marker; never blocks the save.
+    requires_client_approval: bool = Form(False),
     audio: Optional[UploadFile] = File(None),
     photos: List[UploadFile] = File(default_factory=list),
     user: dict = Depends(get_current_user),
@@ -57,6 +59,7 @@ async def create_event(
         client_created_at=client_created_at,
         app_version=app_version,
         activity_id=activity_id,
+        requires_client_approval=requires_client_approval,
     )
     return event
 
@@ -67,6 +70,61 @@ async def get_event(event_id: str, user: dict = Depends(get_current_user)):
     if not item:
         raise HTTPException(status_code=404, detail="Event not found")
     return item
+
+
+class RequestApprovalReq(BaseModel):
+    message: Optional[str] = None
+
+
+@router.post("/events/{event_id}/request-approval", status_code=201)
+async def request_client_approval(event_id: str, req: RequestApprovalReq,
+                                  user: dict = Depends(get_current_user)):
+    """Client Approval Workflow — the ONE implementation both the
+    'send immediately after capture' and 'send later from Event Details'
+    frontend paths call. Creates a Client Approval Request LINKED to the
+    original event — never duplicates the event or its media.
+
+    Deliberately reuses, rather than reinvents, three things that
+    already exist:
+      * the operational_items `client_approval` category — already has
+        full approve/reject/comment support (backend-enforced client
+        permissions, the client dashboard's Pending Approvals card, and
+        the correctly-gated op/[id].tsx screen) and is already read as
+        approval evidence by the Construction Reasoning Engine's
+        existing rules (e.g. client_communication.progress_update_due) —
+        so linking the request this way exposes it to CRE with zero
+        engine changes, exactly matching "integrate, do not extend."
+      * `inherited_evidence_event_id` — the same event-linkage field the
+        AI-unavailable fallback (Sprint 6.2) already uses; the timeline
+        can resolve an event's approval status through it without a new
+        field on the event itself.
+      * an optional text message reuses operations_engine's comment
+        mechanism — no new "message" concept to maintain.
+
+    If a client_approval item is already open for this event (either
+    send path, called twice, or a double-tap), returns the existing one
+    rather than creating a duplicate.
+    """
+    if user.get("role") == "client":
+        raise HTTPException(status_code=403, detail="Clients cannot request approvals.")
+    event = await memory_engine.get_event(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    existing = await operations_engine.find_open_item_for_event(event_id, category="client_approval")
+    if existing:
+        return operations_engine.enrich(existing)
+
+    text_preview = (event.get("text_input") or "").strip()
+    title = f"Approval requested: {text_preview[:60]}" if text_preview else "Client approval requested"
+    item = await operations_engine.create_item(
+        actor=user, site_id=event["site_id"], category="client_approval",
+        title=title[:120],
+        description=req.message.strip() if req.message and req.message.strip() else "",
+        origin_type="manual",
+        inherited_evidence_event_id=event_id,
+    )
+    return operations_engine.enrich(item)
 
 
 class CorrectionCreate(BaseModel):

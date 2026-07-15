@@ -14,7 +14,7 @@ import { theme } from '@/src/theme';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
 import { useVoiceRecorder } from '@/src/useVoiceRecorder';
 import {
-  apiCreateEvent, apiListSites, apiListProjects,
+  apiCreateEvent, apiRequestApproval, apiListSites, apiListProjects,
   getActiveSite, setActiveSite,
   type Site, type Project,
 } from '@/src/api';
@@ -39,6 +39,10 @@ export default function CaptureScreen() {
   // independent of audio/photos — no backend change needed here).
   const [showTextInput, setShowTextInput] = useState(false);
   const [textNote, setTextNote] = useState('');
+  // Client Approval Workflow — purely a marker sent alongside whichever
+  // capture mode (voice/photo/text) is used; never blocks or slows the
+  // save itself (Golden Rule preserved — see api.ts's apiCreateEvent).
+  const [requiresApproval, setRequiresApproval] = useState(false);
   useEffect(() => { getViewRole().then(setViewRole); }, []);
 
   useEffect(() => {
@@ -89,9 +93,11 @@ export default function CaptureScreen() {
       if (!uri && photoUris.length === 0) { setStatus('Nothing to send'); return; }
       setSubmitting(true);
       setStatus('Saving…');
-      await apiCreateEvent({ siteId, audioUri: uri, photoUris, gps });
-      setStatus('Saved! AI analyzing in background…');
+      const event = await apiCreateEvent({ siteId, audioUri: uri, photoUris, gps, requiresApproval });
+      if (requiresApproval) apiRequestApproval(event.id).catch(() => {}); // never blocks the save
+      setStatus(requiresApproval ? 'Saved! Sent for client approval.' : 'Saved! AI analyzing in background…');
       setPhotoUris([]);
+      setRequiresApproval(false);
       setTimeout(() => {
         setStatus('');
         router.push('/(tabs)');
@@ -135,9 +141,11 @@ export default function CaptureScreen() {
     setSubmitting(true);
     setStatus('Saving…');
     try {
-      await apiCreateEvent({ siteId, photoUris, gps });
-      setStatus('Saved!');
+      const event = await apiCreateEvent({ siteId, photoUris, gps, requiresApproval });
+      if (requiresApproval) apiRequestApproval(event.id).catch(() => {});
+      setStatus(requiresApproval ? 'Saved! Sent for client approval.' : 'Saved!');
       setPhotoUris([]);
+      setRequiresApproval(false);
       setTimeout(() => { setStatus(''); router.push('/(tabs)'); }, 500);
     } catch (e: any) {
       setStatus(e?.message || 'Save failed');
@@ -154,10 +162,12 @@ export default function CaptureScreen() {
     setSubmitting(true);
     setStatus('Saving…');
     try {
-      await apiCreateEvent({ siteId, text: textNote.trim(), gps });
-      setStatus('Saved!');
+      const event = await apiCreateEvent({ siteId, text: textNote.trim(), gps, requiresApproval });
+      if (requiresApproval) apiRequestApproval(event.id).catch(() => {});
+      setStatus(requiresApproval ? 'Saved! Sent for client approval.' : 'Saved!');
       setTextNote('');
       setShowTextInput(false);
+      setRequiresApproval(false);
       setTimeout(() => { setStatus(''); router.push('/(tabs)'); }, 500);
     } catch (e: any) {
       setStatus(e?.message || 'Save failed');
@@ -299,6 +309,22 @@ export default function CaptureScreen() {
             </Pressable>
           </View>
 
+          {/* Client Approval Workflow — a marker on the event, checked or
+              not, never blocks or slows the save (Golden Rule preserved). */}
+          <Pressable
+            testID="requires-approval-checkbox"
+            onPress={() => setRequiresApproval((v) => !v)}
+            disabled={submitting || recording}
+            style={[styles.approvalCheckboxRow, (submitting || recording) && { opacity: 0.4 }]}
+          >
+            <Ionicons
+              name={requiresApproval ? 'checkbox' : 'square-outline'}
+              size={22}
+              color={requiresApproval ? theme.color.brand : theme.color.textDim}
+            />
+            <Text style={styles.approvalCheckboxLabel}>Requires Client Approval</Text>
+          </Pressable>
+
           {recording && (
             <Pressable testID="voice-cancel-capture" onPress={cancelRecording} style={styles.cancelRecordingLink}>
               <Text style={styles.cancelRecordingLinkText}>Cancel recording</Text>
@@ -399,6 +425,8 @@ const styles = StyleSheet.create({
   cancelRecordingLinkText: { color: theme.color.error, fontSize: 13, fontWeight: '700' },
   galleryLink: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6 },
   galleryLinkText: { color: theme.color.textDim, fontSize: 13, fontWeight: '600' },
+  approvalCheckboxRow: { flexDirection: 'row', alignItems: 'center', gap: 8, alignSelf: 'center', marginTop: 4, paddingVertical: 6 },
+  approvalCheckboxLabel: { color: theme.color.text, fontSize: 14, fontWeight: '600' },
   helperText: { color: theme.color.textDim, fontSize: 13, fontWeight: '600', letterSpacing: 0.5, textAlign: 'center' },
   textCaptureBox: {
     width: '100%', backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,

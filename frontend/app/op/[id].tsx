@@ -12,7 +12,7 @@ import { getViewRole, ROLE_LABEL, type ViewRole } from '@/src/roles';
 import { useVoiceRecorder } from '@/src/useVoiceRecorder';
 import type { Role } from '@/src/api';
 import {
-  apiGetItem, apiTransitionItem, apiCommentItem, apiSetBlocker, apiClearBlocker,
+  apiGetItem, apiTransitionItem, apiCommentItem, apiRequestClarification, apiSetBlocker, apiClearBlocker,
   apiListUsers, apiAssignItem, apiEditItem, apiVoiceUpdate, apiTextUpdate, apiMarkDuplicate, apiListItems,
   type OperationalItem, type OperationalEvent, type AssignableUser,
 } from '@/src/ops_api';
@@ -122,6 +122,21 @@ export default function OpDetail() {
       await load();
     } catch (e: any) {
       Alert.alert('Could not submit your decision', String(e?.message || e));
+    } finally { setBusy(false); }
+  };
+  // Client Approval Workflow — "Request Clarification" is deliberately
+  // NOT a status transition (see operations_engine.request_clarification's
+  // docstring): the item stays open, the client hasn't decided yet, but
+  // the PM sees clearly that a question is blocking the decision.
+  const onRequestClarification = async () => {
+    if (!clientNote.trim()) { Alert.alert('Add a note', 'Say what you need clarified before sending.'); return; }
+    setBusy(true);
+    try {
+      await apiRequestClarification(item.id, clientNote.trim());
+      setClientNote('');
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not send your question', String(e?.message || e));
     } finally { setBusy(false); }
   };
   const openAssign = async () => {
@@ -328,6 +343,26 @@ export default function OpDetail() {
                       placeholder="Any notes for the project team…" placeholderTextColor={theme.color.textDim}
                       style={styles.clientDecisionInput} multiline
                     />
+                    {/* Client Approval Workflow — voice feedback, reusing
+                        the exact same recording state/handlers the
+                        internal VOICE UPDATE button below uses (same
+                        useVoiceRecorder hook, same apiVoiceUpdate call —
+                        not a second recording flow). */}
+                    {recording ? (
+                      <Pressable testID="client-voice-stop" onPress={stopAndUpload} disabled={uploadingVoice}
+                        style={[styles.primary, { backgroundColor: theme.color.error }]}>
+                        <Ionicons name="stop-circle" size={20} color={theme.color.onBrand} />
+                        <Text style={styles.primaryText}>STOP — {Math.floor(elapsed / 60)}:{String(elapsed % 60).padStart(2, '0')}</Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable testID="client-voice-feedback" onPress={startRecord} disabled={busy || uploadingVoice}
+                        style={[styles.primary, { backgroundColor: theme.color.surface3 }]}>
+                        <Ionicons name={uploadingVoice ? 'sync' : 'mic-outline'} size={20} color={theme.color.brand} />
+                        <Text style={[styles.primaryText, { color: theme.color.brand }]}>
+                          {uploadingVoice ? 'SENDING…' : 'ADD VOICE FEEDBACK'}
+                        </Text>
+                      </Pressable>
+                    )}
                     <View style={{ flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.sm }}>
                       <Pressable testID="client-approve" disabled={busy} onPress={() => onClientDecision('fulfilled')}
                         style={[styles.primary, { flex: 1, backgroundColor: theme.color.success }]}>
@@ -340,6 +375,11 @@ export default function OpDetail() {
                         <Text style={styles.primaryText}>REJECT</Text>
                       </Pressable>
                     </View>
+                    <Pressable testID="client-request-clarification" disabled={busy} onPress={onRequestClarification}
+                      style={[styles.primary, { backgroundColor: theme.color.surface3, marginTop: theme.spacing.sm }]}>
+                      <Ionicons name="help-circle-outline" size={22} color={theme.color.brand} />
+                      <Text style={[styles.primaryText, { color: theme.color.brand }]}>REQUEST CLARIFICATION</Text>
+                    </Pressable>
                   </>
                 )}
               </View>

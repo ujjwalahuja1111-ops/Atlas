@@ -14,6 +14,10 @@ async def for_site(site_id: str, limit: int = 200, include_ops: bool = False) ->
     event_ids = [e["id"] for e in events]
     analyses = await memory_engine.get_ai_analyses(event_ids) if event_ids else {}
     corrections_map = await memory_engine.list_corrections_for_events(event_ids) if event_ids else {}
+    # Client Approval Workflow — resolve each event's linked approval
+    # request (if any) in one batch query, not one per event.
+    from engines import operations_engine
+    approvals_map = await operations_engine.find_items_for_events(event_ids, category="client_approval") if event_ids else {}
 
     items: list[dict] = []
     for e in events:
@@ -24,6 +28,7 @@ async def for_site(site_id: str, limit: int = 200, include_ops: bool = False) ->
             if b64:
                 photo_thumbs.append({"asset_id": asset_id, "base64": b64})
 
+        approval = approvals_map.get(e["id"])
         items.append({
             "kind": "construction_event",
             "event": e,
@@ -31,6 +36,8 @@ async def for_site(site_id: str, limit: int = 200, include_ops: bool = False) ->
             "corrections": corrections_map.get(e["id"], []),
             "photo_thumbs": photo_thumbs,
             "created_at": e.get("server_created_at"),
+            "approval_status": approval["status"] if approval else None,
+            "approval_item_id": approval["id"] if approval else None,
         })
 
     if include_ops:
@@ -69,4 +76,10 @@ async def single(event_id: str) -> Optional[dict]:
         b64 = await memory_engine.asset_thumb(asset_id)
         if b64:
             photo_thumbs.append({"asset_id": asset_id, "base64": b64})
-    return {"event": e, "analysis": analysis, "corrections": corrections, "photo_thumbs": photo_thumbs}
+    from engines import operations_engine
+    approval = await operations_engine.find_open_item_for_event(event_id, category="client_approval")
+    return {
+        "event": e, "analysis": analysis, "corrections": corrections, "photo_thumbs": photo_thumbs,
+        "approval_status": approval["status"] if approval else None,
+        "approval_item_id": approval["id"] if approval else None,
+    }
