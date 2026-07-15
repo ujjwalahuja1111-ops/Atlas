@@ -15,6 +15,7 @@ import type { ViewRole } from './roles';
 import {
   apiProjectHealth, apiListInsights, apiProjectLookahead, apiProjectBriefing,
   apiExecutiveAnswer, type ProjectHealth, type Insight, type ProjectBriefing,
+  type ExecutiveAnswer, type AttentionInsight,
 } from './cre_api';
 
 const SEVERITY_COLOR: Record<string, string> = {
@@ -55,7 +56,7 @@ export function ManagementCreCards({ projectId }: { projectId: string | null }) 
   const router = useRouter();
   const [health, setHealth] = useState<ProjectHealth | null>(null);
   const [risks, setRisks] = useState<Insight[] | null>(null);
-  const [attention, setAttention] = useState<any>(null);
+  const [attention, setAttention] = useState<ExecutiveAnswer | null>(null);
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState<string | null>(null);
 
@@ -94,7 +95,11 @@ export function ManagementCreCards({ projectId }: { projectId: string | null }) 
     <>
       <Card title="PORTFOLIO HEALTH" icon="pulse" testID="cre-portfolio-health">
         {err ? <Empty text={err} /> : attention ? (
-          <Text style={s.body}>{attention.summary || attention.answer || JSON.stringify(attention).slice(0, 200)}</Text>
+          <Text style={s.body}>
+            {attention.answer?.total_open_urgent
+              ? `${attention.answer.total_open_urgent} urgent item${attention.answer.total_open_urgent === 1 ? '' : 's'} across your portfolio need attention today.`
+              : 'Nothing urgent across your portfolio today.'}
+          </Text>
         ) : <Empty text="Portfolio-level attention items will appear here once projects have reasoning data." />}
       </Card>
 
@@ -127,9 +132,13 @@ export function ManagementCreCards({ projectId }: { projectId: string | null }) 
       <Card title="EXECUTIVE BRIEFING" icon="document-text" testID="cre-executive-briefing">
         {attention ? (
           <Text style={s.body}>
-            {attention.projects_needing_attention?.length
-              ? `${attention.projects_needing_attention.length} project(s) need attention today.`
-              : 'Nothing urgent across your portfolio today.'}
+            {(() => {
+              const items = attention.answer?.items || [];
+              const projectCount = new Set(items.map((i: AttentionInsight) => i.project_id)).size;
+              return projectCount > 0
+                ? `${projectCount} project${projectCount === 1 ? '' : 's'} need attention today.`
+                : 'Nothing urgent across your portfolio today.';
+            })()}
           </Text>
         ) : <Empty text="Briefing will appear once reasoning runs have been triggered." />}
       </Card>

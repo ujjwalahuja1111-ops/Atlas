@@ -1693,7 +1693,15 @@ async def client_dashboard_view(project_id: str, *, user: dict) -> dict:
     return {
         "project_id": summary["project_id"],
         "project_name": summary["project_name"],
-        "stage": summary["stage"],
+        # compose_client_summary's own "stage" field is just the plain
+        # string stage["current"] (see its final return statement) - NOT
+        # the {current, current_label} dict this view needs. look["stage"]
+        # (already computed above via project_lookahead) is that full
+        # dict; compose_client_summary derives its plain string from the
+        # exact same source. Using look["stage"] directly is correct and
+        # does not touch compose_client_summary or its existing internal
+        # -only consumer (/client-summary) at all.
+        "stage": look["stage"],
         "summary_text": summary["summary_text"],
         "upcoming_milestones": milestones,
         "generated_at": summary["generated_at"],

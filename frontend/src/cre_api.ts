@@ -117,6 +117,35 @@ export async function apiProjectBriefing(projectId: string): Promise<ProjectBrie
   return get(`/api/projects/${projectId}/briefing`);
 }
 
-export async function apiExecutiveAnswer(question: string): Promise<any> {
+/** Projected subset of Insight returned by executive_answer's
+ * attention_today question (reasoning_engine.py's MongoDB projection
+ * explicitly limits the fields to these 7) - deliberately NOT the full
+ * Insight type, which has several fields (rule_id, confidence,
+ * evidence, status, etc.) this narrower response does not include. */
+export type AttentionInsight = {
+  id: string;
+  project_id: string;
+  project_name: string;
+  severity: 'critical' | 'warning' | 'advisory' | 'info';
+  observation: string;
+  recommendation: string;
+  suggested_due_date: string | null;
+  domain: string;
+};
+
+export type ExecutiveAnswer = {
+  question: string;
+  question_text: string;
+  scope: { projects_considered: number };
+  // 'answer' shape depends on `question` - reasoning_engine.executive_answer's
+  // branches each build a different dict. Typed narrowly for
+  // attention_today (the only question CreDashboard.tsx currently uses);
+  // other questions' answer shapes are intentionally left as `any` rather
+  // than guessed at.
+  answer: { items: AttentionInsight[]; total_open_urgent: number } | any;
+  explanation: string;
+};
+
+export async function apiExecutiveAnswer(question: string): Promise<ExecutiveAnswer> {
   return get(`/api/reasoning/executive?question=${encodeURIComponent(question)}`);
 }
