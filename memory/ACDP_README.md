@@ -24,13 +24,30 @@ looks the way it does, not just what commands to run.
 
 ## How To Seed
 
+The regular developer seed now includes ACDP automatically:
+
+    cd backend
+    python -m scripts.dev seed           # regular dev seed + ACDP, one command
+    python -m scripts.dev reset-seed     # reset, then the same
+
+This is the command most people already know and use — as of this
+audit, it now also seeds ACDP, on the same database connection, right
+after the regular dev seed finishes. Nothing else changes about it: the
+same confirmation prompt on reset/reset-seed, the same --yes/-y skip
+flag, the same output for the regular dev seed data.
+
+If you want to seed ONLY the Atlas Canonical Demo Project, without
+touching (or requiring) the regular dev seed data, the standalone
+command still works exactly as before:
+
     cd backend
     python -m scripts.seed_demo_project
 
-Idempotent and deterministic:
+Idempotent and deterministic either way:
 - Re-running against an already-seeded database detects the existing
   Atlas Demonstration Villa project (by its fixed code, ACDP-VILLA)
-  and does nothing — it will never duplicate data.
+  and does nothing — it will never duplicate data, however many times
+  you run dev.py seed or the standalone command, in any order.
 - Every run against a fresh database produces byte-identical content
   (same events, same AI proposal decisions, same delay episodes) — the
   generator uses a fixed random seed, never the system clock, for every
@@ -39,10 +56,6 @@ Idempotent and deterministic:
   the timeline doc) — the story itself never changes.
 - Takes a few minutes to run (it performs several thousand real engine
   calls — the same ones a real 18 months of usage would have made).
-
-To start over from scratch, reset the whole database
-(python -m scripts.dev reset) and reseed both the regular dev seed and
-ACDP.
 
 ## Founder Testing Workflow
 

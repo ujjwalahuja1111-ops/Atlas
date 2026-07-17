@@ -491,7 +491,7 @@ async def simulate_acdp_timeline(project: dict, sites: dict[str, dict], users: d
     return counts
 
 
-async def main() -> None:
+async def main(*, close_when_done: bool = True) -> None:
     await ensure_indexes()
 
     existing = await db.projects.find_one({"code": ACDP_PROJECT_CODE}, {"_id": 0})
@@ -500,7 +500,8 @@ async def main() -> None:
         print(f"Atlas Demonstration Villa already seeded (project {existing['id']}, "
               f"{n_events} events) — nothing to do. Delete the project (or reset the "
               f"database) to reseed from scratch.")
-        await close_client()
+        if close_when_done:
+            await close_client()
         return
 
     print("Seeding Atlas Canonical Demo Project (ACDP) — this creates ~360 workflow "
@@ -533,7 +534,8 @@ async def main() -> None:
     print(f"Log in as management for the Executive Briefing: phone {USER_SEED[0][0]}, "
          f"role management.")
 
-    await close_client()
+    if close_when_done:
+        await close_client()
 
 
 if __name__ == "__main__":

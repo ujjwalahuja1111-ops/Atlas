@@ -489,7 +489,7 @@ async def _print_summary() -> None:
 
 
 # ---------------------------------------------------------------------------
-async def main() -> None:
+async def main(*, close_when_done: bool = True) -> None:
     print(f"Seeding database '{DB_NAME}'...")
     await ensure_indexes()
 
@@ -519,7 +519,8 @@ async def main() -> None:
     for phone, name, role in USER_SEED:
         print(f"  {phone}  {name}  ({role})")
 
-    await close_client()
+    if close_when_done:
+        await close_client()
 
 
 if __name__ == "__main__":
