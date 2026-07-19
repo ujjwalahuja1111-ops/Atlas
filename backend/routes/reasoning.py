@@ -246,6 +246,24 @@ async def executive_answer(question: str,
         _raise_for(e)
 
 
+@router.get("/portfolio/control-center")
+async def get_portfolio_control_center(user: dict = Depends(get_current_user)):
+    """Portfolio Control Center (Phase 1 — schedule-based monitoring
+    only; see engines/reasoning_engine.py's portfolio_control_center
+    docstring for exactly which existing CRE outputs each field reuses).
+    Management/Admin only, per the brief — narrower than
+    /reasoning/executive's management+project_manager allowlist, since
+    this is specifically a portfolio-oversight view, not a coordination
+    tool a PM would use day to day.
+    """
+    _forbid_client(user)
+    if user["role"] != "management":
+        raise HTTPException(
+            status_code=403,
+            detail="Only management can view the Portfolio Control Center.")
+    return await reasoning_engine.portfolio_control_center(user=user)
+
+
 @router.get("/projects/{project_id}/reasoning/runs")
 async def list_reasoning_runs(project_id: str,
                               user: dict = Depends(get_current_user)):

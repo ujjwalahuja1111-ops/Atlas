@@ -1883,3 +1883,93 @@ async def executive_answer(question: str, *, user: dict) -> dict:
         "explanation": explanation,
         "generated_at": _iso(now),
     }
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Control Center (Phase 1 — schedule-based monitoring only).
+#
+# Deliberately NOT a new engine or a new reasoning mechanism: every number
+# below is either read directly off an existing CRE output
+# (compute_project_health via project_digest, projections.delay_forecast,
+# projections.project_lookahead) or a plain count over
+# snapshot["operational_items"] using the exact same TERMINAL_ITEM_STATUSES
+# constant executive_answer's own supervisor_load question already uses —
+# see _portfolio() above, which this reuses without modification. Health
+# status is never set manually here or anywhere upstream of this function;
+# it is compute_project_health's own, unmodified "green"/"amber"/"red"
+# status, presented under this dashboard's own labels
+# (HEALTH_STATUS_LABEL) — a display-layer rename, not a second health
+# computation.
+#
+# Financial fields (budget, forecast_cost, cost_variance, profitability,
+# cash_flow) are explicit, typed, always-null placeholders — Phase 1 does
+# no financial computation at all, per the brief. Adding Phase 2 later
+# means filling these in, not redesigning the row shape or the endpoint.
+# ---------------------------------------------------------------------------
+
+HEALTH_STATUS_LABEL = {"green": "Healthy", "amber": "Attention", "red": "Critical"}
+
+
+def _project_row(p: dict) -> dict:
+    """One portfolio row, built entirely from data _portfolio() already
+    computed for this project (snapshot, findings, digest) plus two more
+    existing, unmodified projections run over that same snapshot."""
+    snapshot, digest = p["snapshot"], p["digest"]
+    items = snapshot["operational_items"]
+    open_items = [i for i in items if i.get("status") not in projections.TERMINAL_ITEM_STATUSES]
+    pending_approvals = [i for i in open_items if i.get("category") == "client_approval"]
+    critical_open_items = [i for i in open_items if i.get("priority") == "critical"]
+
+    forecast = projections.delay_forecast(snapshot)
+    lookahead = projections.project_lookahead(snapshot)
+    next_expected = lookahead.get("next_expected")
+
+    return {
+        "project_id": digest["project_id"],
+        "project_name": digest["project_name"],
+        "progress_percent": digest["progress"]["percent_complete"],
+        "planned_completion": forecast["planned_completion"],
+        "forecast_completion": forecast["forecast_completion"],
+        "schedule_variance_days": forecast["forecast_slip_days"],
+        "health_status": HEALTH_STATUS_LABEL[digest["health_status"]],
+        "health_score": digest["health_score"],
+        "critical_issues_count": digest["finding_counts"]["critical"],
+        "open_operational_items": len(open_items),
+        "pending_client_approvals": len(pending_approvals),
+        "critical_operational_items": len(critical_open_items),
+        "next_milestone": next_expected["name"] if next_expected else None,
+        # Future Ready — Phase 2 placeholders, deliberately null/disabled.
+        # See engines/reasoning_engine.py's module note above.
+        "financials": {
+            "enabled": False,
+            "budget": None,
+            "forecast_cost": None,
+            "cost_variance": None,
+            "profitability": None,
+            "cash_flow": None,
+        },
+    }
+
+
+async def portfolio_control_center(*, user: dict) -> dict:
+    """Management/Admin Portfolio Control Center (Phase 1 — schedule-
+    based monitoring only, no financial computation). One row per
+    visible active project, plus a portfolio-level summary. Role
+    enforcement (management-only) is the caller's responsibility, same
+    as every other reasoning route in this file."""
+    portfolio = await _portfolio(user)
+    rows = [_project_row(p) for p in portfolio]
+
+    summary = {
+        "active_projects": len(rows),
+        "healthy": sum(1 for r in rows if r["health_status"] == "Healthy"),
+        "attention": sum(1 for r in rows if r["health_status"] == "Attention"),
+        "critical": sum(1 for r in rows if r["health_status"] == "Critical"),
+        "projects_behind_schedule": sum(
+            1 for r in rows
+            if r["schedule_variance_days"] is not None and r["schedule_variance_days"] > 0),
+        "pending_client_approvals": sum(r["pending_client_approvals"] for r in rows),
+        "critical_operational_items": sum(r["critical_operational_items"] for r in rows),
+    }
+
+    return {"summary": summary, "projects": rows, "generated_at": _iso(_now())}

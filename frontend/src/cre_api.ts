@@ -149,3 +149,50 @@ export type ExecutiveAnswer = {
 export async function apiExecutiveAnswer(question: string): Promise<ExecutiveAnswer> {
   return get(`/api/reasoning/executive?question=${encodeURIComponent(question)}`);
 }
+
+// ---------------- Portfolio Control Center (Phase 1 — schedule only) ----------------
+export type PortfolioFinancials = {
+  enabled: boolean;
+  budget: number | null;
+  forecast_cost: number | null;
+  cost_variance: number | null;
+  profitability: number | null;
+  cash_flow: number | null;
+};
+
+export type PortfolioProjectRow = {
+  project_id: string;
+  project_name: string;
+  progress_percent: number | null;
+  planned_completion: string | null;
+  forecast_completion: string | null;
+  schedule_variance_days: number | null;
+  health_status: 'Healthy' | 'Attention' | 'Critical';
+  health_score: number;
+  critical_issues_count: number;
+  open_operational_items: number;
+  pending_client_approvals: number;
+  critical_operational_items: number;
+  next_milestone: string | null;
+  financials: PortfolioFinancials;
+};
+
+export type PortfolioSummary = {
+  active_projects: number;
+  healthy: number;
+  attention: number;
+  critical: number;
+  projects_behind_schedule: number;
+  pending_client_approvals: number;
+  critical_operational_items: number;
+};
+
+export type PortfolioControlCenter = {
+  summary: PortfolioSummary;
+  projects: PortfolioProjectRow[];
+  generated_at: string;
+};
+
+export async function apiPortfolioControlCenter(): Promise<PortfolioControlCenter> {
+  return get(`/api/portfolio/control-center`);
+}

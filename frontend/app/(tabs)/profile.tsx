@@ -93,6 +93,11 @@ export default function ProfileScreen() {
 
         {viewRole === 'admin' && (
           <>
+            <Pressable testID="open-portfolio-control-center" onPress={() => router.push('/portfolio')} style={styles.knowledgeBtn}>
+              <Ionicons name="grid-outline" size={22} color={theme.color.brand} />
+              <Text style={styles.knowledgeText}>PORTFOLIO CONTROL CENTER</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            </Pressable>
             <Pressable testID="open-knowledge" onPress={() => router.push('/knowledge')} style={styles.knowledgeBtn}>
               <Ionicons name="library-outline" size={22} color={theme.color.brand} />
               <Text style={styles.knowledgeText}>CONSTRUCTION KNOWLEDGE</Text>
