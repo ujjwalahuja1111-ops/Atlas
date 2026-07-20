@@ -169,10 +169,12 @@ export type PortfolioProjectRow = {
   schedule_variance_days: number | null;
   health_status: 'Healthy' | 'Attention' | 'Critical';
   health_score: number;
+  health_explanation: string[];
   critical_issues_count: number;
   open_operational_items: number;
   pending_client_approvals: number;
   critical_operational_items: number;
+  overdue_client_approvals: number;
   next_milestone: string | null;
   financials: PortfolioFinancials;
 };

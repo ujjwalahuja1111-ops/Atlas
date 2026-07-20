@@ -171,6 +171,15 @@ function ProjectRow({ row, onPress }: { row: PortfolioProjectRow; onPress: () =>
         <Text style={styles.progressPct}>{row.progress_percent !== null ? `${row.progress_percent}%` : '—'}</Text>
       </View>
 
+      <View style={styles.explanationBox} testID={`portfolio-explanation-${row.project_id}`}>
+        {row.health_explanation.map((line, i) => (
+          <View key={i} style={styles.explanationRow}>
+            <Text style={[styles.explanationBullet, { color: HEALTH_COLOR[row.health_status] }]}>•</Text>
+            <Text style={styles.explanationText} numberOfLines={1}>{line}</Text>
+          </View>
+        ))}
+      </View>
+
       <View style={styles.metaGrid}>
         <Meta label="PLANNED" value={formatDate(row.planned_completion)} />
         <Meta label="FORECAST" value={formatDate(row.forecast_completion)} />
@@ -257,6 +266,11 @@ const styles = StyleSheet.create({
   progressBarBg: { flex: 1, height: 8, borderRadius: 4, backgroundColor: theme.color.surface3, overflow: 'hidden' },
   progressBarFill: { height: '100%', borderRadius: 4 },
   progressPct: { color: theme.color.text, fontSize: 12, fontWeight: '800', minWidth: 36, textAlign: 'right' },
+
+  explanationBox: { gap: 2 },
+  explanationRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  explanationBullet: { fontSize: 13, fontWeight: '900' },
+  explanationText: { color: theme.color.textMuted, fontSize: 12, flex: 1 },
 
   metaGrid: { flexDirection: 'row', gap: theme.spacing.md },
   metaItem: { flex: 1 },

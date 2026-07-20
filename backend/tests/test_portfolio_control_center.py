@@ -123,8 +123,9 @@ def test_project_row_shape(admin, project_and_site):
     expected_fields = {
         "project_id", "project_name", "progress_percent", "planned_completion",
         "forecast_completion", "schedule_variance_days", "health_status", "health_score",
-        "critical_issues_count", "open_operational_items", "pending_client_approvals",
-        "critical_operational_items", "next_milestone", "financials",
+        "health_explanation", "critical_issues_count", "open_operational_items",
+        "pending_client_approvals", "critical_operational_items", "overdue_client_approvals",
+        "next_milestone", "financials",
     }
     assert set(row.keys()) == expected_fields
     assert row["health_status"] in ("Healthy", "Attention", "Critical")
@@ -217,6 +218,85 @@ def test_next_milestone_matches_lookahead_endpoint(admin, project_and_site):
     lookahead = requests.get(f"{API}/projects/{proj['id']}/lookahead", headers=admin["headers"], timeout=20).json()
     expected = lookahead["next_expected"]["name"] if lookahead.get("next_expected") else None
     assert portfolio_row["next_milestone"] == expected
+
+
+# --------------------------------------------------------------------------
+# Prioritization (worst-first, not alphabetical)
+# --------------------------------------------------------------------------
+def test_projects_sorted_worst_first_not_alphabetical(admin):
+    """Create a project whose name would sort last alphabetically but
+    has a critical operational item, and one that sorts first
+    alphabetically with nothing wrong - the unhealthy one must appear
+    first in the response regardless of name."""
+    proj_bad = requests.post(f"{API}/projects", json={"name": "ZZZ Priority Test Bad", "code": "ZZPTB"},
+                             headers=admin["headers"], timeout=20).json()
+    site_bad = requests.post(f"{API}/sites", json={"project_id": proj_bad["id"], "name": "Site"},
+                             headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/operational-items", json={
+        "site_id": site_bad["id"], "category": "safety_observation", "title": "Hazard", "priority": "critical",
+    }, headers=admin["headers"], timeout=20)
+
+    proj_good = requests.post(f"{API}/projects", json={"name": "AAA Priority Test Good", "code": "AAPTG"},
+                              headers=admin["headers"], timeout=20).json()
+
+    body = requests.get(f"{API}/portfolio/control-center", headers=admin["headers"], timeout=20).json()
+    names = [p["project_name"] for p in body["projects"]]
+    idx_bad = names.index("ZZZ Priority Test Bad")
+    idx_good = names.index("AAA Priority Test Good")
+    assert idx_bad < idx_good, f"unhealthy project must sort before a healthy one regardless of name: {names}"
+
+
+def test_health_tier_dominates_sort_order(admin):
+    """A Healthy project must never sort ahead of a Critical/Attention
+    one, even if the summary counts alone might suggest otherwise -
+    health tier is the primary sort key, not a tiebreaker."""
+    body = requests.get(f"{API}/portfolio/control-center", headers=admin["headers"], timeout=20).json()
+    rows = body["projects"]
+    tier = {"Critical": 0, "Attention": 1, "Healthy": 2}
+    tiers_seen = [tier[r["health_status"]] for r in rows]
+    assert tiers_seen == sorted(tiers_seen), f"health tiers out of order: {[r['health_status'] for r in rows]}"
+
+
+# --------------------------------------------------------------------------
+# Health explanation
+# --------------------------------------------------------------------------
+def test_every_row_has_a_non_empty_explanation(admin):
+    body = requests.get(f"{API}/portfolio/control-center", headers=admin["headers"], timeout=20).json()
+    for row in body["projects"]:
+        assert isinstance(row["health_explanation"], list)
+        assert len(row["health_explanation"]) > 0
+        assert all(isinstance(b, str) and b for b in row["health_explanation"])
+
+
+def test_explanation_mentions_critical_items_when_present(admin, project_and_site):
+    proj, site = project_and_site
+    requests.post(f"{API}/operational-items", json={
+        "site_id": site["id"], "category": "safety_observation", "title": "Explanation test hazard", "priority": "critical",
+    }, headers=admin["headers"], timeout=20)
+    body = requests.get(f"{API}/portfolio/control-center", headers=admin["headers"], timeout=20).json()
+    row = next(p for p in body["projects"] if p["project_id"] == proj["id"])
+    assert row["critical_operational_items"] >= 1
+    assert any("critical operational item" in b for b in row["health_explanation"]), row["health_explanation"]
+
+
+def test_healthy_project_gets_generic_all_clear_explanation(admin):
+    """A brand-new project with nothing wrong yet gets the exact generic
+    all-clear explanation, not an empty list or a fabricated reason."""
+    proj = requests.post(f"{API}/projects", json={"name": "PCC Fresh Clean Project", "code": "PCCFCP"},
+                         headers=admin["headers"], timeout=20).json()
+    body = requests.get(f"{API}/portfolio/control-center", headers=admin["headers"], timeout=20).json()
+    row = next(p for p in body["projects"] if p["project_id"] == proj["id"])
+    if row["health_status"] == "Healthy":
+        assert row["health_explanation"] == ["No overdue milestones", "Operations on track"]
+
+
+def test_overdue_client_approvals_field_present_and_consistent(admin, project_and_site):
+    proj, _ = project_and_site
+    body = requests.get(f"{API}/portfolio/control-center", headers=admin["headers"], timeout=20).json()
+    row = next(p for p in body["projects"] if p["project_id"] == proj["id"])
+    assert "overdue_client_approvals" in row
+    assert isinstance(row["overdue_client_approvals"], int)
+    assert row["overdue_client_approvals"] <= row["pending_client_approvals"]
 
 
 # --------------------------------------------------------------------------

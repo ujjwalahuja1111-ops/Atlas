@@ -1901,6 +1901,21 @@ async def executive_answer(question: str, *, user: dict) -> dict:
 # (HEALTH_STATUS_LABEL) — a display-layer rename, not a second health
 # computation.
 #
+# Final-polish additions (still zero new reasoning):
+#   - health_explanation: 1-3 concise bullets built from fields already
+#     on the row (schedule variance, overdue client approvals, critical
+#     operational items) — see _health_explanation. "Overdue" reuses
+#     STALE_ITEM_DAYS and the exact idle-time calculation
+#     _r_stale_open_item already applies, just filtered to
+#     category=client_approval and counted instead of turned into a
+#     finding.
+#   - Portfolio ordering: worst-first by health tier, then schedule
+#     variance, then critical item count, then nearest planned
+#     completion — see _portfolio_sort_key. A pure sort over already-
+#     computed row fields; changes presentation order only, never the
+#     underlying values or the summary (which is still computed from
+#     these exact same rows, so it can never disagree with them).
+#
 # Financial fields (budget, forecast_cost, cost_variance, profitability,
 # cash_flow) are explicit, typed, always-null placeholders — Phase 1 does
 # no financial computation at all, per the brief. Adding Phase 2 later
@@ -1908,6 +1923,62 @@ async def executive_answer(question: str, *, user: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 HEALTH_STATUS_LABEL = {"green": "Healthy", "amber": "Attention", "red": "Critical"}
+# Health tiers ordered worst-first, for portfolio prioritization below —
+# the exact same three labels HEALTH_STATUS_LABEL already produces.
+_HEALTH_PRIORITY = {"Critical": 0, "Attention": 1, "Healthy": 2}
+
+
+def _overdue_client_approvals(snapshot: dict) -> int:
+    """Client approvals that have sat idle for STALE_ITEM_DAYS+ — the
+    exact same threshold and idle-time calculation _r_stale_open_item
+    already uses (snapshot_now, _parse_iso(last_updated_at or
+    created_at)), just counted rather than turned into a finding, and
+    filtered to category=client_approval. Not a second staleness
+    definition — the one CRE already has, reused."""
+    now = snapshot_now(snapshot)
+    count = 0
+    for i in projections.active_items(snapshot["operational_items"]):
+        if i.get("category") != "client_approval":
+            continue
+        last = _parse_iso(i.get("last_updated_at")) or _parse_iso(i.get("created_at"))
+        if last and (now - last).days >= STALE_ITEM_DAYS:
+            count += 1
+    return count
+
+
+def _health_explanation(row: dict) -> list[str]:
+    """Concise, human-readable reasons for a row's health_status — built
+    entirely from fields _project_row already computed (schedule
+    variance from delay_forecast, overdue approvals from the STALE_ITEM_
+    DAYS threshold above, critical operational items from the same
+    open-items count used elsewhere in this row). Not a second health
+    computation: health_status itself still comes only from
+    compute_project_health — this only explains it in the same terms
+    the brief's own "initially consider" list already names (schedule
+    variance, overdue client approvals, critical operational items)."""
+    bullets: list[str] = []
+    variance = row["schedule_variance_days"]
+    if variance is not None and variance > 0:
+        days = round(variance)
+        bullets.append(f"{days} day{'s' if days != 1 else ''} behind schedule")
+    overdue = row["overdue_client_approvals"]
+    if overdue > 0:
+        bullets.append(f"{overdue} overdue client approval{'s' if overdue != 1 else ''}")
+    critical = row["critical_operational_items"]
+    if critical > 0:
+        bullets.append(f"{critical} critical operational item{'s' if critical != 1 else ''}")
+
+    if bullets:
+        return bullets[:3]
+    if row["health_status"] != "Healthy":
+        # A non-Healthy row where none of the three headline metrics
+        # triggered means compute_project_health found something outside
+        # them (e.g. a safety/quality finding) — say so honestly rather
+        # than fabricate a schedule/approval/item reason that isn't why.
+        n = row["critical_issues_count"]
+        return [f"{n} critical issue{'s' if n != 1 else ''} flagged by reasoning"] if n else \
+               ["Flagged by reasoning — see project health for detail"]
+    return ["No overdue milestones", "Operations on track"]
 
 
 def _project_row(p: dict) -> dict:
@@ -1924,7 +1995,7 @@ def _project_row(p: dict) -> dict:
     lookahead = projections.project_lookahead(snapshot)
     next_expected = lookahead.get("next_expected")
 
-    return {
+    row = {
         "project_id": digest["project_id"],
         "project_name": digest["project_name"],
         "progress_percent": digest["progress"]["percent_complete"],
@@ -1937,6 +2008,7 @@ def _project_row(p: dict) -> dict:
         "open_operational_items": len(open_items),
         "pending_client_approvals": len(pending_approvals),
         "critical_operational_items": len(critical_open_items),
+        "overdue_client_approvals": _overdue_client_approvals(snapshot),
         "next_milestone": next_expected["name"] if next_expected else None,
         # Future Ready — Phase 2 placeholders, deliberately null/disabled.
         # See engines/reasoning_engine.py's module note above.
@@ -1949,16 +2021,38 @@ def _project_row(p: dict) -> dict:
             "cash_flow": None,
         },
     }
+    row["health_explanation"] = _health_explanation(row)
+    return row
+
+
+def _portfolio_sort_key(row: dict):
+    """Worst-first prioritization: health tier (Critical, then
+    Attention, then Healthy), then within a tier by highest schedule
+    variance, then highest critical operational item count, then
+    nearest planned completion date — every value already present on
+    the row, nothing recomputed. None values sort last within their
+    own comparison (a project with no schedule data is not more urgent
+    than one that is measurably behind)."""
+    variance = row["schedule_variance_days"]
+    planned = row["planned_completion"]
+    return (
+        _HEALTH_PRIORITY[row["health_status"]],
+        -(variance if variance is not None else -10**9),
+        -row["critical_operational_items"],
+        planned if planned is not None else "9999-99-99",
+    )
 
 
 async def portfolio_control_center(*, user: dict) -> dict:
     """Management/Admin Portfolio Control Center (Phase 1 — schedule-
     based monitoring only, no financial computation). One row per
-    visible active project, plus a portfolio-level summary. Role
-    enforcement (management-only) is the caller's responsibility, same
-    as every other reasoning route in this file."""
+    visible active project — sorted worst-first by management priority,
+    see _portfolio_sort_key — plus a portfolio-level summary computed
+    from those exact same rows (no separate/duplicated aggregation).
+    Role enforcement (management-only) is the caller's responsibility,
+    same as every other reasoning route in this file."""
     portfolio = await _portfolio(user)
-    rows = [_project_row(p) for p in portfolio]
+    rows = sorted((_project_row(p) for p in portfolio), key=_portfolio_sort_key)
 
     summary = {
         "active_projects": len(rows),
