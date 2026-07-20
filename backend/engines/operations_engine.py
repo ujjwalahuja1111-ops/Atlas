@@ -200,6 +200,7 @@ async def list_items(*, site_id: Optional[str] = None,
                      priority: Optional[str] = None,
                      assigned_to_user_id: Optional[str] = None,
                      category: Optional[str] = None,
+                     event_id: Optional[str] = None,
                      limit: int = 300) -> list[dict]:
     q: dict = {}
     if site_id:
@@ -212,6 +213,13 @@ async def list_items(*, site_id: Optional[str] = None,
         q["assigned_to_user_id"] = assigned_to_user_id
     if category:
         q["category"] = category
+    if event_id:
+        # Related Operational Items (Canonical Event UX patch) — same
+        # field every other event<->item linkage already uses
+        # (inherited_evidence_event_id), just not category-restricted
+        # here unlike find_open_item_for_event's client_approval-only
+        # lookup above.
+        q["inherited_evidence_event_id"] = event_id
     return (await db.operational_items.find(q, {"_id": 0})
             .sort("last_updated_at", -1).to_list(limit))
 

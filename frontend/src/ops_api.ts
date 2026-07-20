@@ -119,6 +119,7 @@ export type OperationalCenter = {
 
 export async function apiListItems(filter: {
   site_id?: string; status?: string; priority?: string; category?: string; assigned_to_me?: boolean;
+  event_id?: string;
 } = {}): Promise<OperationalItem[]> {
   const qs = new URLSearchParams();
   for (const [k, v] of Object.entries(filter)) if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));

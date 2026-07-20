@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, TextInput, Modal } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image as ExpoImage } from 'expo-image';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -8,6 +8,10 @@ import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { apiGetEvent, apiGetPlatformStatus, apiRequestApproval, apiSetEventTimeline, type TimelineItem } from '@/src/api';
 import { getViewRole, type ViewRole } from '@/src/roles';
+import {
+  apiListProposals, apiAcceptProposal, apiRejectProposal, type AiProposal,
+  apiListItems, apiListUsers, apiAssignItem, type OperationalItem, type AssignableUser,
+} from '@/src/ops_api';
 
 const TYPE_LABEL: Record<string, string> = {
   voice_note: 'VOICE NOTE', photo: 'PHOTO', material_request: 'MATERIAL REQUEST',
@@ -43,12 +47,49 @@ export default function EventDetail() {
   const [sendingApproval, setSendingApproval] = useState(false);
   const [approvalMessage, setApprovalMessage] = useState('');
   const [showApprovalForm, setShowApprovalForm] = useState(false);
+  // Proposal Review + Related Operational Items (Canonical Event UX
+  // patch, follow-up) — these sections live inside Event Detail now;
+  // Proposal Inbox and Operations Center both navigate here rather
+  // than showing their own review/assignment UI.
+  const [proposals, setProposals] = useState<AiProposal[]>([]);
+  const [proposalEdits, setProposalEdits] = useState<Record<string, { title: string; description: string; priority: AiProposal['suggested_priority'] }>>({});
+  const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
+  const [relatedItems, setRelatedItems] = useState<OperationalItem[]>([]);
+  const [assignForItemId, setAssignForItemId] = useState<string | null>(null);
+  const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
+  const [assignBusy, setAssignBusy] = useState(false);
   // Timeline Planning (Canonical Event UX patch) — Record Time stays
   // immutable; this is separate, editable planning info.
   const [showTimelineEdit, setShowTimelineEdit] = useState(false);
   const [timelineDraft, setTimelineDraft] = useState({ planned_start: '', planned_finish: '', actual_start: '', actual_finish: '' });
   const [savingTimeline, setSavingTimeline] = useState(false);
   useEffect(() => { getViewRole().then(setViewRole); }, []);
+
+  const loadRelated = async () => {
+    if (!id) return;
+    try {
+      const items = await apiListItems({ event_id: id });
+      setRelatedItems(items);
+    } catch (e) { console.warn(e); }
+  };
+
+  useEffect(() => {
+    if (!id || viewRole === null) return;
+    loadRelated();
+    // Proposal Review (Canonical Event UX patch) — Management/PM only,
+    // matching "Review AI proposal" in the RBAC table below.
+    if (viewRole === 'admin' || viewRole === 'pm') {
+      apiListProposals({ event_id: id }).then((props) => {
+        setProposals(props);
+        const edits: typeof proposalEdits = {};
+        for (const p of props) {
+          edits[p.id] = { title: p.title, description: p.description || '', priority: p.suggested_priority };
+        }
+        setProposalEdits(edits);
+      }).catch((e) => console.warn(e));
+    }
+  }, [id, viewRole]);
+
   // Sprint 4.1 fix (audit H1): the interval below used to read `item` from
   // a closure captured once at effect-creation time — since the effect's
   // dependency array never actually changed (the old `tick` state was never
@@ -146,6 +187,69 @@ export default function EventDetail() {
       setLoadError(e?.message || 'Could not save timeline');
     } finally {
       setSavingTimeline(false);
+    }
+  };
+
+  // Proposal Review — same apiAcceptProposal/apiRejectProposal calls
+  // Operations Center's Proposal Inbox already used; only the UI that
+  // wires them moved.
+  const acceptProposal = async (proposal: AiProposal) => {
+    setProposalBusyId(proposal.id);
+    try {
+      const edit = proposalEdits[proposal.id];
+      const payload: any = {};
+      if (edit && edit.title.trim() !== proposal.title) payload.title = edit.title.trim();
+      if (edit && edit.description !== (proposal.description || '')) payload.description = edit.description;
+      if (edit && edit.priority !== proposal.suggested_priority) payload.priority = edit.priority;
+      await apiAcceptProposal(proposal.id, payload);
+      setProposals((prev) => prev.filter((p) => p.id !== proposal.id));
+      await loadRelated();
+    } catch (e: any) {
+      setLoadError(e?.message || 'Could not accept proposal');
+    } finally {
+      setProposalBusyId(null);
+    }
+  };
+
+  const rejectProposal = async (proposal: AiProposal) => {
+    setProposalBusyId(proposal.id);
+    try {
+      await apiRejectProposal(proposal.id, 'Rejected from Event Detail');
+      setProposals((prev) => prev.filter((p) => p.id !== proposal.id));
+    } catch (e: any) {
+      setLoadError(e?.message || 'Could not reject proposal');
+    } finally {
+      setProposalBusyId(null);
+    }
+  };
+
+  // Related Operational Items — Assignment. Same apiAssignItem the
+  // Operations Center's AssignModal already calls; this is a
+  // responsibility-only assign (no target timeline fields here — the
+  // full Assignment Timeline UI stays on the Operations Center, this
+  // section deliberately does not touch that implementation).
+  const openAssignFor = async (itemId: string) => {
+    if (!item) return;
+    try {
+      const users = await apiListUsers(undefined, item.event.project_id);
+      setAssignableUsers(users);
+      setAssignForItemId(itemId);
+    } catch (e: any) {
+      setLoadError(e?.message || 'Could not load assignable users');
+    }
+  };
+
+  const doAssign = async (user: AssignableUser) => {
+    if (!assignForItemId) return;
+    setAssignBusy(true);
+    try {
+      await apiAssignItem(assignForItemId, user.id);
+      setAssignForItemId(null);
+      await loadRelated();
+    } catch (e: any) {
+      setLoadError(e?.message || 'Could not assign item');
+    } finally {
+      setAssignBusy(false);
     }
   };
 
@@ -341,6 +445,84 @@ export default function EventDetail() {
             </Section>
           )}
 
+          {/* AI Proposal Review (Canonical Event UX patch, follow-up) —
+              Management/PM only. Same accept/reject calls the
+              Operations Center's Proposal Inbox already used; that
+              screen now links here instead of showing its own review
+              UI. */}
+          {(viewRole === 'admin' || viewRole === 'pm') && proposals.length > 0 && (
+            <Section icon="sparkles-outline" title="AI PROPOSAL">
+              {proposals.map((p) => {
+                const edit = proposalEdits[p.id] || { title: p.title, description: p.description || '', priority: p.suggested_priority };
+                const busy = proposalBusyId === p.id;
+                return (
+                  <View key={p.id} style={styles.proposalBox} testID={`event-proposal-${p.id}`}>
+                    <TextInput
+                      testID={`event-proposal-title-${p.id}`}
+                      value={edit.title}
+                      onChangeText={(t) => setProposalEdits((prev) => ({ ...prev, [p.id]: { ...edit, title: t } }))}
+                      style={styles.proposalTitleInput}
+                    />
+                    <TextInput
+                      testID={`event-proposal-description-${p.id}`}
+                      value={edit.description}
+                      onChangeText={(t) => setProposalEdits((prev) => ({ ...prev, [p.id]: { ...edit, description: t } }))}
+                      placeholder="Description"
+                      placeholderTextColor={theme.color.textDim}
+                      style={styles.proposalDescInput}
+                      multiline
+                    />
+                    <View style={styles.prioRow}>
+                      {(['low', 'normal', 'high', 'critical'] as const).map((priority) => (
+                        <Pressable key={priority} testID={`event-proposal-priority-${p.id}-${priority}`}
+                          onPress={() => setProposalEdits((prev) => ({ ...prev, [p.id]: { ...edit, priority } }))}
+                          style={[styles.prioBtn, edit.priority === priority && { backgroundColor: theme.color.brand, borderColor: theme.color.brand }]}>
+                          <Text style={[styles.prioText, edit.priority === priority && { color: theme.color.onBrand }]}>{priority.toUpperCase()}</Text>
+                        </Pressable>
+                      ))}
+                    </View>
+                    <View style={{ flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.sm }}>
+                      <Pressable testID={`event-proposal-accept-${p.id}`} onPress={() => acceptProposal(p)} disabled={busy}
+                        style={[styles.approvalSendBtn, { flex: 1, backgroundColor: theme.color.success }, busy && { opacity: 0.5 }]}>
+                        {busy ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : <Text style={styles.approvalSendBtnText}>ACCEPT</Text>}
+                      </Pressable>
+                      <Pressable testID={`event-proposal-reject-${p.id}`} onPress={() => rejectProposal(p)} disabled={busy}
+                        style={[styles.approvalSendBtn, { flex: 1, backgroundColor: theme.color.error }, busy && { opacity: 0.5 }]}>
+                        <Text style={styles.approvalSendBtnText}>REJECT</Text>
+                      </Pressable>
+                    </View>
+                  </View>
+                );
+              })}
+            </Section>
+          )}
+
+          {/* Related Operational Items (Canonical Event UX patch,
+              follow-up) — view for everyone with page access; Assign is
+              Management/PM only. Links to the existing Operational
+              Item detail page rather than duplicating its UI. */}
+          {relatedItems.length > 0 && (
+            <Section icon="link-outline" title="RELATED OPERATIONAL ITEMS">
+              {relatedItems.map((ri) => (
+                <View key={ri.id} style={styles.relatedItemRow} testID={`event-related-item-${ri.id}`}>
+                  <Pressable style={{ flex: 1 }} onPress={() => router.push(`/op/${ri.id}`)}>
+                    <Text style={styles.relatedItemTitle} numberOfLines={1}>{ri.title}</Text>
+                    <Text style={styles.relatedItemMeta}>
+                      {ri.category.replace(/_/g, ' ')} · {ri.status.toUpperCase()}
+                      {ri.assigned_to_user_name ? ` · ${ri.assigned_to_user_name}` : ''}
+                    </Text>
+                  </Pressable>
+                  {(viewRole === 'admin' || viewRole === 'pm') && (
+                    <Pressable testID={`event-related-item-assign-${ri.id}`} onPress={() => openAssignFor(ri.id)} style={styles.relatedItemAssignBtn}>
+                      <Ionicons name="person-add-outline" size={16} color={theme.color.brand} />
+                    </Pressable>
+                  )}
+                  <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+                </View>
+              ))}
+            </Section>
+          )}
+
           {a?.transcript ? (
             <Section icon="mic" title="TRANSCRIPT">
               <Text style={styles.transcript}>{a.transcript}</Text>
@@ -463,6 +645,28 @@ export default function EventDetail() {
           <Text style={styles.closeBtnText}>BACK TO TIMELINE</Text>
         </Pressable>
       </View>
+
+      {/* Assignment (Canonical Event UX patch, follow-up) — Assign
+          Operational Item without leaving the Event. */}
+      <Modal visible={!!assignForItemId} animationType="fade" transparent>
+        <Pressable style={styles.modalBack} onPress={() => setAssignForItemId(null)}>
+          <View style={styles.assignModal} onStartShouldSetResponder={() => true}>
+            <Text style={styles.approvalRequestLinkText}>ASSIGN TO</Text>
+            <ScrollView style={{ maxHeight: 320, marginTop: theme.spacing.sm }}>
+              {assignableUsers.length === 0 ? (
+                <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No eligible users found</Text>
+              ) : assignableUsers.map((u) => (
+                <Pressable key={u.id} testID={`event-assign-pick-${u.id}`} onPress={() => doAssign(u)}
+                  disabled={assignBusy} style={styles.assignPickRow}>
+                  <Ionicons name="person-circle-outline" size={20} color={theme.color.textMuted} />
+                  <Text style={styles.relatedItemTitle}>{u.name}</Text>
+                  <Text style={styles.relatedItemMeta}>{u.role.replace(/_/g, ' ')}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        </Pressable>
+      </Modal>
     </View>
   );
 }
@@ -561,6 +765,34 @@ const styles = StyleSheet.create({
     color: theme.color.text, backgroundColor: theme.color.surface2, borderRadius: theme.radius.sm,
     borderWidth: 1, borderColor: theme.color.border, padding: 10, fontSize: 14,
   },
+  proposalBox: {
+    backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, padding: theme.spacing.sm,
+    marginBottom: theme.spacing.sm, gap: 8,
+  },
+  proposalTitleInput: { color: theme.color.text, fontSize: 15, fontWeight: '700', padding: 0 },
+  proposalDescInput: { color: theme.color.textMuted, fontSize: 13, padding: 0, minHeight: 40 },
+  prioRow: { flexDirection: 'row', gap: 6 },
+  prioBtn: {
+    flex: 1, borderWidth: 1, borderColor: theme.color.border, borderRadius: theme.radius.sm,
+    paddingVertical: 6, alignItems: 'center',
+  },
+  prioText: { color: theme.color.textMuted, fontSize: 10, fontWeight: '800' },
+  relatedItemRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 8,
+    borderBottomWidth: 1, borderBottomColor: theme.color.border,
+  },
+  relatedItemTitle: { color: theme.color.text, fontSize: 14, fontWeight: '700' },
+  relatedItemMeta: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
+  relatedItemAssignBtn: {
+    width: 32, height: 32, borderRadius: 16, backgroundColor: theme.color.surface3,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  modalBack: { flex: 1, backgroundColor: 'rgba(0,0,0,0.6)', justifyContent: 'flex-end' },
+  assignModal: {
+    backgroundColor: theme.color.surface2, borderTopLeftRadius: theme.radius.lg, borderTopRightRadius: theme.radius.lg,
+    padding: theme.spacing.md, maxHeight: '70%',
+  },
+  assignPickRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 },
   section: {
     marginTop: theme.spacing.sm, padding: theme.spacing.md, borderRadius: theme.radius.md,
     backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border, gap: theme.spacing.sm,

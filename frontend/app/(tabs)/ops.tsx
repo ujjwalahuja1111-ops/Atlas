@@ -1,7 +1,7 @@
-import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Pressable, ScrollView,
-  ActivityIndicator, RefreshControl, Modal, TextInput, KeyboardAvoidingView, Platform,
+  ActivityIndicator, RefreshControl, Modal, TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -11,7 +11,7 @@ import { loadAuth, type User, type Role } from '@/src/api';
 import { getViewRole, VIEW_PERMS, ROLE_LABEL, type ViewRole } from '@/src/roles';
 import {
   apiOperationalCenter, apiListItems, apiListUsers, apiAssignItem,
-  apiListProposals, apiAcceptProposal, apiRejectProposal,
+  apiListProposals, apiRejectProposal,
   type OperationalCenter, type OperationalItem, type AssignableUser, type AiProposal,
 } from '@/src/ops_api';
 
@@ -33,13 +33,6 @@ const PRIORITY_COLOR: Record<string, string> = {
 
 const TABS = ['proposals', 'overview', 'overdue', 'high_priority', 'awaiting', 'mine'] as const;
 type Bucket = typeof TABS[number];
-type ProposalEdit = {
-  title: string;
-  description: string;
-  priority: AiProposal['suggested_priority'];
-  assigned_to_user_id: string;
-};
-
 export default function OpsScreen() {
   const router = useRouter();
   const [user, setUser] = useState<User | null>(null);
@@ -51,10 +44,6 @@ export default function OpsScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [assigningItem, setAssigningItem] = useState<OperationalItem | null>(null);
-  const [reviewingProposal, setReviewingProposal] = useState<AiProposal | null>(null);
-  const [proposalEdit, setProposalEdit] = useState<ProposalEdit>({
-    title: '', description: '', priority: 'normal', assigned_to_user_id: '',
-  });
   const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
   const [users, setUsers] = useState<AssignableUser[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -144,38 +133,10 @@ export default function OpsScreen() {
     setAssigningItem(item);
   };
 
-  const openProposalReview = async (proposal: AiProposal) => {
-    try { await loadUsers(proposal.project_id || undefined); } catch {}
-    setProposalEdit({
-      title: proposal.title,
-      description: proposal.description || '',
-      priority: proposal.suggested_priority || 'normal',
-      assigned_to_user_id: '',
-    });
-    setReviewingProposal(proposal);
-  };
-
-  const acceptProposal = async (proposal: AiProposal) => {
-    setProposalBusyId(proposal.id);
-    try {
-      const payload: any = {};
-      if (proposalEdit.title.trim() !== proposal.title) payload.title = proposalEdit.title.trim();
-      if (proposalEdit.description !== (proposal.description || '')) payload.description = proposalEdit.description;
-      if (proposalEdit.priority !== proposal.suggested_priority) payload.priority = proposalEdit.priority;
-      if (proposalEdit.assigned_to_user_id) payload.assigned_to_user_id = proposalEdit.assigned_to_user_id;
-      await apiAcceptProposal(proposal.id, payload);
-      setReviewingProposal(null);
-      setBucket('overview');
-      await load();
-    } catch (e) { console.warn(e); }
-    finally { setProposalBusyId(null); }
-  };
-
   const rejectProposal = async (proposal: AiProposal) => {
     setProposalBusyId(proposal.id);
     try {
       await apiRejectProposal(proposal.id, 'Rejected from Proposal Inbox');
-      if (reviewingProposal?.id === proposal.id) setReviewingProposal(null);
       await load();
     } catch (e) { console.warn(e); }
     finally { setProposalBusyId(null); }
@@ -252,7 +213,7 @@ export default function OpsScreen() {
                 <ProposalCard
                   proposal={item}
                   busy={proposalBusyId === item.id}
-                  onReview={() => openProposalReview(item)}
+                  onReview={() => router.push(`/event/${item.event_id}`)}
                   onReject={() => rejectProposal(item)}
                 />
               )}
@@ -296,17 +257,6 @@ export default function OpsScreen() {
           )}
         </>
       )}
-
-      <ProposalReviewModal
-        proposal={reviewingProposal}
-        edit={proposalEdit}
-        setEdit={setProposalEdit}
-        users={users}
-        busy={!!reviewingProposal && proposalBusyId === reviewingProposal.id}
-        close={() => setReviewingProposal(null)}
-        accept={() => reviewingProposal && acceptProposal(reviewingProposal)}
-        reject={() => reviewingProposal && rejectProposal(reviewingProposal)}
-      />
 
       <AssignModal
         item={assigningItem}
@@ -426,99 +376,6 @@ function ProposalCard({ proposal, busy, onReview, onReject }: {
   );
 }
 
-function ProposalReviewModal({ proposal, edit, setEdit, users, busy, close, accept, reject }: {
-  proposal: AiProposal | null;
-  edit: ProposalEdit;
-  setEdit: Dispatch<SetStateAction<ProposalEdit>>;
-  users: AssignableUser[];
-  busy: boolean;
-  close: () => void;
-  accept: () => void;
-  reject: () => void;
-}) {
-  const router = useRouter();
-  return (
-    <Modal visible={!!proposal} animationType="slide" transparent>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View style={styles.modalBack}>
-        <View style={styles.modal} onStartShouldSetResponder={() => true}>
-          <View style={styles.modalHead}>
-            <Text style={styles.modalTitle}>REVIEW PROPOSAL</Text>
-            <Pressable testID="proposal-review-close" onPress={close}>
-              <Ionicons name="close" size={24} color={theme.color.textDim} />
-            </Pressable>
-          </View>
-          {proposal ? (
-            <>
-              {/* Canonical Event UX patch — same Event Detail page every
-                  entry point uses; this is not a second implementation,
-                  just a link to it. */}
-              <Pressable testID="proposal-view-event" onPress={() => { close(); router.push(`/event/${proposal.event_id}`); }}
-                style={styles.viewEventLink}>
-                <Ionicons name="document-text-outline" size={16} color={theme.color.brand} />
-                <Text style={styles.viewEventLinkText}>View source event (full transcript, photos & AI reasoning)</Text>
-                <Ionicons name="chevron-forward" size={16} color={theme.color.brand} />
-              </Pressable>
-
-              <EditField label="Title" value={edit.title} testID="proposal-edit-title"
-                onChangeText={(t: string) => setEdit((p) => ({ ...p, title: t }))} />
-              <EditField label="Description" value={edit.description} testID="proposal-edit-description"
-                onChangeText={(t: string) => setEdit((p) => ({ ...p, description: t }))} />
-              <Text style={styles.fieldLabel}>Priority</Text>
-              <View style={styles.prioRow}>
-                {(['low', 'normal', 'high', 'critical'] as const).map((priority) => (
-                  <Pressable key={priority} testID={`proposal-priority-${priority}`}
-                    onPress={() => setEdit((p) => ({ ...p, priority }))}
-                    style={[styles.prioBtn, edit.priority === priority && {
-                      backgroundColor: PRIORITY_COLOR[priority], borderColor: PRIORITY_COLOR[priority],
-                    }]}>
-                    <Text style={[styles.prioText, edit.priority === priority && { color: '#fff' }]}>{priority.toUpperCase()}</Text>
-                  </Pressable>
-                ))}
-              </View>
-              <Text style={styles.fieldLabel}>Assign during acceptance</Text>
-              <ScrollView style={{ maxHeight: 180 }}>
-                <Pressable testID="proposal-assignee-none"
-                  onPress={() => setEdit((p) => ({ ...p, assigned_to_user_id: '' }))}
-                  style={styles.pickRow}>
-                  <Ionicons name="remove-circle-outline" size={20} color={theme.color.textMuted} />
-                  <Text style={styles.pickName}>Unassigned</Text>
-                </Pressable>
-                {users.map((u) => (
-                  <Pressable key={u.id} testID={`proposal-pick-assignee-${u.id}`}
-                    onPress={() => setEdit((p) => ({ ...p, assigned_to_user_id: u.id }))}
-                    style={styles.pickRow}>
-                    <Ionicons
-                      name={edit.assigned_to_user_id === u.id ? 'checkmark-circle' : 'person-circle-outline'}
-                      size={20}
-                      color={edit.assigned_to_user_id === u.id ? theme.color.brand : theme.color.textMuted}
-                    />
-                    <Text style={styles.pickName}>{u.name}</Text>
-                    <Text style={styles.pickRole}>{ROLE_LABEL[u.role as Role] || u.role}</Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
-              <View style={styles.reviewActions}>
-                <Pressable testID="proposal-reject" disabled={busy} onPress={reject}
-                  style={[styles.reviewBtn, styles.rejectBtn]}>
-                  <Ionicons name="close" size={18} color={theme.color.error} />
-                  <Text style={[styles.reviewBtnText, { color: theme.color.error }]}>REJECT</Text>
-                </Pressable>
-                <Pressable testID="proposal-accept" disabled={busy || !edit.title.trim()} onPress={accept}
-                  style={[styles.reviewBtn, styles.acceptBtn, (busy || !edit.title.trim()) && { opacity: 0.5 }]}>
-                  <Ionicons name="checkmark" size={18} color={theme.color.onBrand} />
-                  <Text style={[styles.reviewBtnText, { color: theme.color.onBrand }]}>ACCEPT</Text>
-                </Pressable>
-              </View>
-            </>
-          ) : null}
-        </View>
-      </View>
-      </KeyboardAvoidingView>
-    </Modal>
-  );
-}
-
 function AssignModal({ item, users, close, assign }: {
   item: OperationalItem | null;
   users: AssignableUser[];
@@ -596,21 +453,6 @@ function Tag({ children, color, dim }: any) {
   return (
     <View style={[styles.tag, { backgroundColor: dim ? 'transparent' : color, borderColor: color }]}>
       <Text style={[styles.tagText, { color: dim ? theme.color.textMuted : '#fff' }]}>{children}</Text>
-    </View>
-  );
-}
-
-function EditField({ label, value, onChangeText, testID }: any) {
-  return (
-    <View style={{ marginBottom: 10 }}>
-      <Text style={styles.fieldLabel}>{label}</Text>
-      <TextInput
-        testID={testID}
-        value={value}
-        onChangeText={onChangeText}
-        placeholderTextColor={theme.color.textDim}
-        style={styles.input}
-      />
     </View>
   );
 }

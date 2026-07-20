@@ -251,6 +251,46 @@ def test_assign_without_timeline_fields_unaffected(admin, pm, project_and_site):
 
 
 # ==========================================================================
+# Related Operational Items (Canonical Event UX patch, follow-up)
+# ==========================================================================
+def test_event_id_filter_scopes_to_linked_items_only(admin, project_and_site):
+    _, site = project_and_site
+    event1 = requests.post(f"{API}/events", data={"site_id": site["id"], "text": "Approve fixture"},
+                           headers=admin["headers"], timeout=20).json()
+    event2 = requests.post(f"{API}/events", data={"site_id": site["id"], "text": "Unrelated event"},
+                           headers=admin["headers"], timeout=20).json()
+    approval = requests.post(f"{API}/events/{event1['id']}/request-approval", json={},
+                             headers=admin["headers"], timeout=20).json()
+    unrelated = requests.post(f"{API}/operational-items", json={
+        "site_id": site["id"], "category": "material_requirement", "title": "Unrelated item",
+    }, headers=admin["headers"], timeout=20).json()
+
+    r1 = requests.get(f"{API}/operational-items?event_id={event1['id']}", headers=admin["headers"], timeout=20)
+    assert r1.status_code == 200
+    ids = [i["id"] for i in r1.json()]
+    assert approval["id"] in ids
+    assert unrelated["id"] not in ids
+
+    r2 = requests.get(f"{API}/operational-items?event_id={event2['id']}", headers=admin["headers"], timeout=20)
+    assert r2.json() == []
+
+
+def test_related_items_viewable_by_every_role(admin, supervisor, client, project_and_site):
+    """Related Operational Items is a VIEW capability for every role
+    with page access - only Assign is management/PM-only (checked
+    separately in the existing assign RBAC tests above)."""
+    _, site = project_and_site
+    event = requests.post(f"{API}/events", data={"site_id": site["id"], "text": "x"},
+                          headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/events/{event['id']}/request-approval", json={},
+                 headers=admin["headers"], timeout=20)
+    for actor in (admin, supervisor, client):
+        r = requests.get(f"{API}/operational-items?event_id={event['id']}", headers=actor["headers"], timeout=20)
+        assert r.status_code == 200, f"{actor['user']['role']} should be able to view related items: {r.text}"
+        assert len(r.json()) == 1
+
+
+# ==========================================================================
 # Regression - preserved systems
 # ==========================================================================
 def test_regression_workflow_and_cre_unaffected(admin, project_and_site):
