@@ -164,6 +164,16 @@ export type Correction = {
   created_at: string;
 };
 
+export type EventTimeline = {
+  source: 'workflow_activity' | 'event';
+  activity_id: string | null;
+  activity_name: string | null;
+  planned_start: string | null;
+  planned_finish: string | null;
+  actual_start: string | null;
+  actual_finish: string | null;
+};
+
 export type TimelineItem = {
   event: EventDoc;
   analysis: AiAnalysis | null;
@@ -171,7 +181,18 @@ export type TimelineItem = {
   photo_thumbs: { asset_id: string; base64: string }[];
   approval_status: string | null;
   approval_item_id: string | null;
+  timeline: EventTimeline;
 };
+
+export async function apiSetEventTimeline(eventId: string, updates: Partial<Pick<EventTimeline,
+  'planned_start' | 'planned_finish' | 'actual_start' | 'actual_finish'>>): Promise<EventTimeline> {
+  const r = await apiFetch(`${BACKEND}/api/events/${eventId}/timeline`, {
+    method: 'PATCH', headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(updates),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
 
 const TOKEN_KEY = 'atlas_token';
 const USER_KEY = 'atlas_user';

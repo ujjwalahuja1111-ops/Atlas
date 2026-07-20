@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from pydantic import BaseModel
 from typing import Optional, List
 from core.auth import get_current_user
-from engines import memory_engine, reality_engine, timeline_engine, operations_engine
+from engines import memory_engine, reality_engine, timeline_engine, operations_engine, workflow_engine
 
 router = APIRouter(prefix="/api", tags=["events"])
 
@@ -70,6 +70,50 @@ async def get_event(event_id: str, user: dict = Depends(get_current_user)):
     if not item:
         raise HTTPException(status_code=404, detail="Event not found")
     return item
+
+
+class EventTimelineReq(BaseModel):
+    planned_start: Optional[str] = None
+    planned_finish: Optional[str] = None
+    actual_start: Optional[str] = None
+    actual_finish: Optional[str] = None
+
+
+@router.patch("/events/{event_id}/timeline")
+async def update_event_timeline(event_id: str, req: EventTimelineReq,
+                                user: dict = Depends(get_current_user)):
+    """Canonical Event UX patch — Timeline Planning. Management/PM only
+    (RBAC: Site Supervisor and Client both explicitly "cannot modify
+    planning"). Applies to manual and AI-generated events identically —
+    nothing here branches on how the event was created.
+
+    Workflow-aware: if the event is linked to a workflow activity
+    (activity_id set), this writes to that activity via the existing,
+    unmodified workflow_engine.set_schedule — the activity remains the
+    scheduling source of truth, so there is never a second, disagreeing
+    copy of the same dates. Only an unlinked (standalone) event's own
+    fields are written directly.
+    """
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403,
+                            detail="Only management/PM can edit event timeline planning.")
+    event = await memory_engine.get_event(event_id)
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    updates = req.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=400, detail="No timeline fields provided.")
+
+    if event.get("activity_id"):
+        try:
+            await workflow_engine.set_schedule(event["activity_id"], updates, actor=user)
+        except workflow_engine.WorkflowNotFoundError:
+            raise HTTPException(status_code=404, detail="Linked workflow activity not found.")
+    else:
+        await memory_engine.set_event_timeline(event_id, updates)
+
+    return await timeline_engine.resolve_event_timeline(await memory_engine.get_event(event_id))
 
 
 class RequestApprovalReq(BaseModel):

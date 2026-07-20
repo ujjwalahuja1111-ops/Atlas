@@ -96,10 +96,12 @@ export async function apiListUsers(role?: string, projectId?: string): Promise<A
   return r.json();
 }
 
-export async function apiAssignItem(id: string, assigned_to_user_id: string, note?: string) {
+export async function apiAssignItem(id: string, assigned_to_user_id: string, note?: string, timeline?: {
+  target_start?: string | null; target_finish?: string | null; duration_days?: number | null;
+}) {
   const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/assign`, {
     method: 'POST', headers: await jheaders(),
-    body: JSON.stringify({ assigned_to_user_id, note }),
+    body: JSON.stringify({ assigned_to_user_id, note, ...(timeline || {}) }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();

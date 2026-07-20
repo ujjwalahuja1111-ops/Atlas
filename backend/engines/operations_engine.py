@@ -230,6 +230,7 @@ async def create_item(*, actor: dict, site_id: str,
                       origin_reference_id: Optional[str] = None,
                       inherited_evidence_event_id: Optional[str] = None,
                       required_by: Optional[str] = None,
+                      target_start: Optional[str] = None,
                       assigned_to_user: Optional[dict] = None) -> dict:
     assert category in CATEGORIES, f"unknown category: {category}"
     assert origin_type in ORIGIN_TYPES, f"unknown origin: {origin_type}"
@@ -270,7 +271,16 @@ async def create_item(*, actor: dict, site_id: str,
         "verified_by_user_name": None,
 
         "created_at": created_at,
+        # Assignment Timeline (Canonical Event UX patch) — required_by is
+        # reused as "Target Finish" (not renamed at the storage layer,
+        # to avoid a migration; presented as Target Finish wherever this
+        # patch's UI shows it). target_start is the one genuinely new
+        # field this patch adds. Neither is duplicated onto a workflow
+        # activity — an operational item's target timeline always lives
+        # here, since (unlike events) operational items have no
+        # activity_id linkage at all today.
         "required_by": required_by,
+        "target_start": target_start,
         "assigned_at": created_at if assigned_to_user else None,
         "started_at": None,
         "completed_at": None,
@@ -508,6 +518,67 @@ async def set_due(*, item_id: str, actor: dict, required_by: str) -> dict:
     return item
 
 
+def resolve_target_timeline(target_start: Optional[str], target_finish: Optional[str],
+                            duration_days: Optional[float]) -> tuple[Optional[str], Optional[str]]:
+    """Assignment Timeline (Canonical Event UX patch) — 'Users may enter
+    Start + Finish OR Start + Duration; Atlas derives the remaining
+    value automatically.' A pure function, no DB access: given any two
+    of the three inputs, derives the third; with fewer than two, returns
+    what was given unchanged (nothing to derive). Both target_start and
+    target_finish are ISO 8601 datetime strings.
+    """
+    ts = _parse_iso(target_start)
+    tf = _parse_iso(target_finish)
+    if ts and tf:
+        return target_start, target_finish
+    if ts and duration_days is not None:
+        return target_start, _iso(ts + timedelta(days=duration_days))
+    if tf and duration_days is not None:
+        return _iso(tf - timedelta(days=duration_days)), target_finish
+    return target_start, target_finish
+
+
+async def set_target_timeline(*, item_id: str, actor: dict,
+                              target_start: Optional[str] = None,
+                              target_finish: Optional[str] = None,
+                              duration_days: Optional[float] = None) -> dict:
+    """Sets an operational item's target timeline (Target Start +
+    required_by/'Target Finish'), deriving whichever of the two was not
+    supplied directly from duration_days when possible — see
+    resolve_target_timeline. Same ledger pattern as set_due/assign_item
+    above (kind + prev/new status unchanged + payload), just generalized
+    to cover start as well as finish in one call, matching 'an
+    operational item is not fully assigned until both responsibility
+    and target timeline are defined.'
+    """
+    item = await get_item(item_id)
+    if not item:
+        raise ValueError("item not found")
+    resolved_start, resolved_finish = resolve_target_timeline(target_start, target_finish, duration_days)
+    # resolve_target_timeline only fills in what it can derive from what
+    # was actually passed this call; a field neither passed nor
+    # derivable must fall back to the item's current value, never be
+    # silently cleared by a partial update (e.g. adjusting only the
+    # finish date must not wipe an already-set start date).
+    if resolved_start is None and target_start is None:
+        resolved_start = item.get("target_start")
+    if resolved_finish is None and target_finish is None:
+        resolved_finish = item.get("required_by")
+    ev = await append_event(item_id=item_id, kind="target_timeline_set", actor=actor,
+                            prev_status=item["status"], new_status=item["status"],
+                            payload={"target_start": resolved_start, "required_by": resolved_finish,
+                                     "duration_days": duration_days,
+                                     "previous_target_start": item.get("target_start"),
+                                     "previous_required_by": item.get("required_by")})
+    item["target_start"] = resolved_start
+    item["required_by"] = resolved_finish
+    item["last_updated_at"] = _iso(_now())
+    item["last_derived_from_op_event_id"] = ev["id"]
+    item["health"] = derive_health(item)
+    await _save_item(item)
+    return item
+
+
 async def escalate(*, item_id: str, actor: dict, reason: str) -> dict:
     item = await get_item(item_id)
     if not item:
@@ -528,7 +599,7 @@ async def escalate(*, item_id: str, actor: dict, reason: str) -> dict:
 
 
 # ---------------- V3.3: edit, voice_update, mark_duplicate ----------------
-EDITABLE_FIELDS = {"title", "description", "priority", "required_by",
+EDITABLE_FIELDS = {"title", "description", "priority", "required_by", "target_start",
                    "quantity", "unit", "assigned_to_user_id"}
 
 

@@ -6,7 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { apiGetEvent, apiGetPlatformStatus, apiRequestApproval, type TimelineItem } from '@/src/api';
+import { apiGetEvent, apiGetPlatformStatus, apiRequestApproval, apiSetEventTimeline, type TimelineItem } from '@/src/api';
 import { getViewRole, type ViewRole } from '@/src/roles';
 
 const TYPE_LABEL: Record<string, string> = {
@@ -43,6 +43,11 @@ export default function EventDetail() {
   const [sendingApproval, setSendingApproval] = useState(false);
   const [approvalMessage, setApprovalMessage] = useState('');
   const [showApprovalForm, setShowApprovalForm] = useState(false);
+  // Timeline Planning (Canonical Event UX patch) — Record Time stays
+  // immutable; this is separate, editable planning info.
+  const [showTimelineEdit, setShowTimelineEdit] = useState(false);
+  const [timelineDraft, setTimelineDraft] = useState({ planned_start: '', planned_finish: '', actual_start: '', actual_finish: '' });
+  const [savingTimeline, setSavingTimeline] = useState(false);
   useEffect(() => { getViewRole().then(setViewRole); }, []);
   // Sprint 4.1 fix (audit H1): the interval below used to read `item` from
   // a closure captured once at effect-creation time — since the effect's
@@ -108,6 +113,39 @@ export default function EventDetail() {
       setLoadError(e?.message || 'Could not send for approval');
     } finally {
       setSendingApproval(false);
+    }
+  };
+
+  const openTimelineEdit = () => {
+    if (!item) return;
+    const t = item.timeline;
+    setTimelineDraft({
+      planned_start: t.planned_start || '', planned_finish: t.planned_finish || '',
+      actual_start: t.actual_start || '', actual_finish: t.actual_finish || '',
+    });
+    setShowTimelineEdit(true);
+  };
+
+  const saveTimeline = async () => {
+    if (!id) return;
+    setSavingTimeline(true);
+    try {
+      // Empty strings clear a field (send null), matching the backend's
+      // "None clears that field" convention for both the standalone
+      // event path and the linked-workflow-activity path.
+      await apiSetEventTimeline(id, {
+        planned_start: timelineDraft.planned_start.trim() || null,
+        planned_finish: timelineDraft.planned_finish.trim() || null,
+        actual_start: timelineDraft.actual_start.trim() || null,
+        actual_finish: timelineDraft.actual_finish.trim() || null,
+      });
+      const fresh = await apiGetEvent(id);
+      setItem(fresh);
+      setShowTimelineEdit(false);
+    } catch (e: any) {
+      setLoadError(e?.message || 'Could not save timeline');
+    } finally {
+      setSavingTimeline(false);
     }
   };
 
@@ -244,6 +282,63 @@ export default function EventDetail() {
                 <Text style={styles.approvalRequestLinkText}>Send for Client Approval</Text>
               </Pressable>
             )
+          )}
+
+          {/* Timeline Planning (Canonical Event UX patch). Record Time
+              (server_created_at, shown elsewhere) stays untouched;
+              these are separate, editable planning fields. Reads from
+              the linked workflow activity when this event has one -
+              "Workflow remains the scheduling source of truth" - never
+              a second, disagreeing copy. */}
+          {item.timeline && (
+            <Section icon="calendar-outline" title="TIMELINE PLANNING">
+              {item.timeline.source === 'workflow_activity' && (
+                <Text style={styles.timelineSourceNote}>
+                  From linked workflow activity: {item.timeline.activity_name}
+                </Text>
+              )}
+              {!showTimelineEdit ? (
+                <>
+                  <View style={styles.timelineGrid}>
+                    <TimelineField label="PLANNED START" value={item.timeline.planned_start} />
+                    <TimelineField label="PLANNED FINISH" value={item.timeline.planned_finish} />
+                  </View>
+                  <View style={styles.timelineGrid}>
+                    <TimelineField label="ACTUAL START" value={item.timeline.actual_start} />
+                    <TimelineField label="ACTUAL FINISH" value={item.timeline.actual_finish} />
+                  </View>
+                  {(viewRole === 'admin' || viewRole === 'pm') && (
+                    <Pressable testID="timeline-edit-toggle" onPress={openTimelineEdit} style={styles.timelineEditLink}>
+                      <Ionicons name="create-outline" size={16} color={theme.color.brand} />
+                      <Text style={styles.approvalRequestLinkText}>Edit Timeline</Text>
+                    </Pressable>
+                  )}
+                </>
+              ) : (
+                <View style={{ gap: theme.spacing.sm }}>
+                  <TimelineInput label="Planned Start" value={timelineDraft.planned_start}
+                    onChangeText={(v) => setTimelineDraft((d) => ({ ...d, planned_start: v }))} />
+                  <TimelineInput label="Planned Finish" value={timelineDraft.planned_finish}
+                    onChangeText={(v) => setTimelineDraft((d) => ({ ...d, planned_finish: v }))} />
+                  <TimelineInput label="Actual Start" value={timelineDraft.actual_start}
+                    onChangeText={(v) => setTimelineDraft((d) => ({ ...d, actual_start: v }))} />
+                  <TimelineInput label="Actual Finish" value={timelineDraft.actual_finish}
+                    onChangeText={(v) => setTimelineDraft((d) => ({ ...d, actual_finish: v }))} />
+                  <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
+                    <Pressable testID="timeline-cancel" onPress={() => setShowTimelineEdit(false)}
+                      style={[styles.approvalSendBtn, { flex: 1, backgroundColor: theme.color.surface3 }]}>
+                      <Text style={[styles.approvalSendBtnText, { color: theme.color.text }]}>CANCEL</Text>
+                    </Pressable>
+                    <Pressable testID="timeline-save" onPress={saveTimeline} disabled={savingTimeline}
+                      style={[styles.approvalSendBtn, { flex: 1 }, savingTimeline && { opacity: 0.5 }]}>
+                      {savingTimeline ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : (
+                        <Text style={styles.approvalSendBtnText}>SAVE</Text>
+                      )}
+                    </Pressable>
+                  </View>
+                </View>
+              )}
+            </Section>
           )}
 
           {a?.transcript ? (
@@ -384,6 +479,32 @@ function Section({ icon, title, color, children }: any) {
   );
 }
 
+function TimelineField({ label, value }: { label: string; value: string | null }) {
+  const formatted = value ? new Date(value).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+  return (
+    <View style={{ flex: 1 }}>
+      <Text style={styles.timelineFieldLabel}>{label}</Text>
+      <Text style={styles.timelineFieldValue}>{formatted}</Text>
+    </View>
+  );
+}
+
+function TimelineInput({ label, value, onChangeText }: { label: string; value: string; onChangeText: (v: string) => void }) {
+  return (
+    <View>
+      <Text style={styles.timelineFieldLabel}>{label}</Text>
+      <TextInput
+        testID={`timeline-input-${label.toLowerCase().replace(/\s+/g, '-')}`}
+        value={value}
+        onChangeText={onChangeText}
+        placeholder="YYYY-MM-DD (blank to clear)"
+        placeholderTextColor={theme.color.textDim}
+        style={styles.timelineInput}
+      />
+    </View>
+  );
+}
+
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.color.surface },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
@@ -431,6 +552,15 @@ const styles = StyleSheet.create({
     alignItems: 'center', justifyContent: 'center',
   },
   approvalSendBtnText: { color: theme.color.onBrand, fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
+  timelineSourceNote: { color: theme.color.textDim, fontSize: 12, fontStyle: 'italic', marginBottom: 8 },
+  timelineGrid: { flexDirection: 'row', gap: theme.spacing.md, marginBottom: 10 },
+  timelineFieldLabel: { color: theme.color.textDim, fontSize: 10, fontWeight: '800', letterSpacing: 0.5, marginBottom: 2 },
+  timelineFieldValue: { color: theme.color.text, fontSize: 14, fontWeight: '700' },
+  timelineEditLink: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 4 },
+  timelineInput: {
+    color: theme.color.text, backgroundColor: theme.color.surface2, borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.color.border, padding: 10, fontSize: 14,
+  },
   section: {
     marginTop: theme.spacing.sm, padding: theme.spacing.md, borderRadius: theme.radius.md,
     backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border, gap: theme.spacing.sm,

@@ -78,8 +78,45 @@ async def single(event_id: str) -> Optional[dict]:
             photo_thumbs.append({"asset_id": asset_id, "base64": b64})
     from engines import operations_engine
     approval = await operations_engine.find_open_item_for_event(event_id, category="client_approval")
+    timeline = await resolve_event_timeline(e)
     return {
         "event": e, "analysis": analysis, "corrections": corrections, "photo_thumbs": photo_thumbs,
         "approval_status": approval["status"] if approval else None,
         "approval_item_id": approval["id"] if approval else None,
+        "timeline": timeline,
+    }
+
+
+async def resolve_event_timeline(event: dict) -> dict:
+    """Canonical Event UX patch — Timeline Planning (Record Time is
+    event.client_created_at/server_created_at, untouched, immutable,
+    not part of this). When the event is linked to a workflow activity
+    (event.activity_id set), that activity's planned/actual fields ARE
+    the timeline — 'Workflow remains the scheduling source of truth,'
+    never a duplicated copy on the event. Otherwise the event's own
+    (independently editable) fields are used. Either way the shape
+    returned is identical, so the frontend renders one component
+    regardless of source.
+    """
+    if event.get("activity_id"):
+        from engines import workflow_engine
+        activity = await workflow_engine.get_workflow_activity(event["activity_id"])
+        if activity:
+            return {
+                "source": "workflow_activity",
+                "activity_id": activity["id"],
+                "activity_name": activity.get("name"),
+                "planned_start": activity.get("planned_start"),
+                "planned_finish": activity.get("planned_finish"),
+                "actual_start": activity.get("actual_start"),
+                "actual_finish": activity.get("actual_finish"),
+            }
+    return {
+        "source": "event",
+        "activity_id": None,
+        "activity_name": None,
+        "planned_start": event.get("planned_start"),
+        "planned_finish": event.get("planned_finish"),
+        "actual_start": event.get("actual_start"),
+        "actual_finish": event.get("actual_finish"),
     }

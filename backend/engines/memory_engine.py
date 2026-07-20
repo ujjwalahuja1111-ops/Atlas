@@ -651,6 +651,30 @@ async def get_event(event_id: str) -> Optional[dict]:
     return await db.events.find_one({"id": event_id}, {"_id": 0})
 
 
+EVENT_TIMELINE_FIELDS = {"planned_start", "planned_finish", "actual_start", "actual_finish"}
+
+
+async def set_event_timeline(event_id: str, updates: dict) -> Optional[dict]:
+    """Canonical Event UX patch — Timeline Planning for a STANDALONE
+    event (no linked workflow activity). Deliberately mirrors
+    workflow_engine.set_schedule's exact philosophy: pure data storage,
+    any subset of EVENT_TIMELINE_FIELDS, unrecognized keys ignored, None
+    clears a field, no cross-field validation. When an event IS linked
+    to a workflow activity, routes/events.py's timeline endpoint writes
+    to that activity via workflow_engine.set_schedule instead — this
+    function is only ever reached for the unlinked case, so these two
+    always stay each other's alternative, never a duplicate.
+    """
+    event = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not event:
+        return None
+    upd = {k: v for k, v in updates.items() if k in EVENT_TIMELINE_FIELDS}
+    if upd:
+        await db.events.update_one({"id": event_id}, {"$set": upd})
+        event.update(upd)
+    return event
+
+
 async def list_events_for_site(site_id: str, limit: int = 200) -> list[dict]:
     return (
         await db.events.find({"site_id": site_id}, {"_id": 0})

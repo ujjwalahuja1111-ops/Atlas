@@ -1,4 +1,4 @@
-import { useCallback, useState, type Dispatch, type SetStateAction } from 'react';
+import { useCallback, useEffect, useState, type Dispatch, type SetStateAction } from 'react';
 import {
   View, Text, StyleSheet, FlatList, Pressable, ScrollView,
   ActivityIndicator, RefreshControl, Modal, TextInput, KeyboardAvoidingView, Platform,
@@ -312,11 +312,14 @@ export default function OpsScreen() {
         item={assigningItem}
         users={users}
         close={() => setAssigningItem(null)}
-        assign={async (u) => {
+        assign={async (u, timeline) => {
           const item = assigningItem;
           setAssigningItem(null);
           if (!item) return;
-          try { await apiAssignItem(item.id, u.id); await load(); } catch (e) { console.warn(e); }
+          try {
+            await apiAssignItem(item.id, u.id, undefined, timeline);
+            await load();
+          } catch (e) { console.warn(e); }
         }}
       />
     </SafeAreaView>
@@ -433,6 +436,7 @@ function ProposalReviewModal({ proposal, edit, setEdit, users, busy, close, acce
   accept: () => void;
   reject: () => void;
 }) {
+  const router = useRouter();
   return (
     <Modal visible={!!proposal} animationType="slide" transparent>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
@@ -446,6 +450,16 @@ function ProposalReviewModal({ proposal, edit, setEdit, users, busy, close, acce
           </View>
           {proposal ? (
             <>
+              {/* Canonical Event UX patch — same Event Detail page every
+                  entry point uses; this is not a second implementation,
+                  just a link to it. */}
+              <Pressable testID="proposal-view-event" onPress={() => { close(); router.push(`/event/${proposal.event_id}`); }}
+                style={styles.viewEventLink}>
+                <Ionicons name="document-text-outline" size={16} color={theme.color.brand} />
+                <Text style={styles.viewEventLinkText}>View source event (full transcript, photos & AI reasoning)</Text>
+                <Ionicons name="chevron-forward" size={16} color={theme.color.brand} />
+              </Pressable>
+
               <EditField label="Title" value={edit.title} testID="proposal-edit-title"
                 onChangeText={(t: string) => setEdit((p) => ({ ...p, title: t }))} />
               <EditField label="Description" value={edit.description} testID="proposal-edit-description"
@@ -509,13 +523,28 @@ function AssignModal({ item, users, close, assign }: {
   item: OperationalItem | null;
   users: AssignableUser[];
   close: () => void;
-  assign: (u: AssignableUser) => void;
+  assign: (u: AssignableUser, timeline?: { target_start?: string; target_finish?: string }) => void;
 }) {
+  // Assignment Timeline (Canonical Event UX patch) — "not fully
+  // assigned until both responsibility and target timeline are
+  // defined." Both optional: picking a user with these left blank
+  // assigns exactly as before.
+  const [targetStart, setTargetStart] = useState('');
+  const [targetFinish, setTargetFinish] = useState('');
+  useEffect(() => { if (item) { setTargetStart(''); setTargetFinish(''); } }, [item?.id]);
+
   return (
     <Modal visible={!!item} animationType="fade" transparent>
       <Pressable style={styles.modalBack} onPress={close}>
         <View style={styles.modal} onStartShouldSetResponder={() => true}>
           <Text style={styles.modalTitle}>ASSIGN TO</Text>
+          <Text style={styles.fieldLabel}>Target timeline (optional)</Text>
+          <View style={{ flexDirection: 'row', gap: theme.spacing.sm, marginBottom: theme.spacing.sm }}>
+            <TextInput testID="assign-target-start" value={targetStart} onChangeText={setTargetStart}
+              placeholder="Target start" placeholderTextColor={theme.color.textDim} style={styles.assignTimelineInput} />
+            <TextInput testID="assign-target-finish" value={targetFinish} onChangeText={setTargetFinish}
+              placeholder="Target finish" placeholderTextColor={theme.color.textDim} style={styles.assignTimelineInput} />
+          </View>
           <ScrollView style={{ maxHeight: 360 }}>
             {users.length === 0 ? (
               <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No users available</Text>
@@ -525,7 +554,10 @@ function AssignModal({ item, users, close, assign }: {
                  item.suggested_owner_role.includes(u.role));
               return (
                 <Pressable key={u.id} testID={`card-pick-assignee-${u.id}`}
-                  onPress={() => assign(u)}
+                  onPress={() => assign(u, {
+                    target_start: targetStart.trim() || undefined,
+                    target_finish: targetFinish.trim() || undefined,
+                  })}
                   style={styles.pickRow}>
                   <Ionicons name="person-circle-outline" size={20}
                     color={suggested ? theme.color.brand : theme.color.textMuted} />
@@ -645,6 +677,16 @@ const styles = StyleSheet.create({
            borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border },
   modalHead: { flexDirection: 'row', alignItems: 'center', marginBottom: theme.spacing.sm },
   modalTitle: { flex: 1, color: theme.color.brand, fontSize: 12, fontWeight: '900', letterSpacing: 2, marginBottom: theme.spacing.sm },
+  viewEventLink: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, padding: theme.spacing.sm,
+    borderRadius: theme.radius.sm, backgroundColor: theme.color.surface2,
+    borderWidth: 1, borderColor: theme.color.border, marginBottom: theme.spacing.md,
+  },
+  viewEventLinkText: { flex: 1, color: theme.color.brand, fontSize: 13, fontWeight: '600' },
+  assignTimelineInput: {
+    flex: 1, color: theme.color.text, backgroundColor: theme.color.surface2, borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.color.border, padding: 8, fontSize: 13,
+  },
   pickRow: { flexDirection: 'row', alignItems: 'center', gap: 10, paddingVertical: 10 },
   pickName: { color: theme.color.text, fontSize: 14, fontWeight: '700' },
   pickRole: { marginLeft: 'auto', color: theme.color.textDim, fontSize: 11 },

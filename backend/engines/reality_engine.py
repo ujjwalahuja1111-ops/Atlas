@@ -116,6 +116,17 @@ async def capture(
         "proposals_status": "pending",
         "proposals_error": None,
         "requires_client_approval": requires_client_approval,
+        # Timeline Planning (Canonical Event UX patch) — Record Time
+        # above (client_created_at/server_created_at) stays immutable;
+        # these are separate, optional, editable fields. Manual and
+        # AI-generated events both start with these unset — nothing
+        # currently sets them at capture time, matching activity_id's
+        # own "reserved, no current UI sets it" precedent above. See
+        # routes/events.py's PATCH /events/{id}/timeline.
+        "planned_start": None,
+        "planned_finish": None,
+        "actual_start": None,
+        "actual_finish": None,
     }
     await memory_engine.insert_event(event_doc)
 

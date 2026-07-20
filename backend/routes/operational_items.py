@@ -127,6 +127,14 @@ async def transition(item_id: str, req: TransitionReq, user: dict = Depends(get_
 class AssignReq(BaseModel):
     assigned_to_user_id: str
     note: Optional[str] = None
+    # Assignment Timeline (Canonical Event UX patch) — all optional, so
+    # existing callers assigning without timeline info are unaffected.
+    # Provide target_start + target_finish, OR target_start + duration_days,
+    # OR target_finish + duration_days — Atlas derives the missing value
+    # (operations_engine.resolve_target_timeline).
+    target_start: Optional[str] = None
+    target_finish: Optional[str] = None
+    duration_days: Optional[float] = None
 
 
 @router.post("/operational-items/{item_id}/assign")
@@ -158,6 +166,41 @@ async def assign(item_id: str, req: AssignReq, user: dict = Depends(get_current_
     try:
         item = await operations_engine.assign_item(
             item_id=item_id, assignee=assignee, actor=user, note=req.note,
+        )
+        if req.target_start is not None or req.target_finish is not None or req.duration_days is not None:
+            item = await operations_engine.set_target_timeline(
+                item_id=item_id, actor=user, target_start=req.target_start,
+                target_finish=req.target_finish, duration_days=req.duration_days,
+            )
+        return operations_engine.enrich(item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class TargetTimelineReq(BaseModel):
+    target_start: Optional[str] = None
+    target_finish: Optional[str] = None
+    duration_days: Optional[float] = None
+
+
+@router.post("/operational-items/{item_id}/target-timeline")
+async def set_target_timeline(item_id: str, req: TargetTimelineReq,
+                              user: dict = Depends(get_current_user)):
+    """Assignment Timeline (Canonical Event UX patch) — set or update an
+    item's target timeline independently of (re)assigning it, e.g. a PM
+    adjusting the deadline on an already-assigned item. Same management/
+    project_manager-only gate as /assign, since target timeline is part
+    of assignment, not a separate capability with its own rules."""
+    _forbid_client(user, "set a target timeline")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403,
+                            detail="Only Project Managers/management can set a target timeline.")
+    if req.target_start is None and req.target_finish is None and req.duration_days is None:
+        raise HTTPException(status_code=400, detail="Provide at least one timeline field.")
+    try:
+        item = await operations_engine.set_target_timeline(
+            item_id=item_id, actor=user, target_start=req.target_start,
+            target_finish=req.target_finish, duration_days=req.duration_days,
         )
         return operations_engine.enrich(item)
     except ValueError as e:
