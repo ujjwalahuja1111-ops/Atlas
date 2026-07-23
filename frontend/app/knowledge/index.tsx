@@ -296,11 +296,11 @@ export default function KnowledgeWorkspace() {
             </View>
 
             <Field label="Name" value={editing?.name || ''} testID="knowledge-input-name"
-              onChangeText={(t) => setEditing({ ...(editing || {}), name: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), name: t })} />
             <Field label="Description" value={editing?.description || ''} testID="knowledge-input-description"
-              onChangeText={(t) => setEditing({ ...(editing || {}), description: t })} multiline />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), description: t })} multiline />
             <Field label="Code (optional)" value={editing?.code || ''} testID="knowledge-input-code"
-              onChangeText={(t) => setEditing({ ...(editing || {}), code: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), code: t })} />
 
             <Text style={styles.label}>Status</Text>
             <View style={styles.statusRow}>
@@ -328,21 +328,21 @@ export default function KnowledgeWorkspace() {
             )}
 
             <Field label="Tags (comma separated)" value={(editing?.tags || []).join(', ')} testID="knowledge-input-tags"
-              onChangeText={(t) => setEditing({ ...(editing || {}), tags: csv(t) })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), tags: csv(t) })} />
             <Field label="AI Keywords (comma separated)" value={(editing?.ai_keywords || []).join(', ')} testID="knowledge-input-keywords"
-              onChangeText={(t) => setEditing({ ...(editing || {}), ai_keywords: csv(t) })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), ai_keywords: csv(t) })} />
 
             {showDuration && (
               <>
                 <Field label="Default Duration (days)" value={editing?.default_duration_days?.toString() || ''}
                   testID="knowledge-input-duration" keyboardType="numeric"
-                  onChangeText={(t) => setEditing({ ...(editing || {}), default_duration_days: t ? Number(t) : null })} />
+                  onChangeText={(t: string) => setEditing({ ...(editing || {}), default_duration_days: t ? Number(t) : null })} />
                 <Field label="Trade (e.g. Civil, Electrical, Plumbing)" value={editing?.trade || ''}
                   testID="knowledge-input-trade"
-                  onChangeText={(t) => setEditing({ ...(editing || {}), trade: t })} />
+                  onChangeText={(t: string) => setEditing({ ...(editing || {}), trade: t })} />
                 <Field label="Unit (e.g. sqm, cum, each, lumpsum)" value={editing?.unit || ''}
                   testID="knowledge-input-unit"
-                  onChangeText={(t) => setEditing({ ...(editing || {}), unit: t })} />
+                  onChangeText={(t: string) => setEditing({ ...(editing || {}), unit: t })} />
                 <Pressable testID="knowledge-input-requires-inspection"
                   onPress={() => setEditing({ ...(editing || {}), requires_inspection: !editing?.requires_inspection })}
                   style={styles.checkboxRow}>
@@ -357,17 +357,17 @@ export default function KnowledgeWorkspace() {
               <Field label="Checklist items (one per line)" multiline
                 value={(editing?.checklist_items || []).map((c) => c.text).join('\n')}
                 testID="knowledge-input-checklist"
-                onChangeText={(t) => setEditing({
+                onChangeText={(t: string) => setEditing({
                   ...(editing || {}),
-                  checklist_items: t.split('\n').map((s) => s.trim()).filter(Boolean)
-                    .map((text, i) => ({ id: String(i + 1), text })),
+                  checklist_items: t.split('\n').map((s: string) => s.trim()).filter(Boolean)
+                    .map((text: string, i: number) => ({ id: String(i + 1), text })),
                 })} />
             )}
 
             {showDocKind && (
               <Field label="Document kind (e.g. drawing, certificate)" value={editing?.document_kind || ''}
                 testID="knowledge-input-dockind"
-                onChangeText={(t) => setEditing({ ...(editing || {}), document_kind: t })} />
+                onChangeText={(t: string) => setEditing({ ...(editing || {}), document_kind: t })} />
             )}
 
             <Pressable testID="knowledge-save" onPress={onSave} disabled={busy || !editing?.name?.trim()}

@@ -198,3 +198,21 @@ export type PortfolioControlCenter = {
 export async function apiPortfolioControlCenter(): Promise<PortfolioControlCenter> {
   return get(`/api/portfolio/control-center`);
 }
+
+/** Triggers a fresh CRE reasoning pass for a project (snapshot -> rules
+ * -> persist insights + a reasoning_runs record). Idempotent - rerunning
+ * on unchanged state refreshes existing open insights rather than
+ * duplicating them. This is the ONLY way GET .../insights (and, in turn,
+ * the Highest Risks / Delays / Suggested Actions / Pending Inspections
+ * cards below, which all read from the persisted reasoning_insights
+ * collection) ever gets populated for a real project - health/lookahead/
+ * briefing compute fresh on every read and don't need this, but the
+ * insights list does. */
+export async function apiRunReasoning(projectId: string): Promise<any> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/reasoning/run`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({}),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}

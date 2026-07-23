@@ -146,12 +146,6 @@ EVIDENCE_KINDS = [
     "media", "approvals", "knowledge_items", "absences",
 ]
 
-# Human feedback verdicts (learning-layer preparation; write-only today).
-FEEDBACK_VERDICTS = {"accepted", "rejected", "modified", "ignored"}
-
-# Insight-to-insight relationships (multi-step reasoning preparation).
-RELATION_TYPES = {"previous", "duplicate", "supports", "conflicts"}
-
 # Suggestion vocabulary. Suggested actions reuse the Operations Engine's
 # existing category vocabulary; suggested roles are exactly the internal
 # roles of FAC-04's frozen model (memory_engine.ROLES minus client) — a
@@ -1525,82 +1519,10 @@ async def set_insight_status(insight_id: str, new_status: str, *,
     return await get_insight(insight_id)
 
 
-async def record_insight_feedback(insight_id: str, verdict: str, *,
-                                  actor: dict, note: str = "") -> dict:
-    """Human feedback loop — learning-layer PREPARATION only. The verdict
-    (accepted / rejected / modified / ignored) and optional human
-    reasoning are stored on the insight; NOTHING in this sprint reads
-    them back or adapts behavior. Feedback is independent of lifecycle
-    status and may be revised (history preserved)."""
-    if verdict not in FEEDBACK_VERDICTS:
-        raise ReasoningError(
-            f"Invalid feedback verdict '{verdict}'. "
-            f"Must be one of {sorted(FEEDBACK_VERDICTS)}")
-    insight = await get_insight(insight_id)
-    if not insight:
-        raise ReasoningNotFoundError(f"Insight '{insight_id}' not found")
-    await _assert_project_visible(insight["project_id"], actor)
-    entry = {
-        "verdict": verdict,
-        "note": note or None,
-        "by_user_id": actor["id"],
-        "by_user_name": actor["name"],
-        "at": _iso(_now()),
-    }
-    await db.reasoning_insights.update_one(
-        {"id": insight_id},
-        {"$set": {"feedback": entry}, "$push": {"feedback_history": entry}},
-    )
-    return await get_insight(insight_id)
-
-
-async def add_insight_relationship(insight_id: str, related_insight_id: str,
-                                   relation: str, *, actor: dict,
-                                   note: str = "") -> dict:
-    """Link two insights (previous / duplicate / supports / conflicts) —
-    the substrate for future multi-step reasoning. Idempotent per
-    (target, relation) pair."""
-    if relation not in RELATION_TYPES:
-        raise ReasoningError(
-            f"Invalid relation '{relation}'. "
-            f"Must be one of {sorted(RELATION_TYPES)}")
-    if insight_id == related_insight_id:
-        raise ReasoningError("An insight cannot relate to itself.")
-    insight = await get_insight(insight_id)
-    if not insight:
-        raise ReasoningNotFoundError(f"Insight '{insight_id}' not found")
-    await _assert_project_visible(insight["project_id"], actor)
-    related = await get_insight(related_insight_id)
-    if not related:
-        raise ReasoningNotFoundError(
-            f"Insight '{related_insight_id}' not found")
-    if insight["project_id"] != related["project_id"]:
-        raise ReasoningError(
-            "Insights can only be related within the same project.")
-    if any(r["insight_id"] == related_insight_id and r["relation"] == relation
-           for r in insight.get("related_insights", [])):
-        return insight
-    await db.reasoning_insights.update_one(
-        {"id": insight_id},
-        {"$push": {"related_insights": {
-            "insight_id": related_insight_id, "relation": relation,
-            "added_at": _iso(_now()), "added_by_user_id": actor["id"],
-            "added_by_user_name": actor["name"], "note": note or None}}},
-    )
-    return await get_insight(insight_id)
-
-
 async def project_health(project_id: str, *, user: dict) -> dict:
     snapshot = await build_project_snapshot(project_id)
     open_now = await list_insights(project_id, user=user, status="open")
     return compute_project_health(snapshot, open_insight_count=len(open_now))
-
-
-async def list_runs(project_id: str, *, user: dict, limit: int = 50) -> list[dict]:
-    await _assert_project_visible(project_id, user)
-    return await db.reasoning_runs.find(
-        {"project_id": project_id}, {"_id": 0}).sort(
-        "started_at", -1).to_list(limit)
 
 
 # ---------------------------------------------------------------------------
@@ -1657,15 +1579,6 @@ async def project_briefing_view(project_id: str, *, user: dict) -> dict:
     snapshot = await build_project_snapshot(project_id)
     open_now = await list_insights(project_id, user=user, status="open")
     return projections.compose_daily_briefing(snapshot, open_now)
-
-
-async def client_summary_view(project_id: str, *, user: dict) -> dict:
-    """Client communication intelligence: a deterministic plain-English
-    DRAFT for the internal team to review and send. Served only to
-    internal roles — CRE prepares words; humans decide to send them."""
-    await _assert_project_visible(project_id, user)
-    snapshot = await build_project_snapshot(project_id)
-    return projections.compose_client_summary(snapshot)
 
 
 async def client_dashboard_view(project_id: str, *, user: dict) -> dict:

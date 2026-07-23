@@ -335,11 +335,11 @@ export default function ProjectDetail() {
               </Pressable>
             </View>
             <Field label="Name" value={editing?.name || ''} testID="site-input-name"
-              onChangeText={(t) => setEditing({ ...(editing || {}), name: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), name: t })} />
             <Field label="Location" value={editing?.location || ''} testID="site-input-location"
-              onChangeText={(t) => setEditing({ ...(editing || {}), location: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), location: t })} />
             <Field label="Image URL (optional)" value={editing?.image_url || ''} testID="site-input-image"
-              onChangeText={(t) => setEditing({ ...(editing || {}), image_url: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), image_url: t })} />
             <Pressable testID="site-save" onPress={onSave} disabled={busy || !editing?.name?.trim()}
               style={[styles.saveBtn, (busy || !editing?.name?.trim()) && { opacity: 0.5 }]}>
               <Ionicons name="checkmark" size={22} color={theme.color.onBrand} />

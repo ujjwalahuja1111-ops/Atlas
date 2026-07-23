@@ -130,6 +130,18 @@ export async function apiRequestApproval(eventId: string, message?: string): Pro
   return r.json();
 }
 
+/** Replays proposal generation off the canonical ai_analyses doc for
+ * this event - useful when AI analysis produced no usable proposals
+ * the first time, or after a correction. Management/PM only
+ * (enforced server-side). */
+export async function apiRegenerateProposals(eventId: string, force = false): Promise<any> {
+  const r = await apiFetch(`${BACKEND}/api/events/${eventId}/regenerate-proposals?force=${force}`, {
+    method: 'POST', headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export type AiAnalysis = {
   id: string;
   event_id: string;

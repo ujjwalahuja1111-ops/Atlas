@@ -35,6 +35,7 @@ export type OperationalItem = {
   verified_by_user_id: string | null; verified_by_user_name: string | null;
   created_at: string;
   required_by: string | null;
+  target_start: string | null;
   assigned_at: string | null; started_at: string | null;
   completed_at: string | null; verified_at: string | null; closed_at: string | null;
   blocker: { category: string; note?: string; set_at: string; set_by_user_name?: string } | null;

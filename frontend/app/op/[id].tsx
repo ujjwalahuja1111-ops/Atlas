@@ -180,6 +180,7 @@ export default function OpDetail() {
     setEditing({
       title: item.title, description: item.description,
       priority: item.priority, required_by: item.required_by || '',
+      target_start: item.target_start || '',
       quantity: (item.ai_details as any)?.quantity || '',
       unit: (item.ai_details as any)?.unit || '',
     });
@@ -195,12 +196,16 @@ export default function OpDetail() {
       if ((editing.required_by || null) !== item.required_by) {
         patch.required_by = editing.required_by ? editing.required_by : null;
       }
+      if ((editing.target_start || null) !== item.target_start) {
+        patch.target_start = editing.target_start ? editing.target_start : null;
+      }
       const curQty = (item.ai_details as any)?.quantity || '';
       const curUnit = (item.ai_details as any)?.unit || '';
       if (editing.quantity !== curQty && editing.quantity !== '') patch.quantity = editing.quantity;
       if (editing.unit !== curUnit && editing.unit !== '') patch.unit = editing.unit;
-      // strip null required_by (PATCH model rejects null) — server treats absent as no-change
+      // strip null required_by/target_start (PATCH model rejects null) — server treats absent as no-change
       if (patch.required_by === null) delete patch.required_by;
+      if (patch.target_start === null) delete patch.target_start;
       if (Object.keys(patch).length === 0) { setEditing(null); return; }
       await apiEditItem(item.id, patch);
       setEditing(null);
@@ -708,6 +713,8 @@ export default function OpDetail() {
               onChangeText={(t: string) => setEditing({ ...(editing || {}), quantity: t })} />
             <EditField label="Unit" value={editing?.unit} testID="edit-input-unit"
               onChangeText={(t: string) => setEditing({ ...(editing || {}), unit: t })} />
+            <EditField label="Target start (YYYY-MM-DD)" value={editing?.target_start} testID="edit-input-target-start"
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), target_start: t })} />
             <EditField label="Required by (YYYY-MM-DD)" value={editing?.required_by} testID="edit-input-required-by"
               onChangeText={(t: string) => setEditing({ ...(editing || {}), required_by: t })} />
             <Text style={styles.label}>Priority</Text>

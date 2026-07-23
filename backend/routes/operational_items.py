@@ -179,36 +179,6 @@ async def assign(item_id: str, req: AssignReq, user: dict = Depends(get_current_
         raise HTTPException(status_code=400, detail=str(e))
 
 
-class TargetTimelineReq(BaseModel):
-    target_start: Optional[str] = None
-    target_finish: Optional[str] = None
-    duration_days: Optional[float] = None
-
-
-@router.post("/operational-items/{item_id}/target-timeline")
-async def set_target_timeline(item_id: str, req: TargetTimelineReq,
-                              user: dict = Depends(get_current_user)):
-    """Assignment Timeline (Canonical Event UX patch) — set or update an
-    item's target timeline independently of (re)assigning it, e.g. a PM
-    adjusting the deadline on an already-assigned item. Same management/
-    project_manager-only gate as /assign, since target timeline is part
-    of assignment, not a separate capability with its own rules."""
-    _forbid_client(user, "set a target timeline")
-    if user["role"] not in ("management", "project_manager"):
-        raise HTTPException(status_code=403,
-                            detail="Only Project Managers/management can set a target timeline.")
-    if req.target_start is None and req.target_finish is None and req.duration_days is None:
-        raise HTTPException(status_code=400, detail="Provide at least one timeline field.")
-    try:
-        item = await operations_engine.set_target_timeline(
-            item_id=item_id, actor=user, target_start=req.target_start,
-            target_finish=req.target_finish, duration_days=req.duration_days,
-        )
-        return operations_engine.enrich(item)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
 class CommentReq(BaseModel):
     text: str
 
@@ -270,38 +240,6 @@ async def clear_blocker(item_id: str, user: dict = Depends(get_current_user)):
     _forbid_client(user, "clear blockers")
     try:
         item = await operations_engine.clear_blocker(item_id=item_id, actor=user)
-        return operations_engine.enrich(item)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-class DueReq(BaseModel):
-    required_by: str
-
-
-@router.post("/operational-items/{item_id}/due")
-async def set_due(item_id: str, req: DueReq, user: dict = Depends(get_current_user)):
-    _forbid_client(user, "set due dates")
-    try:
-        item = await operations_engine.set_due(
-            item_id=item_id, actor=user, required_by=req.required_by,
-        )
-        return operations_engine.enrich(item)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-class EscalateReq(BaseModel):
-    reason: str
-
-
-@router.post("/operational-items/{item_id}/escalate")
-async def escalate(item_id: str, req: EscalateReq, user: dict = Depends(get_current_user)):
-    _forbid_client(user, "escalate items")
-    try:
-        item = await operations_engine.escalate(
-            item_id=item_id, actor=user, reason=req.reason,
-        )
         return operations_engine.enrich(item)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -6,7 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
-import { apiGetEvent, apiGetPlatformStatus, apiRequestApproval, apiSetEventTimeline, type TimelineItem } from '@/src/api';
+import { apiGetEvent, apiGetPlatformStatus, apiRequestApproval, apiSetEventTimeline, apiRegenerateProposals, type TimelineItem } from '@/src/api';
 import { getViewRole, type ViewRole } from '@/src/roles';
 import {
   apiListProposals, apiAcceptProposal, apiRejectProposal, type AiProposal,
@@ -54,6 +54,7 @@ export default function EventDetail() {
   const [proposals, setProposals] = useState<AiProposal[]>([]);
   const [proposalEdits, setProposalEdits] = useState<Record<string, { title: string; description: string; priority: AiProposal['suggested_priority'] }>>({});
   const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
   const [relatedItems, setRelatedItems] = useState<OperationalItem[]>([]);
   const [assignForItemId, setAssignForItemId] = useState<string | null>(null);
   const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([]);
@@ -220,6 +221,25 @@ export default function EventDetail() {
       setLoadError(e?.message || 'Could not reject proposal');
     } finally {
       setProposalBusyId(null);
+    }
+  };
+
+  const regenerateProposals = async () => {
+    if (!id) return;
+    setRegenerating(true);
+    try {
+      await apiRegenerateProposals(id, true);
+      const props = await apiListProposals({ event_id: id });
+      setProposals(props);
+      const edits: typeof proposalEdits = {};
+      for (const p of props) {
+        edits[p.id] = { title: p.title, description: p.description || '', priority: p.suggested_priority };
+      }
+      setProposalEdits(edits);
+    } catch (e: any) {
+      setLoadError(e?.message || 'Could not regenerate proposals');
+    } finally {
+      setRegenerating(false);
     }
   };
 
@@ -449,9 +469,22 @@ export default function EventDetail() {
               Management/PM only. Same accept/reject calls the
               Operations Center's Proposal Inbox already used; that
               screen now links here instead of showing its own review
-              UI. */}
-          {(viewRole === 'admin' || viewRole === 'pm') && proposals.length > 0 && (
+              UI. Regenerate Proposals (Platform Consolidation Sprint) —
+              wires the previously orphaned POST /events/{id}/
+              regenerate-proposals endpoint; shown even with zero
+              proposals, since that's exactly when regenerating matters
+              most (AI produced nothing usable the first time). */}
+          {(viewRole === 'admin' || viewRole === 'pm') && (
             <Section icon="sparkles-outline" title="AI PROPOSAL">
+              <Pressable testID="event-regenerate-proposals" onPress={regenerateProposals} disabled={regenerating}
+                style={[styles.approvalRequestLink, regenerating && { opacity: 0.5 }]}>
+                {regenerating ? <ActivityIndicator size="small" color={theme.color.brand} /> : (
+                  <Ionicons name="refresh-outline" size={16} color={theme.color.brand} />
+                )}
+                <Text style={styles.approvalRequestLinkText}>
+                  {regenerating ? 'Regenerating…' : proposals.length > 0 ? 'Regenerate Proposals' : 'No AI proposals yet — Regenerate'}
+                </Text>
+              </Pressable>
               {proposals.map((p) => {
                 const edit = proposalEdits[p.id] || { title: p.title, description: p.description || '', priority: p.suggested_priority };
                 const busy = proposalBusyId === p.id;

@@ -221,13 +221,13 @@ export default function ProjectsScreen() {
               </Pressable>
             </View>
             <Field label="Name" value={editing?.name || ''} testID="project-input-name"
-              onChangeText={(t) => setEditing({ ...(editing || {}), name: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), name: t })} />
             <Field label="Code" value={editing?.code || ''} testID="project-input-code"
-              onChangeText={(t) => setEditing({ ...(editing || {}), code: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), code: t })} />
             <Field label="Location" value={editing?.location || ''} testID="project-input-location"
-              onChangeText={(t) => setEditing({ ...(editing || {}), location: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), location: t })} />
             <Field label="Image URL (optional)" value={editing?.image_url || ''} testID="project-input-image"
-              onChangeText={(t) => setEditing({ ...(editing || {}), image_url: t })} />
+              onChangeText={(t: string) => setEditing({ ...(editing || {}), image_url: t })} />
             <Pressable testID="project-save" onPress={onSave} disabled={busy || !editing?.name?.trim()}
               style={[styles.saveBtn, (busy || !editing?.name?.trim()) && { opacity: 0.5 }]}>
               <Ionicons name="checkmark" size={22} color={theme.color.onBrand} />

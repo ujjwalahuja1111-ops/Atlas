@@ -14,7 +14,7 @@ import { theme } from './theme';
 import type { ViewRole } from './roles';
 import {
   apiProjectHealth, apiListInsights, apiProjectLookahead, apiProjectBriefing,
-  apiExecutiveAnswer, type ProjectHealth, type Insight, type ProjectBriefing,
+  apiExecutiveAnswer, apiRunReasoning, type ProjectHealth, type Insight, type ProjectBriefing,
   type ExecutiveAnswer, type AttentionInsight,
 } from './cre_api';
 
@@ -39,6 +39,25 @@ function Empty({ text }: { text: string }) {
   return <Text style={s.muted}>{text}</Text>;
 }
 
+/** Platform Consolidation Sprint — wires POST /projects/{id}/reasoning/run,
+ * previously an orphaned endpoint with zero frontend callers. This is the
+ * only way the persisted reasoning_insights collection (which
+ * apiListInsights reads, feeding Highest Risks / Delays / Suggested
+ * Actions / Pending Inspections below) ever gets populated for a real
+ * project outside of the ACDP seed script. Management/project_manager
+ * only, matching the endpoint's own server-side role gate — never
+ * rendered for Site Supervisor. */
+function RefreshInsightsButton({ onPress, refreshing }: { onPress: () => void; refreshing: boolean }) {
+  return (
+    <Pressable testID="cre-refresh-insights" onPress={onPress} disabled={refreshing} style={s.refreshBtn}>
+      {refreshing ? <ActivityIndicator size="small" color={theme.color.brand} /> : (
+        <Ionicons name="refresh-outline" size={16} color={theme.color.brand} />
+      )}
+      <Text style={s.refreshBtnText}>{refreshing ? 'Refreshing…' : 'Refresh Insights'}</Text>
+    </Pressable>
+  );
+}
+
 function InsightRow({ insight, onPress }: { insight: Insight; onPress?: () => void }) {
   return (
     <Pressable onPress={onPress} style={s.row} testID={`insight-${insight.id}`}>
@@ -58,34 +77,41 @@ export function ManagementCreCards({ projectId }: { projectId: string | null }) 
   const [risks, setRisks] = useState<Insight[] | null>(null);
   const [attention, setAttention] = useState<ExecutiveAnswer | null>(null);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+
+  const load = async () => {
+    setErr(null);
+    try {
+      const att = await apiExecutiveAnswer('attention_today').catch(() => null);
+      setAttention(att);
+      if (projectId) {
+        const [h, ins] = await Promise.all([
+          apiProjectHealth(projectId).catch(() => null),
+          apiListInsights(projectId, { status: 'open' }).catch(() => [] as Insight[]),
+        ]);
+        setHealth(h);
+        setRisks((ins || []).slice().sort((a, b) => {
+          const rank: Record<string, number> = { critical: 0, warning: 1, advisory: 2, info: 3 };
+          return (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9);
+        }).slice(0, 5));
+      }
+    } catch (e: any) {
+      setErr(e?.message || 'Could not load portfolio insights');
+    }
+  };
+
+  const refresh = async () => {
+    if (!projectId) return;
+    setRefreshing(true);
+    try { await apiRunReasoning(projectId); await load(); }
+    catch (e: any) { setErr(e?.message || 'Could not refresh insights'); }
+    finally { setRefreshing(false); }
+  };
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      setLoading(true); setErr(null);
-      try {
-        const att = await apiExecutiveAnswer('attention_today').catch(() => null);
-        if (cancelled) return;
-        setAttention(att);
-        if (projectId) {
-          const [h, ins] = await Promise.all([
-            apiProjectHealth(projectId).catch(() => null),
-            apiListInsights(projectId, { status: 'open' }).catch(() => [] as Insight[]),
-          ]);
-          if (cancelled) return;
-          setHealth(h);
-          setRisks((ins || []).slice().sort((a, b) => {
-            const rank: Record<string, number> = { critical: 0, warning: 1, advisory: 2, info: 3 };
-            return (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9);
-          }).slice(0, 5));
-        }
-      } catch (e: any) {
-        if (!cancelled) setErr(e?.message || 'Could not load portfolio insights');
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
+    (async () => { setLoading(true); await load(); if (!cancelled) setLoading(false); })();
     return () => { cancelled = true; };
   }, [projectId]);
 
@@ -93,6 +119,7 @@ export function ManagementCreCards({ projectId }: { projectId: string | null }) 
 
   return (
     <>
+      {projectId && <RefreshInsightsButton onPress={refresh} refreshing={refreshing} />}
       <Card title="PORTFOLIO HEALTH" icon="pulse" testID="cre-portfolio-health">
         {err ? <Empty text={err} /> : attention ? (
           <Text style={s.body}>
@@ -151,21 +178,31 @@ export function PmCreCards({ projectId }: { projectId: string | null }) {
   const [briefing, setBriefing] = useState<ProjectBriefing | null>(null);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = async () => {
+    if (!projectId) return;
+    const [b, ins] = await Promise.all([
+      apiProjectBriefing(projectId).catch(() => null),
+      apiListInsights(projectId, { status: 'open' }).catch(() => [] as Insight[]),
+    ]);
+    setBriefing(b);
+    setInsights(ins);
+  };
+
+  const refresh = async () => {
+    if (!projectId) return;
+    setRefreshing(true);
+    try { await apiRunReasoning(projectId); await load(); }
+    finally { setRefreshing(false); }
+  };
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
       if (!projectId) { setLoading(false); return; }
       setLoading(true);
-      try {
-        const [b, ins] = await Promise.all([
-          apiProjectBriefing(projectId).catch(() => null),
-          apiListInsights(projectId, { status: 'open' }).catch(() => [] as Insight[]),
-        ]);
-        if (cancelled) return;
-        setBriefing(b);
-        setInsights(ins);
-      } finally { if (!cancelled) setLoading(false); }
+      try { await load(); } finally { if (!cancelled) setLoading(false); }
     })();
     return () => { cancelled = true; };
   }, [projectId]);
@@ -177,6 +214,7 @@ export function PmCreCards({ projectId }: { projectId: string | null }) {
 
   return (
     <>
+      <RefreshInsightsButton onPress={refresh} refreshing={refreshing} />
       <Card title="TODAY'S PRIORITIES" icon="today" testID="cre-pm-priorities">
         {!briefing || briefing.todays_priorities.length === 0 ? <Empty text="Nothing flagged as a priority today." /> :
           briefing.todays_priorities.slice(0, 5).map((p, i) => (
@@ -267,6 +305,11 @@ export function SupervisorCreCards({ projectId }: { projectId: string | null }) 
 }
 
 const s = StyleSheet.create({
+  refreshBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start',
+    marginBottom: theme.spacing.sm, paddingVertical: 4,
+  },
+  refreshBtnText: { color: theme.color.brand, fontSize: 13, fontWeight: '700' },
   card: {
     backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
     borderWidth: 1, borderColor: theme.color.border, padding: theme.spacing.md,

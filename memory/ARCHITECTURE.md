@@ -1,20 +1,32 @@
 # Project Atlas — Architecture
 
-## Engine Map (current)
+## Engine Map (current, as of the Platform Consolidation Sprint)
 
 | # | Engine | Module | Responsibility | Status |
 |---|---|---|---|---|
-| 1 | Reality | `engines/reality_engine.py` | Capture voice/photo/text/GPS; persist immutably; enqueue AI | ✅ V2 |
-| 2 | Memory | `engines/memory_engine.py` | The only writer to Mongo. Append-only facts. | ✅ V2 |
-| 3 | Intelligence | `engines/intelligence_engine.py` | Async worker; Whisper + GPT-4o; Evidence + Prompt versioning; emits AI Proposals | ✅ V2 + V3 |
-| 4 | Timeline | `engines/timeline_engine.py` | Chronological projection over events + analyses + corrections (+ ops via `include=ops`) | ✅ V2 + V3 |
-| 5 | **Operations** | `engines/operations_engine.py` | Operational Items lifecycle, CQRS projection over ledger, Health derivation, AI Proposal acceptance | ✅ **V3** |
-| 6 | **Knowledge** | `engines/knowledge_engine.py` | Construction Knowledge Core — reusable master definitions (Category/Phase/Activity/Checklist Template/Required Document/**Workflow Template**), generic typed relationships, versioning, soft-archive. V5 extended Activities with `trade`/`unit`/`requires_inspection` and added the computed `compute_unlocks()` reverse-lookup — zero change to CRUD/search/versioning machinery. | ✅ **V4**, extended **V5** |
-| 7 | Workflow (approvals automation) | *(reserved)* | Future approvals automation — NOT the same thing as the Construction Workflow Engine below; naming collision noted, this slot remains unbuilt | reserved |
-| 8 | Learning | *(reserved — `ai_feedback`)* | Closes the loop from human corrections back into models | reserved |
-| 9 | **Construction Workflow** | `engines/workflow_engine.py` | Generates project-scoped activity instances from Workflow Templates (Knowledge Core); tracks dependency-respecting status (not_started/ready/in_progress/blocked/completed). No scheduling, no AI, no resource/cost calculations. | ✅ **V5** |
+| 1 | Reality | `engines/reality_engine.py` | Capture voice/photo/text/GPS; persist immutably; enqueue AI. Golden Rule: event saved before any AI worker is enqueued. | ✅ |
+| 2 | Memory | `engines/memory_engine.py` | The only writer to Mongo for events/users/projects/sites. Append-only facts, identity & scoping (`_is_project_scoped`). | ✅ |
+| 3 | Intelligence | `engines/intelligence_engine.py` | Whisper + GPT-4o transcription/extraction; Evidence + Prompt versioning; emits AI Proposals. Optional — Atlas is fully functional with zero AI configured (Sprint 5.0.2 principle). | ✅ |
+| 4 | Timeline | `engines/timeline_engine.py` | Chronological projection over events + analyses + corrections; resolves each event's approval status and (workflow-aware) planning timeline. | ✅ |
+| 5 | Operations | `engines/operations_engine.py` | Operational Items lifecycle (CQRS: `operational_events` ledger → `operational_items` projection), Health derivation, AI Proposal acceptance, Assignment (+ Assignment Timeline: target_start/required_by with Start+Finish/Start+Duration auto-derivation), Client Approval Workflow. | ✅ |
+| 6 | Knowledge | `engines/knowledge_engine.py` | Construction Knowledge Core — reusable master definitions (Category/Phase/Activity/Checklist Template/Required Document/Workflow Template), generic typed relationships, versioning, soft-archive. | ✅ |
+| 7 | Construction Workflow | `engines/workflow_engine.py` | Generates project-scoped activity instances from Workflow Templates; dependency-respecting status (not_started/ready/in_progress/blocked/completed); scheduling (`planned_start/finish`, `actual_start/finish` via `set_schedule`). Workflow is the scheduling source of truth — an event linked to an activity has its timeline resolved there, never duplicated. | ✅ |
+| 8 | Construction Reasoning Engine (CRE) | `engines/reasoning_engine.py` + `engines/reasoning_projections.py` | Deterministic reasoning over a project snapshot (workflow + operational items + events + media + approvals + knowledge): rule-based findings → insights, project health scoring, delay forecasting, look-ahead, daily briefings, executive portfolio questions, client-safe dashboard view, construction memory capture. No LLM required for any of it — `include_ai` is an optional add-on pass, off by default. | ✅ |
+| 9 | Portfolio Control Center | `engines/reasoning_engine.py` (`portfolio_control_center`) | Phase 1 — schedule-based only. Composes existing CRE outputs (health, forecast, lookahead) into a management-only, worst-first-prioritized view with plain-English health explanations. Financial fields are explicit, disabled placeholders for a Phase 2 that has not been built. | ✅ (Phase 1) |
+| 10 | Commercial Intelligence | *(not built)* | Named in Portfolio Control Center's own placeholder fields; no route, engine, or screen exists anywhere in the codebase today. | ❌ not started |
+| 11 | Learning | *(reserved — `ai_feedback`)* | Closes the loop from human corrections back into models. | reserved |
+
+## Canonical Entity Pages (platform-wide rule)
+
+Every first-class entity has exactly one detail page; navigation never determines capability, RBAC does. Confirmed today:
+- **Event** → `app/event/[id].tsx` — every entry point (Recent Events, Timeline, Proposal Inbox, Related Operational Items) routes here. AI Proposal review and Operational Assignment are sections inside this page, not separate experiences.
+- **Operational Item** → `app/op/[id].tsx`
+- **Project** → `app/projects/[id].tsx`
+- **Workflow Activity** → `app/workflow/[id].tsx`
+- **Knowledge Item** → `app/knowledge/[id].tsx`
 
 ## V3 Diagram
+
 
 ```
                       Reality Engine
