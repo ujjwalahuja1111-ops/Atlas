@@ -380,6 +380,7 @@ export default function CaptureScreen() {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.color.surface },
+  center: { flex: 1, alignItems: 'center', justifyContent: 'center', gap: 8, padding: theme.spacing.lg },
   headerRow: { paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: 4 },
   title: { color: theme.color.text, fontSize: 32, fontWeight: '900', letterSpacing: 2 },
   subtitle: { color: theme.color.brand, fontSize: 15, fontWeight: '700', marginTop: 2 },

@@ -198,26 +198,6 @@ async def get_client_dashboard(project_id: str,
         _raise_for(e)
 
 
-@router.get("/projects/{project_id}/client-dashboard")
-async def get_client_dashboard(project_id: str,
-                               user: dict = Depends(get_current_user)):
-    """CRE Integration — the one reasoning endpoint a client account may
-    call. Deliberately NOT gated by _forbid_client: this is the single,
-    explicit exception, returning only reasoning_engine.
-    client_dashboard_view's pre-sanitized subset (stage, plain-English
-    summary, milestone names) — every other reasoning endpoint in this
-    file remains fully internal-only. Any other role may also call this
-    (it is a strict subset of what they can already see via
-    client-summary/lookahead), so no role check beyond the existing
-    project-visibility scoping is needed.
-    """
-    try:
-        return await reasoning_engine.client_dashboard_view(
-            project_id, user=user)
-    except ValueError as e:
-        _raise_for(e)
-
-
 @router.get("/projects/{project_id}/construction-memory")
 async def list_construction_memory(project_id: str,
                                    user: dict = Depends(get_current_user)):
