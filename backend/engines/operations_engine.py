@@ -1051,88 +1051,158 @@ def _urgency_sort_key(item: dict) -> tuple:
     )
 
 
-async def work_queue(*, user: dict) -> dict:
-    """Returns the role-appropriate first section(s) of the work queue.
-    Supervisor -> Ready To Start (operational items assigned to them
-    that are accepted/assigned but not yet started, plus workflow
-    activities visible to them sitting at status="ready").
-    PM -> Assigned To Me (operational items assigned to them; pending
-    client approvals; overdue items; anything escalated/flagged
-    critical) across every project they can see.
-    Management gets the PM view (same "what needs my attention"
-    framing, portfolio-wide) - Management already has Portfolio Control
-    Center as its dedicated cross-project view; this stays a personal
-    queue, not a duplicate of that.
+async def my_day(*, user: dict) -> dict:
+    """"My Day" (Execution Experience Sprint 02, item 6) — replaces the
+    Sprint 01 work_queue with the full role-based execution dashboard.
+    Every section is a read composed from data that already exists:
+    operational items' own status/priority/required_by/assignment,
+    workflow activities' own status/planned_finish and (new this
+    sprint) real assignment via workflow_engine.assign_activity, and
+    for Admin, Portfolio Control Center's own summary (reasoning_engine
+    .portfolio_control_center) — reused directly, not recomputed a
+    second way. No new engine, no duplicated health/urgency logic.
     """
     role = user["role"]
     projects = await memory_engine.list_projects(user=user)
     project_ids = [p["id"] for p in projects]
+    now_iso = _iso(_now())
+    today = now_iso[:10]
 
     if role == "site_supervisor":
-        assigned_open = await list_items(
-            assigned_to_user_id=user["id"], exclude_terminal=True, limit=200)
-        ready_to_start = [i for i in assigned_open if i.get("status") in ("assigned", "acknowledged")]
-        ready_to_start.sort(key=_urgency_sort_key)
+        return await _my_day_supervisor(user, project_ids, now_iso, today)
+    if role == "management":
+        return await _my_day_admin(user)
+    return await _my_day_pm(user, project_ids, now_iso)
 
-        ready_activities = await db.workflow_activities.find(
-            {"project_id": {"$in": project_ids}, "status": "ready"}, {"_id": 0},
-        ).sort("order", 1).to_list(200)
 
-        in_progress = [i for i in assigned_open if i.get("status") not in ("assigned", "acknowledged")]
-        in_progress.sort(key=_urgency_sort_key)
+async def _activities_assigned_to(user_id: str, project_ids: list[str]) -> list[dict]:
+    return await db.workflow_activities.find(
+        {"project_id": {"$in": project_ids}, "assigned_to_user_id": user_id}, {"_id": 0},
+    ).sort("order", 1).to_list(300)
 
-        await attach_names(ready_to_start)
-        await attach_names(in_progress)
-        return {
-            "role": "site_supervisor",
-            "ready_to_start": {
-                "operational_items": ready_to_start,
-                "workflow_activities": ready_activities,
-            },
-            "in_progress_assigned_to_me": in_progress,
-        }
 
-    # Project Manager / Management — "Assigned To Me": approvals,
-    # activities needing attention, delayed work, escalations.
-    assigned = await list_items(assigned_to_user_id=user["id"], exclude_terminal=True, limit=200)
+_RECENTLY_ASSIGNED_WINDOW_HOURS = 48
 
-    # list_items has no direct project_id filter (items are keyed by
-    # site_id); querying everything open once and filtering by the
-    # project_id already denormalized onto each item avoids an N+1
-    # per-project query.
-    everything_open = await db.operational_items.find(
-        {"status": {"$nin": list(TERMINAL_ITEM_STATUSES)}}, {"_id": 0},
-    ).to_list(1000)
-    in_scope = [i for i in everything_open if i.get("project_id") in project_ids]
 
-    now_iso = _iso(_now())
-    pending_approvals = [i for i in in_scope if i.get("category") == "client_approval"]
-    overdue = [i for i in in_scope if i.get("required_by") and i["required_by"] < now_iso]
-    critical = [i for i in in_scope if i.get("priority") == "critical"]
+async def _my_day_supervisor(user: dict, project_ids: list[str], now_iso: str, today: str) -> dict:
+    my_activities = await _activities_assigned_to(user["id"], project_ids)
+    my_items = await list_items(assigned_to_user_id=user["id"], exclude_terminal=True, limit=300)
+    await attach_names(my_items)
 
-    def _dedup(*lists: list[dict]) -> list[dict]:
-        seen: set = set()
-        out: list[dict] = []
-        for lst in lists:
-            for i in lst:
-                if i["id"] not in seen:
-                    seen.add(i["id"])
-                    out.append(i)
-        return out
+    ready_to_start = (
+        [a for a in my_activities if a["status"] == "ready"] +
+        [i for i in my_items if i["status"] in ("assigned", "acknowledged")]
+    )
+    in_progress = (
+        [a for a in my_activities if a["status"] == "in_progress"] +
+        [i for i in my_items if i["status"] == "in_progress"]
+    )
+    blocked = (
+        [a for a in my_activities if a["status"] == "blocked"] +
+        [i for i in my_items if i["status"] == "blocked"]
+    )
+    due_today = [
+        a for a in my_activities
+        if a.get("planned_finish") and str(a["planned_finish"])[:10] == today
+    ] + [
+        i for i in my_items
+        if i.get("required_by") and str(i["required_by"])[:10] == today
+    ]
+    # Waiting for Material — the closest existing signal to a genuine
+    # "this activity's dependency isn't in yet" concept: this
+    # supervisor's own open material_requirement items. Not a new
+    # allocation/inventory model, just what's already tracked.
+    waiting_for_material = [i for i in my_items if i["category"] == "material_requirement"]
 
-    needs_attention = _dedup(assigned, pending_approvals, overdue, critical)
-    needs_attention.sort(key=_urgency_sort_key)
-    await attach_names(needs_attention)
+    cutoff = _iso(_now() - timedelta(hours=_RECENTLY_ASSIGNED_WINDOW_HOURS))
+    recently_assigned = (
+        [a for a in my_activities if a.get("assigned_at") and a["assigned_at"] >= cutoff] +
+        [i for i in my_items if i.get("assigned_at") and i["assigned_at"] >= cutoff]
+    )
+
+    def _sorted(lst: list[dict]) -> list[dict]:
+        return sorted(lst, key=_urgency_sort_key)
 
     return {
-        "role": role,
-        "assigned_to_me": {
-            "items": needs_attention,
-            "counts": {
-                "assigned_to_me": len(assigned),
-                "pending_approvals": len(pending_approvals),
-                "overdue": len(overdue),
-                "critical": len(critical),
-            },
-        },
+        "role": "site_supervisor",
+        "ready_to_start": _sorted(ready_to_start),
+        "in_progress": _sorted(in_progress),
+        "due_today": _sorted(due_today),
+        "blocked": _sorted(blocked),
+        "waiting_for_material": _sorted(waiting_for_material),
+        "recently_assigned": _sorted(recently_assigned),
     }
+
+
+async def _my_day_pm(user: dict, project_ids: list[str], now_iso: str) -> dict:
+    everything_open = await db.operational_items.find(
+        {"status": {"$nin": list(TERMINAL_ITEM_STATUSES)}}, {"_id": 0},
+    ).to_list(2000)
+    in_scope = [i for i in everything_open if i.get("project_id") in project_ids]
+    await attach_names(in_scope)
+
+    delayed_activities = await db.workflow_activities.find(
+        {"project_id": {"$in": project_ids}, "status": {"$nin": ["completed"]},
+         "planned_finish": {"$ne": None, "$lt": now_iso}}, {"_id": 0},
+    ).to_list(300)
+
+    pending_approvals = [i for i in in_scope if i["category"] == "client_approval"]
+    high_priority = [i for i in in_scope if i["priority"] in ("critical", "high")]
+    # Escalations — the same "genuinely urgent, needs a human now" signal
+    # as High Priority Work, surfaced as its own named section per the
+    # brief. Not a distinct workflow state (the standalone /escalate
+    # endpoint this used to be was removed as redundant with priority
+    # editing in the Platform Consolidation Sprint) — critical-priority
+    # items are that same signal, reused rather than reinvented.
+    escalations = [i for i in in_scope if i["priority"] == "critical"]
+
+    projects_requiring_attention_ids = {i["project_id"] for i in in_scope if i["priority"] == "critical"}
+    projects_requiring_attention_ids |= {a["project_id"] for a in delayed_activities}
+
+    return {
+        "role": user["role"],
+        "projects_requiring_attention": len(projects_requiring_attention_ids),
+        "delayed_activities": sorted(delayed_activities, key=lambda a: a.get("planned_finish") or ""),
+        "pending_approvals": sorted(pending_approvals, key=_urgency_sort_key),
+        "high_priority_work": sorted(high_priority, key=_urgency_sort_key),
+        "escalations": sorted(escalations, key=_urgency_sort_key),
+    }
+
+
+async def _my_day_admin(user: dict) -> dict:
+    # Admin's Portfolio Health / Delayed Projects / Critical Issues /
+    # Pending Approvals are Portfolio Control Center's own summary and
+    # rows, reused directly — not a second computation of the same
+    # numbers. Local import to avoid a module-load-order dependency
+    # between operations_engine and reasoning_engine (reasoning_engine
+    # never imports operations_engine, so this direction is safe, but
+    # importing at call time rather than module scope keeps that
+    # asymmetry explicit rather than assumed).
+    from engines import reasoning_engine
+    portfolio = await reasoning_engine.portfolio_control_center(user=user)
+    delayed_projects = [
+        r for r in portfolio["projects"]
+        if r["schedule_variance_days"] is not None and r["schedule_variance_days"] > 0
+    ]
+
+    # Resource Alerts — no equipment/manpower allocation model exists in
+    # Atlas today, so this is the closest honest proxy: open material
+    # and equipment requirement items across the portfolio. Documented
+    # here rather than silently presented as a real resource-planning
+    # signal.
+    everything_open = await db.operational_items.find(
+        {"status": {"$nin": list(TERMINAL_ITEM_STATUSES)},
+         "category": {"$in": ["material_requirement", "equipment_requirement"]}},
+        {"_id": 0},
+    ).to_list(500)
+
+    return {
+        "role": "management",
+        "portfolio_health": portfolio["summary"],
+        "delayed_projects": delayed_projects,
+        "critical_issues": portfolio["summary"]["critical_operational_items"],
+        "pending_approvals": portfolio["summary"]["pending_client_approvals"],
+        "resource_alerts": len(everything_open),
+    }
+
+

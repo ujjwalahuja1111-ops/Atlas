@@ -17,7 +17,8 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from core.auth import get_current_user
-from engines import workflow_engine
+from engines import workflow_engine, memory_engine
+from core.db import db
 from engines.workflow_engine import WorkflowNotFoundError, DependencyNotSatisfiedError
 
 router = APIRouter(prefix="/api", tags=["workflow"])
@@ -105,6 +106,49 @@ async def set_workflow_activity_schedule(activity_id: str, req: SetScheduleReque
         return await workflow_engine.set_schedule(
             activity_id, fields, actor=user,
         )
+    except ValueError as e:
+        _raise_for(e)
+
+
+class AssignActivityRequest(BaseModel):
+    # None/omitted = unassign. Mirrors operational_items' AssignReq
+    # shape (assigned_to_user_id), extended to allow explicit unassign
+    # since activity ownership can meaningfully be "nobody's" (e.g.
+    # freshly generated, not yet handed to a supervisor) in a way an
+    # operational item's assignment flow doesn't need to express.
+    assigned_to_user_id: Optional[str] = None
+
+
+@router.post("/workflow-activities/{activity_id}/assign")
+async def assign_workflow_activity(activity_id: str, req: AssignActivityRequest,
+                                   user: dict = Depends(get_current_user)):
+    """Activity Ownership Model (Execution Experience Sprint 02) —
+    explicit assignment, the new source of truth for "assigned to me"
+    views. Mirrors operational_items' /assign route precisely: same
+    management/project_manager-only allowlist (FAC-04's "Site
+    Supervisor must not assign work"), same
+    memory_engine.is_eligible_assignee check reused rather than
+    reimplemented, so an activity can never be assigned to someone the
+    assignee picker would have hidden."""
+    if user["role"] == "client":
+        raise HTTPException(status_code=403, detail="Clients cannot assign work.")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can assign or reassign work.")
+
+    activity = await workflow_engine.get_workflow_activity(activity_id)
+    if not activity:
+        raise HTTPException(status_code=404, detail="Workflow activity not found")
+
+    assignee = None
+    if req.assigned_to_user_id:
+        assignee = await db.users.find_one({"id": req.assigned_to_user_id}, {"_id": 0})
+        if not assignee:
+            raise HTTPException(status_code=404, detail="Assignee not found")
+        if not memory_engine.is_eligible_assignee(assignee, activity.get("project_id")):
+            raise HTTPException(status_code=400, detail="This user is not eligible to be assigned this activity "
+                                 "(inactive, wrong role, or not a member of this project).")
+    try:
+        return await workflow_engine.assign_activity(activity_id, assignee, actor=user)
     except ValueError as e:
         _raise_for(e)
 

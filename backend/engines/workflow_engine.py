@@ -173,6 +173,18 @@ async def generate_workflow(project_id: str, template_id: str, *, actor: dict) -
             "planned_finish": None,
             "actual_start": None,
             "actual_finish": None,
+            # Activity Ownership Model (Execution Experience Sprint 02) —
+            # explicit assignment, distinct from project visibility.
+            # Visibility still controls who CAN see the activity;
+            # assignment determines ownership within that visible set.
+            # History embedded on the document (assignment_history) —
+            # no new ledger collection, matching how e.g. an insight's
+            # feedback_history is already embedded rather than given
+            # its own collection.
+            "assigned_to_user_id": None,
+            "assigned_to_user_name": None,
+            "assigned_at": None,
+            "assignment_history": [],
             "created_at": now,
             "updated_at": now,
             "status_updated_by_user_id": actor["id"],
@@ -263,6 +275,55 @@ async def set_schedule(activity_id: str, updates: dict, *, actor: dict) -> dict:
         return activity
     upd["updated_at"] = _now()
     await db.workflow_activities.update_one({"id": activity_id}, {"$set": upd})
+    return await get_workflow_activity(activity_id)
+
+
+async def assign_activity(activity_id: str, assignee: Optional[dict], *, actor: dict) -> dict:
+    """Activity Ownership Model (Execution Experience Sprint 02) —
+    explicit assignment of a workflow activity to a user, distinct from
+    (and layered on top of) project visibility: visibility still gates
+    who can see the activity at all; assignment determines ownership
+    within that visible set, and becomes the source of truth for
+    "assigned to me" views (see operations_engine.work_queue).
+
+    assignee=None clears the assignment (unassign) — still recorded in
+    assignment_history as a transition to no one, so the history stays
+    a complete, honest record rather than silently losing the previous
+    owner's tenure when someone unassigns.
+
+    Reassignment is just calling this again with a different assignee —
+    no separate "reassign" verb; the history array is what makes a
+    reassignment distinguishable from a first assignment after the
+    fact.
+    """
+    activity = await db.workflow_activities.find_one({"id": activity_id}, {"_id": 0})
+    if not activity:
+        raise WorkflowNotFoundError(f"Workflow activity '{activity_id}' not found")
+
+    await _assert_project_visible(activity["project_id"], actor)
+
+    now = _now()
+    history_entry = {
+        "assigned_to_user_id": assignee["id"] if assignee else None,
+        "assigned_to_user_name": assignee["name"] if assignee else None,
+        "previous_assignee_id": activity.get("assigned_to_user_id"),
+        "previous_assignee_name": activity.get("assigned_to_user_name"),
+        "assigned_by_user_id": actor["id"],
+        "assigned_by_user_name": actor["name"],
+        "assigned_at": now,
+    }
+    await db.workflow_activities.update_one(
+        {"id": activity_id},
+        {
+            "$set": {
+                "assigned_to_user_id": assignee["id"] if assignee else None,
+                "assigned_to_user_name": assignee["name"] if assignee else None,
+                "assigned_at": now if assignee else None,
+                "updated_at": now,
+            },
+            "$push": {"assignment_history": history_entry},
+        },
+    )
     return await get_workflow_activity(activity_id)
 
 

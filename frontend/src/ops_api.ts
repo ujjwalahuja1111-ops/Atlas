@@ -118,24 +118,44 @@ export type OperationalCenter = {
   counts: { open: number; overdue: number; high_priority: number; awaiting_verification: number; blocked: number };
 };
 
-export type WorkQueueItem = OperationalItem;
+export type MyDayItem = OperationalItem | any; // operational item or workflow activity - both carry id/title|name/status
 
-export type WorkQueueResponse = {
-  role: string;
-  ready_to_start?: {
-    operational_items: WorkQueueItem[];
-    workflow_activities: any[];
-  };
-  in_progress_assigned_to_me?: WorkQueueItem[];
-  assigned_to_me?: {
-    items: WorkQueueItem[];
-    counts: { assigned_to_me: number; pending_approvals: number; overdue: number; critical: number };
-  };
+export type MyDaySupervisor = {
+  role: 'site_supervisor';
+  ready_to_start: MyDayItem[];
+  in_progress: MyDayItem[];
+  due_today: MyDayItem[];
+  blocked: MyDayItem[];
+  waiting_for_material: MyDayItem[];
+  recently_assigned: MyDayItem[];
 };
 
-export async function apiWorkQueue(): Promise<WorkQueueResponse> {
-  const r = await apiFetch(`${BACKEND}/api/work-queue`, { headers: await headers() });
-  if (!r.ok) throw new Error('work-queue');
+export type MyDayPm = {
+  role: string;
+  projects_requiring_attention: number;
+  delayed_activities: any[];
+  pending_approvals: MyDayItem[];
+  high_priority_work: MyDayItem[];
+  escalations: MyDayItem[];
+};
+
+export type MyDayAdmin = {
+  role: 'management';
+  portfolio_health: {
+    active_projects: number; healthy: number; attention: number; critical: number;
+    projects_behind_schedule: number; pending_client_approvals: number; critical_operational_items: number;
+  };
+  delayed_projects: any[];
+  critical_issues: number;
+  pending_approvals: number;
+  resource_alerts: number;
+};
+
+export type MyDayResponse = MyDaySupervisor | MyDayPm | MyDayAdmin;
+
+export async function apiMyDay(): Promise<MyDayResponse> {
+  const r = await apiFetch(`${BACKEND}/api/my-day`, { headers: await headers() });
+  if (!r.ok) throw new Error('my-day');
   return r.json();
 }
 

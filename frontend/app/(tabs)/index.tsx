@@ -10,7 +10,7 @@ import { useRouter, useFocusEffect } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
 import { ManagementCreCards, PmCreCards, SupervisorCreCards } from '@/src/CreDashboard';
-import { WorkQueueSection } from '@/src/WorkQueue';
+import { MyDaySection } from '@/src/MyDay';
 import {
   apiListSites, apiListProjects, apiTimeline, apiSeedDemo, apiProjectSummary,
   getActiveSite, setActiveSite,
@@ -234,9 +234,9 @@ function TimelineScreen() {
           data={items}
           keyExtractor={(i) => i.event.id}
           ListHeaderComponent={
-            viewRole === 'admin' ? <><WorkQueueSection viewRole="admin" /><ManagementCreCards projectId={activeProjectId} /></> :
-            viewRole === 'pm' ? <><WorkQueueSection viewRole="pm" /><PmCreCards projectId={activeProjectId} /></> :
-            viewRole === 'supervisor' ? <><WorkQueueSection viewRole="supervisor" /><SupervisorCreCards projectId={activeProjectId} /></> :
+            viewRole === 'admin' ? <><MyDaySection viewRole="admin" /><ManagementCreCards projectId={activeProjectId} /></> :
+            viewRole === 'pm' ? <><MyDaySection viewRole="pm" /><PmCreCards projectId={activeProjectId} /></> :
+            viewRole === 'supervisor' ? <><MyDaySection viewRole="supervisor" /><SupervisorCreCards projectId={activeProjectId} /></> :
             null
           }
           renderItem={({ item, index }) => (

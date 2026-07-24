@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { theme } from '@/src/theme';
 import { DatePicker } from '@/src/DatePicker';
+import { URGENCY_COLOR } from '@/src/urgency';
 import { loadAuth, type User, type Role } from '@/src/api';
 import { getViewRole, VIEW_PERMS, ROLE_LABEL, type ViewRole } from '@/src/roles';
 import {
@@ -17,8 +18,7 @@ import {
 } from '@/src/ops_api';
 
 const HEALTH_COLOR: Record<string, string> = {
-  on_track: theme.color.success, due_soon: theme.color.warning,
-  overdue: theme.color.error, blocked: '#9C27B0',
+  ...URGENCY_COLOR,
   waiting_external: theme.color.info, completed: theme.color.textDim,
 };
 const STATUS_LABEL: Record<string, string> = {

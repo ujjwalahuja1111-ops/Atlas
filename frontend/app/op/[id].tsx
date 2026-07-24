@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { DatePicker } from '@/src/DatePicker';
+import { URGENCY_COLOR } from '@/src/urgency';
 import { getViewRole, ROLE_LABEL, type ViewRole } from '@/src/roles';
 import { useVoiceRecorder } from '@/src/useVoiceRecorder';
 import type { Role } from '@/src/api';
@@ -20,8 +21,7 @@ import {
 import { humanBlocker } from '../(tabs)/ops';
 
 const HEALTH_COLOR: Record<string, string> = {
-  on_track: theme.color.success, due_soon: theme.color.warning,
-  overdue: theme.color.error, blocked: '#9C27B0',
+  ...URGENCY_COLOR,
   waiting_external: theme.color.info, completed: theme.color.textDim,
 };
 const PRIORITY_COLOR: Record<string, string> = {
