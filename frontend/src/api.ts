@@ -225,11 +225,11 @@ export async function clearAuth() {
   await AsyncStorage.removeItem(USER_KEY);
 }
 
-export async function apiLogin(phone: string, name: string, role: Role) {
+export async function apiLogin(phone: string, role: Role) {
   const r = await apiFetch(`${BACKEND}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ phone, name, role }),
+    body: JSON.stringify({ phone, role }),
   });
   if (!r.ok) {
     // FAC-03 P0 fix: login can now genuinely fail for a real, specific
@@ -245,8 +245,9 @@ export async function apiLogin(phone: string, name: string, role: Role) {
 }
 
 /** Sign Up (Sprint 4.1, extended Sprint 4.3 with "User Type" /
- * requested_workspace). Creates a brand-new, pending account — distinct
- * from apiLogin's upsert-on-first-use behaviour. `requestedWorkspace` is
+ * requested_workspace). Creates a brand-new, pending account - distinct
+ * from apiLogin, which only ever authenticates an existing one (see
+ * routes/auth.py's login() docstring). `requestedWorkspace` is
  * purely informational (shown to the admin, never auto-applied — see
  * memory_engine.register_user). See routes/auth.py `register` for the
  * full rationale. */

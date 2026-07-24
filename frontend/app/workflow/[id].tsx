@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert, TextInput } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator, Alert } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
+import { DatePicker } from '@/src/DatePicker';
 import { apiListKnowledgeItems } from '@/src/knowledge_api';
 import {
   apiGetWorkflow, apiSetWorkflowActivityStatus, apiSetWorkflowActivitySchedule,
@@ -189,38 +190,26 @@ export default function WorkflowViewer() {
                     <View style={styles.scheduleBox}>
                       <View style={styles.scheduleRow}>
                         <View style={styles.scheduleField}>
-                          <Text style={styles.scheduleLabel}>PLANNED START</Text>
-                          <TextInput testID={`schedule-planned-start-${a.id}`}
-                            value={scheduleDraft.planned_start || ''}
-                            onChangeText={(t) => setScheduleDraft((d) => ({ ...d, planned_start: t || null }))}
-                            placeholder="YYYY-MM-DD" placeholderTextColor={theme.color.textDim}
-                            style={styles.scheduleInput} />
+                          <DatePicker testID={`schedule-planned-start-${a.id}`} label="PLANNED START"
+                            value={scheduleDraft.planned_start}
+                            onChange={(iso) => setScheduleDraft((d) => ({ ...d, planned_start: iso }))} />
                         </View>
                         <View style={styles.scheduleField}>
-                          <Text style={styles.scheduleLabel}>PLANNED FINISH</Text>
-                          <TextInput testID={`schedule-planned-finish-${a.id}`}
-                            value={scheduleDraft.planned_finish || ''}
-                            onChangeText={(t) => setScheduleDraft((d) => ({ ...d, planned_finish: t || null }))}
-                            placeholder="YYYY-MM-DD" placeholderTextColor={theme.color.textDim}
-                            style={styles.scheduleInput} />
+                          <DatePicker testID={`schedule-planned-finish-${a.id}`} label="PLANNED FINISH"
+                            value={scheduleDraft.planned_finish}
+                            onChange={(iso) => setScheduleDraft((d) => ({ ...d, planned_finish: iso }))} />
                         </View>
                       </View>
                       <View style={styles.scheduleRow}>
                         <View style={styles.scheduleField}>
-                          <Text style={styles.scheduleLabel}>ACTUAL START</Text>
-                          <TextInput testID={`schedule-actual-start-${a.id}`}
-                            value={scheduleDraft.actual_start || ''}
-                            onChangeText={(t) => setScheduleDraft((d) => ({ ...d, actual_start: t || null }))}
-                            placeholder="YYYY-MM-DD" placeholderTextColor={theme.color.textDim}
-                            style={styles.scheduleInput} />
+                          <DatePicker testID={`schedule-actual-start-${a.id}`} label="ACTUAL START"
+                            value={scheduleDraft.actual_start}
+                            onChange={(iso) => setScheduleDraft((d) => ({ ...d, actual_start: iso }))} />
                         </View>
                         <View style={styles.scheduleField}>
-                          <Text style={styles.scheduleLabel}>ACTUAL FINISH</Text>
-                          <TextInput testID={`schedule-actual-finish-${a.id}`}
-                            value={scheduleDraft.actual_finish || ''}
-                            onChangeText={(t) => setScheduleDraft((d) => ({ ...d, actual_finish: t || null }))}
-                            placeholder="YYYY-MM-DD" placeholderTextColor={theme.color.textDim}
-                            style={styles.scheduleInput} />
+                          <DatePicker testID={`schedule-actual-finish-${a.id}`} label="ACTUAL FINISH"
+                            value={scheduleDraft.actual_finish}
+                            onChange={(iso) => setScheduleDraft((d) => ({ ...d, actual_finish: iso }))} />
                         </View>
                       </View>
                       <Pressable testID={`schedule-save-${a.id}`} onPress={() => saveSchedule(a)}

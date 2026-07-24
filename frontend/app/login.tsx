@@ -28,7 +28,11 @@ export default function LoginScreen() {
   const [error, setError] = useState('');
 
   const onContinue = async () => {
-    if (phone.trim().length < 6 || !name.trim()) {
+    if (phone.trim().length < 6) {
+      setError('Enter your phone number');
+      return;
+    }
+    if (mode === 'signup' && !name.trim()) {
       setError('Enter your name and phone');
       return;
     }
@@ -48,14 +52,14 @@ export default function LoginScreen() {
         return;
       }
 
-      // Sprint 4 cleanup: no manual workspace picker. We resolve which
-      // backend role to authenticate as (returning phone number on this
-      // device -> its last-known role; brand-new phone -> the same safe
-      // default the backend itself uses), then auto-route into the
-      // matching workspace using the AUTHORITATIVE role the backend hands
-      // back — see src/roles.ts for the single, centralized mapping.
+      // Authentication Identity Validation: logging in authenticates an
+      // EXISTING account by phone number alone (routes/auth.py's login()
+      // looks up by phone and nothing else — the request no longer even
+      // carries a name to ignore). The displayed identity after login is
+      // always res.user, exactly as the backend has it stored — never
+      // whatever might have been typed on this screen.
       const guessedRole = await resolveLoginRole(phone.trim());
-      const res = await apiLogin(phone.trim(), name.trim(), guessedRole);
+      const res = await apiLogin(phone.trim(), guessedRole);
       await saveAuth(res.token, res.user);
 
       // Sprint 4.1: an account can be pending/rejected/deactivated even via
@@ -106,23 +110,16 @@ export default function LoginScreen() {
               </Pressable>
             </View>
 
-            <Text style={styles.label}>Your Name</Text>
-            <TextInput
-              testID="login-name-input"
-              value={name} onChangeText={setName}
-              placeholder="Rajesh Kumar" placeholderTextColor={theme.color.textDim}
-              style={styles.input} autoCapitalize="words"
-            />
-            {mode === 'login' && (
-              // Sprint 6.2 Identity Security fix: logging in never changes an
-              // existing account's stored name (or role) — this field is
-              // only ever used if this phone turns out to be brand new.
-              // Backend enforcement lives in memory_engine.upsert_user();
-              // this is just making the same behaviour clear here too.
-              <Text style={styles.hint}>
-                Only used if this is your first time signing in. To change your
-                name later, use Profile.
-              </Text>
+            {mode === 'signup' && (
+              <>
+                <Text style={styles.label}>Your Name</Text>
+                <TextInput
+                  testID="login-name-input"
+                  value={name} onChangeText={setName}
+                  placeholder="Rajesh Kumar" placeholderTextColor={theme.color.textDim}
+                  style={styles.input} autoCapitalize="words"
+                />
+              </>
             )}
             <Text style={styles.label}>Phone Number</Text>
             <TextInput

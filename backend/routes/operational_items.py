@@ -71,11 +71,12 @@ async def list_items(site_id: Optional[str] = None,
                      category: Optional[str] = None,
                      assigned_to_me: bool = False,
                      event_id: Optional[str] = None,
+                     exclude_terminal: bool = False,
                      user: dict = Depends(get_current_user)):
     items = await operations_engine.list_items(
         site_id=site_id, status=status, priority=priority, category=category,
         assigned_to_user_id=user["id"] if assigned_to_me else None,
-        event_id=event_id,
+        event_id=event_id, exclude_terminal=exclude_terminal,
     )
     if project_id:
         items = [i for i in items if i.get("project_id") == project_id]

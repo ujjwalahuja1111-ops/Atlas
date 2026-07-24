@@ -18,6 +18,7 @@ from datetime import datetime, timezone, timedelta
 from typing import Optional, Literal, Iterable
 from core.db import db
 from engines import memory_engine
+from engines.reasoning_projections import TERMINAL_ITEM_STATUSES
 
 # ----- vocab -----
 CATEGORIES = {
@@ -201,6 +202,7 @@ async def list_items(*, site_id: Optional[str] = None,
                      assigned_to_user_id: Optional[str] = None,
                      category: Optional[str] = None,
                      event_id: Optional[str] = None,
+                     exclude_terminal: bool = False,
                      limit: int = 300) -> list[dict]:
     q: dict = {}
     if site_id:
@@ -220,6 +222,18 @@ async def list_items(*, site_id: Optional[str] = None,
         # here unlike find_open_item_for_event's client_approval-only
         # lookup above.
         q["inherited_evidence_event_id"] = event_id
+    if exclude_terminal and not status:
+        # Pending Review Synchronization fix — the single backend
+        # source of truth for "is this item still awaiting a decision,"
+        # the exact same TERMINAL_ITEM_STATUSES set reasoning_engine's
+        # own open-item counts already use. Replaces a client-side list
+        # (['closed', 'archived', 'cancelled', 'duplicate']) that was
+        # missing 'fulfilled' — the status an APPROVED client_approval
+        # item actually ends up in — which is why approved items kept
+        # appearing as still pending. Only applies when status wasn't
+        # explicitly requested, so the two filters can never silently
+        # fight each other.
+        q["status"] = {"$nin": list(TERMINAL_ITEM_STATUSES)}
     return (await db.operational_items.find(q, {"_id": 0})
             .sort("last_updated_at", -1).to_list(limit))
 
@@ -963,12 +977,26 @@ async def accept_ai_proposal(*, proposal_id: str, actor: dict,
         inherited_evidence_event_id=prop.get("event_id"),
         required_by=required_by,
     )
-    # carry forward suggested_owner_role + AI extracted details on the item (informational)
-    extra = {
+    # AI Structured Extraction — quantity/unit were already extracted
+    # alongside required_date/priority (both of which already flow
+    # through above), just never carried onto the item's own fields.
+    # Only at high confidence, and only here at creation time — this
+    # never runs again later, so it can never clobber a value a human
+    # has since entered or edited.
+    extra: dict = {
         "suggested_owner_role": prop.get("suggested_owner_role"),
         "ai_details": details,
         "ai_confidence": prop.get("confidence"),
     }
+    if prop.get("confidence") == "high":
+        if "quantity" in edits:
+            extra["quantity"] = edits["quantity"]
+        elif details.get("quantity") is not None:
+            extra["quantity"] = details["quantity"]
+        if "unit" in edits:
+            extra["unit"] = edits["unit"]
+        elif details.get("unit"):
+            extra["unit"] = details["unit"]
     await db.operational_items.update_one({"id": item["id"]}, {"$set": extra})
     item.update(extra)
     decision = "edited" if edits else "accepted"
@@ -982,6 +1010,8 @@ async def reject_ai_proposal(*, proposal_id: str, actor: dict,
     prop = await get_ai_proposal(proposal_id)
     if not prop:
         raise ValueError("proposal not found")
+    if prop.get("decision") not in (None, "pending"):
+        raise ValueError(f"proposal already {prop['decision']}")
     await update_ai_proposal_decision(proposal_id, decision="rejected", actor=actor,
                                       reason=reason)
     return {**prop, "decision": "rejected"}

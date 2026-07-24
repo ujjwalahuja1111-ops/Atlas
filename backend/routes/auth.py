@@ -39,7 +39,7 @@ def _clean_phone(raw: str) -> str:
 
 class LoginRequest(BaseModel):
     phone: str
-    name: str
+    name: Optional[str] = None
     role: Role = "site_supervisor"
 
 
@@ -69,6 +69,11 @@ async def login(req: LoginRequest):
     token) — core/auth.py's get_current_user is what blocks it from
     every real endpoint except GET /api/me, which is what the Pending
     Approval screen's own status check depends on to ever resolve.
+
+    req.name and req.role are accepted but deliberately never read below
+    — kept only so any existing caller sending them is unaffected. The
+    displayed identity is always the returned user, exactly as stored;
+    nothing about what a caller sends can override it.
     """
     phone = _clean_phone(req.phone)
     user = await memory_engine.get_user_by_phone(phone)

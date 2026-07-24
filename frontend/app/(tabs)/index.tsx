@@ -287,7 +287,7 @@ function ClientDashboardScreen() {
   const loadForSite = useCallback(async (siteId: string, projectId: string | undefined) => {
     const [tl, items] = await Promise.all([
       apiTimeline(siteId).catch(() => [] as TimelineItem[]),
-      apiListItems({ site_id: siteId, category: 'client_approval' }).catch(() => [] as OperationalItem[]),
+      apiListItems({ site_id: siteId, category: 'client_approval', exclude_terminal: true }).catch(() => [] as OperationalItem[]),
     ]);
     const photoList: { base64: string; eventId: string }[] = [];
     for (const t of tl) {
@@ -298,7 +298,7 @@ function ClientDashboardScreen() {
       if (photoList.length >= 12) break;
     }
     setPhotos(photoList);
-    setApprovals(items.filter((i) => !['closed', 'archived', 'cancelled', 'duplicate'].includes(i.status)));
+    setApprovals(items);
 
     if (projectId) {
       const [s, wf, cd] = await Promise.all([

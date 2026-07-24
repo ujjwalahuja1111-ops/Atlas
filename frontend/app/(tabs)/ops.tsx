@@ -7,6 +7,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect } from 'expo-router';
 import { theme } from '@/src/theme';
+import { DatePicker } from '@/src/DatePicker';
 import { loadAuth, type User, type Role } from '@/src/api';
 import { getViewRole, VIEW_PERMS, ROLE_LABEL, type ViewRole } from '@/src/roles';
 import {
@@ -397,10 +398,14 @@ function AssignModal({ item, users, close, assign }: {
           <Text style={styles.modalTitle}>ASSIGN TO</Text>
           <Text style={styles.fieldLabel}>Target timeline (optional)</Text>
           <View style={{ flexDirection: 'row', gap: theme.spacing.sm, marginBottom: theme.spacing.sm }}>
-            <TextInput testID="assign-target-start" value={targetStart} onChangeText={setTargetStart}
-              placeholder="Target start" placeholderTextColor={theme.color.textDim} style={styles.assignTimelineInput} />
-            <TextInput testID="assign-target-finish" value={targetFinish} onChangeText={setTargetFinish}
-              placeholder="Target finish" placeholderTextColor={theme.color.textDim} style={styles.assignTimelineInput} />
+            <View style={{ flex: 1 }}>
+              <DatePicker testID="assign-target-start" placeholder="Target start"
+                value={targetStart || null} onChange={(iso) => setTargetStart(iso || '')} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <DatePicker testID="assign-target-finish" placeholder="Target finish"
+                value={targetFinish || null} onChange={(iso) => setTargetFinish(iso || '')} />
+            </View>
           </View>
           <ScrollView style={{ maxHeight: 360 }}>
             {users.length === 0 ? (

@@ -8,6 +8,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
+import { DatePicker } from '@/src/DatePicker';
 import { getViewRole, ROLE_LABEL, type ViewRole } from '@/src/roles';
 import { useVoiceRecorder } from '@/src/useVoiceRecorder';
 import type { Role } from '@/src/api';
@@ -713,10 +714,12 @@ export default function OpDetail() {
               onChangeText={(t: string) => setEditing({ ...(editing || {}), quantity: t })} />
             <EditField label="Unit" value={editing?.unit} testID="edit-input-unit"
               onChangeText={(t: string) => setEditing({ ...(editing || {}), unit: t })} />
-            <EditField label="Target start (YYYY-MM-DD)" value={editing?.target_start} testID="edit-input-target-start"
-              onChangeText={(t: string) => setEditing({ ...(editing || {}), target_start: t })} />
-            <EditField label="Required by (YYYY-MM-DD)" value={editing?.required_by} testID="edit-input-required-by"
-              onChangeText={(t: string) => setEditing({ ...(editing || {}), required_by: t })} />
+            <DatePicker label="Target start" testID="edit-input-target-start"
+              value={editing?.target_start || null}
+              onChange={(iso) => setEditing({ ...(editing || {}), target_start: iso || '' })} />
+            <DatePicker label="Required by" testID="edit-input-required-by"
+              value={editing?.required_by || null}
+              onChange={(iso) => setEditing({ ...(editing || {}), required_by: iso || '' })} />
             <Text style={styles.label}>Priority</Text>
             <View style={{ flexDirection: 'row', gap: 6, marginBottom: 12 }}>
               {(['low', 'normal', 'high', 'critical'] as const).map((p) => (

@@ -6,6 +6,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
+import { DatePicker } from '@/src/DatePicker';
 import { apiGetEvent, apiGetPlatformStatus, apiRequestApproval, apiSetEventTimeline, apiRegenerateProposals, type TimelineItem } from '@/src/api';
 import { getViewRole, type ViewRole } from '@/src/roles';
 import {
@@ -80,7 +81,7 @@ export default function EventDetail() {
     // Proposal Review (Canonical Event UX patch) — Management/PM only,
     // matching "Review AI proposal" in the RBAC table below.
     if (viewRole === 'admin' || viewRole === 'pm') {
-      apiListProposals({ event_id: id }).then((props) => {
+      apiListProposals({ event_id: id, status: 'pending' }).then((props) => {
         setProposals(props);
         const edits: typeof proposalEdits = {};
         for (const p of props) {
@@ -229,7 +230,7 @@ export default function EventDetail() {
     setRegenerating(true);
     try {
       await apiRegenerateProposals(id, true);
-      const props = await apiListProposals({ event_id: id });
+      const props = await apiListProposals({ event_id: id, status: 'pending' });
       setProposals(props);
       const edits: typeof proposalEdits = {};
       for (const p of props) {
@@ -440,14 +441,14 @@ export default function EventDetail() {
                 </>
               ) : (
                 <View style={{ gap: theme.spacing.sm }}>
-                  <TimelineInput label="Planned Start" value={timelineDraft.planned_start}
-                    onChangeText={(v) => setTimelineDraft((d) => ({ ...d, planned_start: v }))} />
-                  <TimelineInput label="Planned Finish" value={timelineDraft.planned_finish}
-                    onChangeText={(v) => setTimelineDraft((d) => ({ ...d, planned_finish: v }))} />
-                  <TimelineInput label="Actual Start" value={timelineDraft.actual_start}
-                    onChangeText={(v) => setTimelineDraft((d) => ({ ...d, actual_start: v }))} />
-                  <TimelineInput label="Actual Finish" value={timelineDraft.actual_finish}
-                    onChangeText={(v) => setTimelineDraft((d) => ({ ...d, actual_finish: v }))} />
+                  <DatePicker testID="timeline-input-planned-start" label="Planned Start" value={timelineDraft.planned_start || null}
+                    onChange={(iso) => setTimelineDraft((d) => ({ ...d, planned_start: iso || '' }))} />
+                  <DatePicker testID="timeline-input-planned-finish" label="Planned Finish" value={timelineDraft.planned_finish || null}
+                    onChange={(iso) => setTimelineDraft((d) => ({ ...d, planned_finish: iso || '' }))} />
+                  <DatePicker testID="timeline-input-actual-start" label="Actual Start" value={timelineDraft.actual_start || null}
+                    onChange={(iso) => setTimelineDraft((d) => ({ ...d, actual_start: iso || '' }))} />
+                  <DatePicker testID="timeline-input-actual-finish" label="Actual Finish" value={timelineDraft.actual_finish || null}
+                    onChange={(iso) => setTimelineDraft((d) => ({ ...d, actual_finish: iso || '' }))} />
                   <View style={{ flexDirection: 'row', gap: theme.spacing.sm }}>
                     <Pressable testID="timeline-cancel" onPress={() => setShowTimelineEdit(false)}
                       style={[styles.approvalSendBtn, { flex: 1, backgroundColor: theme.color.surface3 }]}>
@@ -722,22 +723,6 @@ function TimelineField({ label, value }: { label: string; value: string | null }
     <View style={{ flex: 1 }}>
       <Text style={styles.timelineFieldLabel}>{label}</Text>
       <Text style={styles.timelineFieldValue}>{formatted}</Text>
-    </View>
-  );
-}
-
-function TimelineInput({ label, value, onChangeText }: { label: string; value: string; onChangeText: (v: string) => void }) {
-  return (
-    <View>
-      <Text style={styles.timelineFieldLabel}>{label}</Text>
-      <TextInput
-        testID={`timeline-input-${label.toLowerCase().replace(/\s+/g, '-')}`}
-        value={value}
-        onChangeText={onChangeText}
-        placeholder="YYYY-MM-DD (blank to clear)"
-        placeholderTextColor={theme.color.textDim}
-        style={styles.timelineInput}
-      />
     </View>
   );
 }
