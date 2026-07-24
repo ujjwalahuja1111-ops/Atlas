@@ -305,14 +305,25 @@ async def set_status(activity_id: str, new_status: str, *, actor: dict) -> dict:
             )
 
     now = _now()
+    updates: dict = {
+        "status": new_status, "updated_at": now,
+        "status_updated_by_user_id": actor["id"],
+        "status_updated_by_user_name": actor["name"],
+        "status_updated_at": now,
+    }
+    # Timeline Improvements — actual timestamps become the trusted
+    # historical record automatically, on the matching transition, not
+    # by anyone typing a date in. Never overwrites an already-set value
+    # (e.g. one Management entered manually ahead of time) — this only
+    # ever fills in what's still None.
+    if new_status == "in_progress" and not activity.get("actual_start"):
+        updates["actual_start"] = now
+    if new_status == "completed" and not activity.get("actual_finish"):
+        updates["actual_finish"] = now
+
     await db.workflow_activities.update_one(
         {"id": activity_id},
-        {"$set": {
-            "status": new_status, "updated_at": now,
-            "status_updated_by_user_id": actor["id"],
-            "status_updated_by_user_name": actor["name"],
-            "status_updated_at": now,
-        }},
+        {"$set": updates},
     )
 
     if new_status == "completed":

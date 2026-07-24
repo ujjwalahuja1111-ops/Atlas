@@ -88,14 +88,22 @@ async def set_workflow_activity_status(activity_id: str, req: SetStatusRequest, 
 
 @router.post("/workflow-activities/{activity_id}/schedule")
 async def set_workflow_activity_schedule(activity_id: str, req: SetScheduleRequest, user: dict = Depends(get_current_user)):
-    """Sprint 6.1 — Planned/Actual Start/Finish. Open to any authenticated
-    role, same as status (a supervisor logging actual dates on-site is
-    exactly the intended use). Pure data storage — see
-    workflow_engine.set_schedule's docstring for why no validation or
-    status-linked inference happens here."""
+    """Sprint 6.1 — Planned/Actual Start/Finish; extended in the
+    Execution Experience sprint. Planned dates remain open to any
+    authenticated role, same as status. Actual dates are now normally
+    set automatically by workflow_engine.set_status on the matching
+    transition ("these timestamps become the trusted historical
+    record") — a manual override of actual_start/actual_finish through
+    THIS endpoint is Management-only, matching the brief precisely.
+    Pure data storage otherwise — see workflow_engine.set_schedule's
+    docstring for why no other validation happens here."""
+    fields = req.model_dump(exclude_unset=True)
+    if ("actual_start" in fields or "actual_finish" in fields) and user["role"] != "management":
+        raise HTTPException(status_code=403,
+                            detail="Only management can manually set actual start/finish dates.")
     try:
         return await workflow_engine.set_schedule(
-            activity_id, req.model_dump(exclude_unset=True), actor=user,
+            activity_id, fields, actor=user,
         )
     except ValueError as e:
         _raise_for(e)

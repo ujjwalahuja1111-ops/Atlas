@@ -1015,3 +1015,124 @@ async def reject_ai_proposal(*, proposal_id: str, actor: dict,
     await update_ai_proposal_decision(proposal_id, decision="rejected", actor=actor,
                                       reason=reason)
     return {**prop, "decision": "rejected"}
+
+
+# ---------------------------------------------------------------------------
+# Personal Work Queue (Execution Experience Sprint 01, items 1 & 2).
+#
+# "What is assigned to me, what should I do next, what's urgent" - built
+# entirely from data that already exists: operational items' own
+# assigned_to_user_id/priority/required_by (unchanged), workflow
+# activities' own status="ready" (dependency-resolved, unchanged), and
+# memory_engine.list_projects' existing visibility scoping. No new
+# entity, no new engine - a read composed from three things that were
+# already there, the same way Portfolio Control Center composes CRE
+# outputs rather than recomputing them.
+#
+# Workflow activities have no per-activity assignee field today (only
+# operational items do) - "assigned to the supervisor" for an activity
+# is expressed here as project-visibility scope (the supervisor can see
+# it) combined with status="ready" (its prerequisites are actually
+# done), not a fabricated per-activity assignment concept. This is a
+# deliberate, documented scoping choice, not an oversight - adding a
+# genuine per-activity assignee would be a schema change and a state-
+# machine question ("assigned to the supervisor" as a NEW workflow
+# state) that deserves its own deliberate pass, not one folded silently
+# into a read-only queue endpoint.
+# ---------------------------------------------------------------------------
+
+_URGENCY_RANK = {"critical": 0, "high": 1, "normal": 2, "low": 3}
+
+
+def _urgency_sort_key(item: dict) -> tuple:
+    return (
+        _URGENCY_RANK.get(item.get("priority"), 9),
+        item.get("required_by") or "9999-99-99",
+    )
+
+
+async def work_queue(*, user: dict) -> dict:
+    """Returns the role-appropriate first section(s) of the work queue.
+    Supervisor -> Ready To Start (operational items assigned to them
+    that are accepted/assigned but not yet started, plus workflow
+    activities visible to them sitting at status="ready").
+    PM -> Assigned To Me (operational items assigned to them; pending
+    client approvals; overdue items; anything escalated/flagged
+    critical) across every project they can see.
+    Management gets the PM view (same "what needs my attention"
+    framing, portfolio-wide) - Management already has Portfolio Control
+    Center as its dedicated cross-project view; this stays a personal
+    queue, not a duplicate of that.
+    """
+    role = user["role"]
+    projects = await memory_engine.list_projects(user=user)
+    project_ids = [p["id"] for p in projects]
+
+    if role == "site_supervisor":
+        assigned_open = await list_items(
+            assigned_to_user_id=user["id"], exclude_terminal=True, limit=200)
+        ready_to_start = [i for i in assigned_open if i.get("status") in ("assigned", "acknowledged")]
+        ready_to_start.sort(key=_urgency_sort_key)
+
+        ready_activities = await db.workflow_activities.find(
+            {"project_id": {"$in": project_ids}, "status": "ready"}, {"_id": 0},
+        ).sort("order", 1).to_list(200)
+
+        in_progress = [i for i in assigned_open if i.get("status") not in ("assigned", "acknowledged")]
+        in_progress.sort(key=_urgency_sort_key)
+
+        await attach_names(ready_to_start)
+        await attach_names(in_progress)
+        return {
+            "role": "site_supervisor",
+            "ready_to_start": {
+                "operational_items": ready_to_start,
+                "workflow_activities": ready_activities,
+            },
+            "in_progress_assigned_to_me": in_progress,
+        }
+
+    # Project Manager / Management — "Assigned To Me": approvals,
+    # activities needing attention, delayed work, escalations.
+    assigned = await list_items(assigned_to_user_id=user["id"], exclude_terminal=True, limit=200)
+
+    # list_items has no direct project_id filter (items are keyed by
+    # site_id); querying everything open once and filtering by the
+    # project_id already denormalized onto each item avoids an N+1
+    # per-project query.
+    everything_open = await db.operational_items.find(
+        {"status": {"$nin": list(TERMINAL_ITEM_STATUSES)}}, {"_id": 0},
+    ).to_list(1000)
+    in_scope = [i for i in everything_open if i.get("project_id") in project_ids]
+
+    now_iso = _iso(_now())
+    pending_approvals = [i for i in in_scope if i.get("category") == "client_approval"]
+    overdue = [i for i in in_scope if i.get("required_by") and i["required_by"] < now_iso]
+    critical = [i for i in in_scope if i.get("priority") == "critical"]
+
+    def _dedup(*lists: list[dict]) -> list[dict]:
+        seen: set = set()
+        out: list[dict] = []
+        for lst in lists:
+            for i in lst:
+                if i["id"] not in seen:
+                    seen.add(i["id"])
+                    out.append(i)
+        return out
+
+    needs_attention = _dedup(assigned, pending_approvals, overdue, critical)
+    needs_attention.sort(key=_urgency_sort_key)
+    await attach_names(needs_attention)
+
+    return {
+        "role": role,
+        "assigned_to_me": {
+            "items": needs_attention,
+            "counts": {
+                "assigned_to_me": len(assigned),
+                "pending_approvals": len(pending_approvals),
+                "overdue": len(overdue),
+                "critical": len(critical),
+            },
+        },
+    }

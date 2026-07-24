@@ -63,6 +63,18 @@ async def create_item(req: CreateItem, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.get("/work-queue")
+async def get_work_queue(user: dict = Depends(get_current_user)):
+    """Personal Work Queue (Execution Experience Sprint 01) - the
+    role-based "what should I do next" queue. See
+    operations_engine.work_queue's own docstring for exactly what each
+    role sees and why. Not available to client — client has its own
+    dashboard, approvals, and timeline; a personal execution queue
+    doesn't apply to that role."""
+    _forbid_client(user, "view the work queue")
+    return await operations_engine.work_queue(user=user)
+
+
 @router.get("/operational-items")
 async def list_items(site_id: Optional[str] = None,
                      project_id: Optional[str] = None,

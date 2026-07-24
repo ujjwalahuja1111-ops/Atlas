@@ -118,6 +118,27 @@ export type OperationalCenter = {
   counts: { open: number; overdue: number; high_priority: number; awaiting_verification: number; blocked: number };
 };
 
+export type WorkQueueItem = OperationalItem;
+
+export type WorkQueueResponse = {
+  role: string;
+  ready_to_start?: {
+    operational_items: WorkQueueItem[];
+    workflow_activities: any[];
+  };
+  in_progress_assigned_to_me?: WorkQueueItem[];
+  assigned_to_me?: {
+    items: WorkQueueItem[];
+    counts: { assigned_to_me: number; pending_approvals: number; overdue: number; critical: number };
+  };
+};
+
+export async function apiWorkQueue(): Promise<WorkQueueResponse> {
+  const r = await apiFetch(`${BACKEND}/api/work-queue`, { headers: await headers() });
+  if (!r.ok) throw new Error('work-queue');
+  return r.json();
+}
+
 export async function apiListItems(filter: {
   site_id?: string; status?: string; priority?: string; category?: string; assigned_to_me?: boolean;
   event_id?: string; exclude_terminal?: boolean;
