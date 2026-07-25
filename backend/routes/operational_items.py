@@ -281,6 +281,14 @@ class EditItemReq(BaseModel):
     quantity: Optional[str] = None
     unit: Optional[str] = None
     assigned_to_user_id: Optional[str] = None
+    # Material Approval "informed choice" (Client Experience Sprint 01,
+    # item 4) — a list of {label, cost, cost_delta, recommended, note}
+    # option objects a PM/Admin attaches to a client_approval item so
+    # the client sees a real comparison, not a bare Approve/Reject.
+    # Freeform list of dicts rather than a nested model: the exact
+    # option shape is presentation data the frontend defines and
+    # renders, not something the backend validates or calculates.
+    approval_options: Optional[list[dict]] = None
 
 
 @router.patch("/operational-items/{item_id}")

@@ -622,7 +622,7 @@ async def escalate(*, item_id: str, actor: dict, reason: str) -> dict:
 
 # ---------------- V3.3: edit, voice_update, mark_duplicate ----------------
 EDITABLE_FIELDS = {"title", "description", "priority", "required_by", "target_start",
-                   "quantity", "unit", "assigned_to_user_id"}
+                   "quantity", "unit", "assigned_to_user_id", "approval_options"}
 
 
 async def edit_item(*, item_id: str, actor: dict, edits: dict,

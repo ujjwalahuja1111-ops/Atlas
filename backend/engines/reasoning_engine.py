@@ -1622,6 +1622,210 @@ async def client_dashboard_view(project_id: str, *, user: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Atlas Client Experience (ACE Sprint 01).
+#
+# "Translate internal data into client-friendly information" — every
+# function below is presentation composed from EXISTING CRE/operations
+# outputs, exactly like client_dashboard_view above. None of them
+# introduce a new engine or a second health/forecast calculation:
+# _project_row (Portfolio Control Center's own per-project bundle) is
+# reused directly, so a client's "health" and a management user's
+# Portfolio Control Center "health" for the same project are always,
+# structurally, the same number.
+#
+# What this sprint deliberately does NOT build: a Payment Centre, Cost
+# Deviation/Variation tracking, or a Financial Summary. Atlas has no
+# contract-value, payment, invoice, or cost-variation data model
+# anywhere in the codebase today — confirmed by inspection, not
+# assumed. Building those screens would mean inventing the numbers
+# they'd display, for a platform whose stated purpose is a client
+# making real financial decisions on real money. That is a much worse
+# outcome than an honestly incomplete dashboard, so this sprint leaves
+# them out rather than fabricating them. See the implementation report
+# for the same reasoning applied to the Document Centre (no document-
+# library data model exists) and Notification Centre (no notification
+# mechanism exists anywhere in Atlas — confirmed via workflow_engine's
+# own "explicitly out of scope" note elsewhere in this codebase).
+# ---------------------------------------------------------------------------
+
+def _client_item_label(item: dict) -> str:
+    # A client_approval item's title is already human-written (e.g.
+    # "Approve tile choice for Bedroom 2" — see routes/events.py's
+    # request-approval flow), which is the real client-facing label.
+    # category is always "client_approval" for these items — never a
+    # useful sub-category to translate — so this is just a plain
+    # fallback for the rare case a title is missing, not a lookup.
+    return item.get("title") or "Approval"
+
+
+async def client_experience_dashboard(project_id: str, *, user: dict) -> dict:
+    """ACE item 1 — the redesigned client landing page's hero + "what
+    needs my attention" sections. Reuses _client_project_row for
+    progress/health/forecast/next-milestone, and the same
+    TERMINAL_ITEM_STATUSES-based open-item query every other "what's
+    still pending" view in this codebase already uses (Portfolio
+    Control Center, the Client Dashboard's own Pending Approvals card)
+    — filtered here to items this project's client can act on.
+    """
+    await _assert_project_visible(project_id, user)
+    snapshot = await build_project_snapshot(project_id)
+    findings = evaluate_rules(snapshot)
+    health = compute_project_health(snapshot, findings)
+    digest = projections.project_digest(snapshot, findings, health)
+    row = _project_row({"snapshot": snapshot, "findings": findings, "digest": digest})
+    look = projections.project_lookahead(snapshot)
+
+    open_items = [i for i in snapshot["operational_items"] if i.get("status") not in projections.TERMINAL_ITEM_STATUSES]
+    pending_approvals = [i for i in open_items if i.get("category") == "client_approval"]
+
+    attention_items = [{
+        "id": i["id"],
+        "label": _client_item_label(i),
+        "type": "approval",
+        "priority": i.get("priority", "normal"),
+    } for i in pending_approvals]
+
+    return {
+        "project_id": row["project_id"],
+        "project_name": row["project_name"],
+        "overall_progress_percent": row["progress_percent"],
+        "current_phase": look["stage"]["current_label"],
+        "health": {
+            "status": row["health_status"],
+            "score": row["health_score"],
+            "explanation": row["health_explanation"],
+        },
+        "expected_completion": row["forecast_completion"],
+        "next_milestone": row["next_milestone"],
+        "attention_required": attention_items,
+        "attention_message": None if attention_items else "No action required today.",
+        "generated_at": _iso(_now()),
+    }
+
+
+async def client_approval_centre(project_id: str, *, user: dict) -> dict:
+    """ACE item 3 — a permanent Approval Centre. The Client Dashboard's
+    existing "Pending Approvals" card correctly shows only undecided
+    items (exclude_terminal); THIS view is the deliberate opposite —
+    every client_approval item ever raised on this project, however it
+    was decided, because "Approve -> Disappears" was named directly in
+    the brief as the behavior to fix. Same TERMINAL_ITEM_STATUSES
+    vocabulary used to classify fulfilled (approved) vs cancelled
+    (rejected) vs still-open, not a new status model.
+    """
+    await _assert_project_visible(project_id, user)
+    items = await db.operational_items.find(
+        {"project_id": project_id, "category": "client_approval"}, {"_id": 0},
+    ).sort("created_at", -1).to_list(500)
+
+    pending = [i for i in items if i["status"] not in projections.TERMINAL_ITEM_STATUSES]
+    approved = [i for i in items if i["status"] == "fulfilled"]
+    rejected = [i for i in items if i["status"] == "cancelled"]
+
+    def _view(i: dict) -> dict:
+        return {
+            "id": i["id"],
+            "label": _client_item_label(i),
+            "description": i.get("description", ""),
+            "status": i["status"],
+            "priority": i.get("priority", "normal"),
+            "created_at": i.get("created_at"),
+            "decided_at": i.get("last_updated_at") if i["status"] in ("fulfilled", "cancelled") else None,
+            "options": i.get("approval_options") or [],
+        }
+
+    return {
+        "project_id": project_id,
+        "pending": [_view(i) for i in pending],
+        "approved": [_view(i) for i in approved],
+        "rejected": [_view(i) for i in rejected],
+        "timeline": [_view(i) for i in items],  # full history, newest first
+        "counts": {"pending": len(pending), "approved": len(approved), "rejected": len(rejected)},
+    }
+
+
+async def client_communication_centre(project_id: str, *, user: dict) -> dict:
+    """ACE item 10 — "structured communication, not chat." Reuses the
+    existing request_clarification mechanism (operations_engine)
+    directly rather than inventing a new one. request_clarification is
+    deliberately NOT a status transition (see its own docstring) — it
+    appends an event to the operational_events ledger every other
+    approval-history view in Atlas already reads, with kind
+    "clarification_requested" and the client's question in
+    payload.note. "Waiting for Contractor" is an item whose MOST
+    RECENT ledger event is that clarification request — i.e. nothing
+    has happened since the client asked. "Waiting for Client" is any
+    other still-open approval with no pending question — the client
+    themselves has the next move. There is no "contractor asks,
+    client answers" mechanism in Atlas today (request_clarification is
+    client-only — routes/operational_items.py's own permission check),
+    so that direction isn't represented here; it would need a genuinely
+    new capability, not a view over an existing one.
+    """
+    await _assert_project_visible(project_id, user)
+    items = await db.operational_items.find(
+        {"project_id": project_id, "category": "client_approval",
+         "status": {"$nin": list(projections.TERMINAL_ITEM_STATUSES)}},
+        {"_id": 0},
+    ).to_list(500)
+
+    waiting_for_contractor: list[dict] = []
+    waiting_for_client: list[dict] = []
+    for i in items:
+        last_event = await db.operational_events.find_one(
+            {"operational_item_id": i["id"]}, {"_id": 0}, sort=[("created_at", -1)])
+        label = i.get("title") or "Approval"
+        if last_event and last_event["kind"] == "clarification_requested":
+            waiting_for_contractor.append({
+                "id": i["id"], "label": label,
+                "note": last_event.get("payload", {}).get("note"),
+                "asked_at": last_event["created_at"],
+            })
+        else:
+            waiting_for_client.append({"id": i["id"], "label": label, "since": i.get("created_at")})
+
+    return {
+        "project_id": project_id,
+        "waiting_for_contractor": waiting_for_contractor,
+        "waiting_for_client": waiting_for_client,
+    }
+
+
+async def client_project_timeline(project_id: str, *, user: dict) -> dict:
+    """ACE item 6 — "do not expose workflow activities; present project
+    milestones instead." Reuses the exact same STAGE_ORDER/STAGE_LABELS
+    vocabulary and infer_project_stage() the internal CRE stage
+    inference already uses (project_lookahead, client_dashboard_view's
+    own "stage" field) — a milestone list is just that same ordered
+    vocabulary, with each stage classified as completed / in_progress /
+    upcoming relative to the project's own current stage index. No
+    activity-level names, trades, or ids are exposed — deliberately
+    coarser than project_lookahead's own frontier detail, which is
+    written for internal readiness/preparation use.
+    """
+    await _assert_project_visible(project_id, user)
+    snapshot = await build_project_snapshot(project_id)
+    stage = snapshot.get("stage") or projections.infer_project_stage(snapshot["workflow_activities"])
+    current_index = projections.STAGE_ORDER.index(stage["current"])
+
+    milestones = []
+    for i, key in enumerate(projections.STAGE_ORDER):
+        if i < current_index:
+            status = "completed"
+        elif i == current_index:
+            status = "in_progress"
+        else:
+            status = "upcoming"
+        milestones.append({"key": key, "label": projections.STAGE_LABELS[key], "status": status})
+
+    return {
+        "project_id": project_id,
+        "current_stage": stage["current_label"],
+        "milestones": milestones,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Executive reasoning (Sprint 01B item 8) — reusable deterministic
 # answers to portfolio-level management questions. No conversational AI:
 # a fixed vocabulary of questions, each answered by explicit reasoning

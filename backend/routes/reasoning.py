@@ -168,6 +168,56 @@ async def get_client_dashboard(project_id: str,
         _raise_for(e)
 
 
+@router.get("/projects/{project_id}/client-experience")
+async def get_client_experience_dashboard(project_id: str,
+                                          user: dict = Depends(get_current_user)):
+    """Atlas Client Experience (ACE Sprint 01) — the redesigned client
+    landing page's hero + "what needs my attention" sections. Same
+    "no _forbid_client" pattern as /client-dashboard above: this IS the
+    client-facing view, open to every role with project visibility.
+    """
+    try:
+        return await reasoning_engine.client_experience_dashboard(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/client-approvals")
+async def get_client_approval_centre(project_id: str,
+                                     user: dict = Depends(get_current_user)):
+    """ACE item 3 — the permanent Approval Centre (pending, approved,
+    rejected, and the full timeline). Fixes the brief's own stated
+    complaint precisely: "Approve -> Disappears" is not how this view
+    works."""
+    try:
+        return await reasoning_engine.client_approval_centre(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/client-communications")
+async def get_client_communication_centre(project_id: str,
+                                          user: dict = Depends(get_current_user)):
+    """ACE item 10 — structured communication (Waiting for Contractor /
+    Waiting for Client), built entirely from the existing
+    request_clarification ledger."""
+    try:
+        return await reasoning_engine.client_communication_centre(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/client-timeline")
+async def get_client_project_timeline(project_id: str,
+                                      user: dict = Depends(get_current_user)):
+    """ACE item 6 — project milestones (stage-level only, no workflow
+    activity detail exposed)."""
+    try:
+        return await reasoning_engine.client_project_timeline(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/projects/{project_id}/construction-memory")
 async def list_construction_memory(project_id: str,
                                    user: dict = Depends(get_current_user)):
