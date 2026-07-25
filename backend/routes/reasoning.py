@@ -218,6 +218,24 @@ async def get_client_project_timeline(project_id: str,
         _raise_for(e)
 
 
+@router.get("/portfolio/compare")
+async def get_portfolio_comparison(project_ids: str,
+                                   user: dict = Depends(get_current_user)):
+    """Reference Portfolio (RP-01) — cross-project comparison. project_ids
+    is a comma-separated list (?project_ids=prj_a,prj_b). Not
+    client-facing — this is a management/PM/developer regression and
+    demonstration tool, so (unlike every route above it) this one does
+    call _forbid_client."""
+    _forbid_client(user)
+    ids = [p.strip() for p in project_ids.split(",") if p.strip()]
+    if len(ids) < 2:
+        raise HTTPException(status_code=400, detail="Provide at least two project_ids to compare.")
+    try:
+        return await reasoning_engine.compare_projects(ids, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/projects/{project_id}/construction-memory")
 async def list_construction_memory(project_id: str,
                                    user: dict = Depends(get_current_user)):

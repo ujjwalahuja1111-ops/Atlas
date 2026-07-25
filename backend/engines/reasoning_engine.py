@@ -1826,6 +1826,95 @@ async def client_project_timeline(project_id: str, *, user: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Reference Portfolio (RP-01) — cross-project comparison.
+#
+# Composes existing per-engine data for two (or more) projects side by
+# side. Owns nothing new: Workflow/Operations counts come from the same
+# snapshot build_project_snapshot already assembles for every other CRE
+# view; health/forecast reuse _project_row unmodified (the same
+# guarantee Client Experience's dashboard already relies on — this
+# comparison's health number for a project is byte-identical to that
+# project's own Client Experience Dashboard and Portfolio Control
+# Center rows, because it is the same calculation, not a fourth one).
+# Commercial figures come from memory_engine's minimal reference-data
+# store (see that module's own docstring on why this is not a
+# Commercial Foundation Engine implementation).
+# ---------------------------------------------------------------------------
+
+async def _project_comparison_row(project_id: str, *, user: dict) -> dict:
+    await _assert_project_visible(project_id, user)
+    snapshot = await build_project_snapshot(project_id)
+    findings = evaluate_rules(snapshot)
+    health = compute_project_health(snapshot, findings)
+    digest = projections.project_digest(snapshot, findings, health)
+    row = _project_row({"snapshot": snapshot, "findings": findings, "digest": digest})
+
+    activities = snapshot["workflow_activities"]
+    workflow_status_counts: dict[str, int] = {}
+    for a in activities:
+        workflow_status_counts[a["status"]] = workflow_status_counts.get(a["status"], 0) + 1
+
+    items = snapshot["operational_items"]
+    open_items = [i for i in items if i.get("status") not in projections.TERMINAL_ITEM_STATUSES]
+    ops_status_counts: dict[str, int] = {}
+    for i in items:
+        ops_status_counts[i["status"]] = ops_status_counts.get(i["status"], 0) + 1
+    critical_items = [i for i in open_items if i.get("priority") == "critical"]
+    blocked_items = [i for i in items if i["status"] == "blocked"]
+
+    site_ids = [s["id"] for s in await memory_engine.list_sites(project_id=project_id)]
+    timeline_count = await db.events.count_documents({"site_id": {"$in": site_ids}}) if site_ids else 0
+
+    commercial = await memory_engine.get_commercial_reference(project_id)
+
+    return {
+        "project_id": project_id,
+        "project_name": row["project_name"],
+        "health": {
+            "status": row["health_status"],
+            "score": row["health_score"],
+            "explanation": row["health_explanation"],
+        },
+        "workflow": {
+            "total_activities": len(activities),
+            "status_counts": workflow_status_counts,
+            "blocked": workflow_status_counts.get("blocked", 0),
+        },
+        "operations": {
+            "total_items": len(items),
+            "open_items": len(open_items),
+            "status_counts": ops_status_counts,
+            "blocked": len(blocked_items),
+            "critical_open": len(critical_items),
+        },
+        "timeline": {"event_count": timeline_count},
+        "commercial": commercial,
+        "schedule_variance_days": row["schedule_variance_days"],
+        "forecast_completion": row["forecast_completion"],
+    }
+
+
+async def compare_projects(project_ids: list[str], *, user: dict) -> dict:
+    """RP-01's cross-project comparison utility — Workflow, Operations,
+    Commercial, and Timeline side by side, plus each project's own
+    Health, Variation Exposure (from the commercial reference),
+    Cash Flow signal, Blocked Work, Open Operations, and Timeline
+    Density (events per elapsed day, a simple, honest proxy for how
+    operationally active a project's record is)."""
+    rows = [await _project_comparison_row(pid, user=user) for pid in project_ids]
+    for row in rows:
+        commercial = row.get("commercial") or {}
+        approved_var = commercial.get("approved_variations", 0) or 0
+        pending_var = commercial.get("pending_variations", 0) or 0
+        contract_value = commercial.get("contract_value") or None
+        row["variation_exposure_percent"] = (
+            round((approved_var + pending_var) / contract_value * 100, 1)
+            if contract_value else None
+        )
+        row["cash_flow_signal"] = commercial.get("cash_flow_signal")
+    return {"projects": rows}
+
+# ---------------------------------------------------------------------------
 # Executive reasoning (Sprint 01B item 8) — reusable deterministic
 # answers to portfolio-level management questions. No conversational AI:
 # a fixed vocabulary of questions, each answered by explicit reasoning

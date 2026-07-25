@@ -1,0 +1,43 @@
+{
+  "project_id": "prj_d8dcd365-6976-4cef-9319-6a12e57057e1",
+  "project_name": "Atlas Demonstration Villa",
+  "health_status": "Critical",
+  "health_score": 40,
+  "workflow_total_activities": 361,
+  "workflow_status_counts": {
+    "completed": 358,
+    "ready": 1,
+    "not_started": 2
+  },
+  "workflow_blocked": 0,
+  "operations_total_items": 162,
+  "operations_open_items": 135,
+  "operations_status_counts": {
+    "open": 135,
+    "fulfilled": 21,
+    "cancelled": 6
+  },
+  "operations_blocked": 0,
+  "operations_critical_open": 11,
+  "timeline_event_count": 784,
+  "commercial": {
+    "project_id": "prj_d8dcd365-6976-4cef-9319-6a12e57057e1",
+    "project_name": "Atlas Demonstration Villa",
+    "contract_value": 28500000,
+    "approved_variations": 1200000,
+    "pending_variations": 500000,
+    "budget": 23200000,
+    "current_cost": 10800000,
+    "forecast": 23900000,
+    "retention_percent": 5,
+    "advance_percent": 10,
+    "advance_recovered_percent": null,
+    "ra_bills_total": 3,
+    "ra_bills_paid": 2,
+    "ra_bills_pending": 1,
+    "ra_bills_under_review": 0,
+    "cash_flow_signal": "healthy",
+    "updated_at": "2026-07-25T12:14:55.710228+00:00"
+  },
+  "schedule_variance_days": null
+}

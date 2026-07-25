@@ -524,6 +524,34 @@ async def insert_project(name: str, code: str, location: str = "", image_url: st
     return await _insert(db.projects, doc)
 
 
+# ---------------------------------------------------------------------------
+# Reference Portfolio (RP-01) — commercial reference data.
+#
+# The Commercial Foundation Engine is Architecture Frozen but NOT
+# implemented — no Contract/BOQ/Invoice/Payment entities, no state
+# machines, no API surface exist anywhere in the codebase. This is
+# deliberately NOT an implementation of that engine (this sprint is
+# about reference data, not "adding another business engine," per its
+# own brief). It is a minimal, honestly-scoped storage shape for the
+# specific reference figures the Reference Portfolio needs — Contract
+# value, Budget, RA Bill summary, Retention position — one document
+# per project, in a dedicated collection so it can be dropped in
+# whole and replaced by the real engine's own collections later
+# without any caller needing to change how they read it (same
+# top-level field names as the frozen specification's own entities).
+# ---------------------------------------------------------------------------
+
+async def set_commercial_reference(project_id: str, data: dict) -> dict:
+    doc = {**data, "project_id": project_id, "updated_at": _now()}
+    await db.commercial_reference.update_one(
+        {"project_id": project_id}, {"$set": doc}, upsert=True)
+    return await get_commercial_reference(project_id)
+
+
+async def get_commercial_reference(project_id: str) -> Optional[dict]:
+    return await db.commercial_reference.find_one({"project_id": project_id}, {"_id": 0})
+
+
 async def insert_site(project_id: str, name: str, location: str = "", image_url: str = "") -> dict:
     doc = {
         "id": _new_id("site_"),

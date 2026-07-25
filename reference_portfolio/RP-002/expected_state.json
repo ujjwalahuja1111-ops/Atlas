@@ -1,0 +1,49 @@
+{
+  "project_id": "prj_8bc814b8-6b6e-4a92-8ba5-c91abbeae966",
+  "project_name": "Neoteric Corporate Office",
+  "health_status": "Healthy",
+  "health_score": 93,
+  "workflow_total_activities": 13,
+  "workflow_status_counts": {
+    "completed": 7,
+    "blocked": 1,
+    "in_progress": 1,
+    "ready": 4
+  },
+  "workflow_blocked": 1,
+  "operations_total_items": 22,
+  "operations_open_items": 15,
+  "operations_status_counts": {
+    "assigned": 11,
+    "fulfilled": 6,
+    "acknowledged": 2,
+    "in_progress": 2,
+    "verified": 1
+  },
+  "operations_blocked": 0,
+  "operations_critical_open": 3,
+  "timeline_event_count": 0,
+  "commercial": {
+    "project_id": "prj_8bc814b8-6b6e-4a92-8ba5-c91abbeae966",
+    "project_name": "Neoteric Corporate Office",
+    "contract_value": 48500000,
+    "approved_variations": 4800000,
+    "pending_variations": 2300000,
+    "budget": 40500000,
+    "current_cost": 27100000,
+    "forecast": 42900000,
+    "retention_percent": 5,
+    "advance_percent": 10,
+    "advance_recovered_percent": 72,
+    "ra_bills_total": 5,
+    "ra_bills_paid": 3,
+    "ra_bills_pending": 1,
+    "ra_bills_under_review": 1,
+    "cash_flow_signal": "watch",
+    "contract_duration_days": 240,
+    "current_day": 137,
+    "progress_percent": 52,
+    "updated_at": "2026-07-25T12:14:55.709906+00:00"
+  },
+  "schedule_variance_days": null
+}
