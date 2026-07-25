@@ -82,8 +82,9 @@ Sprint 5's requirements as pure data, exactly as intended.
 """
 from __future__ import annotations
 import uuid
+import math
 from datetime import datetime, timezone
-from typing import Optional, Iterable
+from typing import Optional, Iterable, Callable
 from core.db import db
 
 # ----- vocab -----
@@ -176,6 +177,7 @@ async def create_item(
     trade: Optional[str] = None,
     unit: Optional[str] = None,
     requires_inspection: bool = False,
+    production_model: Optional[dict] = None,
 ) -> dict:
     _validate_type(type_)
     _validate_status(status)
@@ -203,6 +205,14 @@ async def create_item(
         "trade": trade,                             # Sprint 5, only meaningful for activity
         "unit": unit,                               # Sprint 5, only meaningful for activity
         "requires_inspection": bool(requires_inspection),  # Sprint 5, only meaningful for activity
+        # Knowledge Base v2 — Parametric Production Models. Only
+        # meaningful for activity; None (the default) means "no
+        # production model" — default_duration_days above continues to
+        # be used unmodified, exactly as before this feature existed.
+        # See knowledge_engine's PRODUCTION_MODEL section for shape and
+        # workflow_engine.resolve_expected_duration for the fallback
+        # logic this enables.
+        "production_model": production_model,
         "relationships": [],                        # generic typed edges — see module docstring
         "status": status,                            # draft | active | deprecated (archived via archive_item)
         "applicability": applicability or {},        # reserved, freeform — see module docstring
@@ -347,6 +357,135 @@ async def compute_unlocks_many(activity_ids: list[str]) -> dict[str, list[dict]]
     return out
 
 
+# ---------------------------------------------------------------------------
+# Production Models (Construction Knowledge Base v2, Sprint 01).
+#
+# An Activity's `production_model` field, when set, has this shape:
+#
+#   {
+#     "calculation_method": "wall_area_productivity_v1",
+#     "inputs": [
+#       {"key": "wall_area", "label": "Wall Area", "category": "project",
+#        "unit": "sqm"},
+#       {"key": "crew_size", "label": "Crew Size", "category": "execution",
+#        "unit": "workers", "default_value": 4},
+#       {"key": "productivity", "label": "Productivity",
+#        "category": "execution", "unit": "sqm/day/worker",
+#        "default_value": 70},
+#     ],
+#     "outputs": ["duration_days", "crew_recommendation"],
+#   }
+#
+# `category` is one of PRODUCTION_PARAMETER_CATEGORIES below (project /
+# execution / material) — purely descriptive grouping for UI display, not
+# consumed by the calculation itself, so adding a new category later (or
+# a new input with an existing category) never requires touching the
+# calculation registry. This is the "future parameter types without
+# redesign" requirement: a production model's `inputs` list and a
+# calculation function's own **kwargs-free, dict-in/dict-out signature can
+# both grow without changing this architecture.
+#
+# `calculation_method` is a REGISTRY KEY, not a stored formula string
+# evaluated at runtime — deliberately. A formula string would need an
+# expression evaluator (a real security/correctness surface) and would be
+# much harder to unit-test or reason about than a plain, named Python
+# function. This is what keeps calculation "deterministic," "separate
+# from AI," and genuinely "explainable" in code, not just in principle:
+# every registered function is source-controlled, independently testable,
+# and returns its own worked calculation for display — never a black box.
+#
+# None (the default on every existing and new Activity) means "no
+# production model" — see workflow_engine.resolve_expected_duration for
+# the unmodified default_duration_days fallback this preserves.
+# ---------------------------------------------------------------------------
+
+PRODUCTION_PARAMETER_CATEGORIES = ("project", "execution", "material")
+
+
+def _calc_wall_area_productivity_v1(inputs: dict) -> dict:
+    """Wall Masonry — the first parametric activity (item 3). Duration
+    is Wall Area divided by total daily output (crew size × per-worker
+    productivity), rounded up to a whole day (partial-day durations
+    aren't meaningful for scheduling). Crew Recommendation for this
+    sprint is the crew size actually used in the calculation, i.e. "the
+    crew size this duration assumes" — genuinely deriving a RECOMMENDED
+    crew size from a target duration instead is a natural next output
+    (see item 6 / the architecture doc's extension strategy), not built
+    here.
+    """
+    wall_area = float(inputs["wall_area"])
+    crew_size = float(inputs.get("crew_size") or 1)
+    productivity = float(inputs["productivity"])
+    if wall_area <= 0:
+        raise ValueError("wall_area must be positive")
+    if crew_size <= 0 or productivity <= 0:
+        raise ValueError("crew_size and productivity must be positive")
+
+    daily_output = crew_size * productivity
+    duration_days = math.ceil(wall_area / daily_output)
+
+    return {
+        "outputs": {
+            "duration_days": duration_days,
+            "crew_recommendation": crew_size,
+        },
+        "explanation": {
+            "duration_days": {
+                "formula": "wall_area \u00f7 (crew_size \u00d7 productivity)",
+                "values": {
+                    "wall_area": wall_area, "crew_size": crew_size,
+                    "productivity": productivity, "daily_output": daily_output,
+                },
+                "result": duration_days,
+            },
+        },
+    }
+
+
+CALCULATION_REGISTRY: dict[str, Callable[[dict], dict]] = {
+    "wall_area_productivity_v1": _calc_wall_area_productivity_v1,
+}
+
+
+def calculate_production_model(production_model: dict, input_values: dict) -> dict:
+    """Pure, deterministic calculation entrypoint — no I/O, no side
+    effects, safe to call from a route, a test, or a future engine
+    (Planning/CRE/Commercial Intelligence) alike.
+
+    Resolves each declared input to either the caller-supplied value
+    (a per-project-instance override, e.g. this project's actual wall
+    area) or the production model's own stored default_value (e.g. the
+    Knowledge Base's default productivity) — never silently invents a
+    value. Raises ValueError for an unrecognized calculation_method or
+    a required input with neither an override nor a default, so a
+    caller always gets an explicit reason rather than a wrong number.
+
+    Returns {resolved_inputs, outputs, explanation} — resolved_inputs
+    makes it visible which values were overrides versus defaults,
+    completing the explainability requirement (item 7): every
+    calculated value is traceable to the exact inputs that produced it.
+    """
+    method = production_model.get("calculation_method")
+    fn = CALCULATION_REGISTRY.get(method)
+    if not fn:
+        raise ValueError(f"Unknown production model calculation_method '{method}'")
+
+    resolved: dict = {}
+    for spec in production_model.get("inputs", []):
+        key = spec["key"]
+        if input_values.get(key) is not None:
+            resolved[key] = input_values[key]
+        elif spec.get("default_value") is not None:
+            resolved[key] = spec["default_value"]
+        else:
+            raise ValueError(
+                f"Missing required production model input '{key}' ({spec.get('label', key)})")
+
+    result = fn(resolved)
+    result["resolved_inputs"] = resolved
+    return result
+
+
 def _apply_names(item: dict, names: dict[str, str]) -> dict:
     out = {**item}
     out["category_name"] = names.get(item.get("category_id"))
@@ -400,6 +539,7 @@ UPDATABLE_FIELDS = {
     "name", "description", "code", "category_id", "phase_id", "tags",
     "ai_keywords", "default_duration_days", "checklist_items", "document_kind",
     "status", "applicability", "trade", "unit", "requires_inspection",
+    "production_model",
 }
 
 

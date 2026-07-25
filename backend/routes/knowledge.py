@@ -62,6 +62,11 @@ class KnowledgeItemCreate(BaseModel):
     trade: Optional[str] = None
     unit: Optional[str] = None
     requires_inspection: bool = False
+    # Construction Knowledge Base v2 — Parametric Production Models,
+    # meaningful only for type="activity". None (the default) means "no
+    # production model" — default_duration_days above continues to work
+    # exactly as before this field existed.
+    production_model: Optional[dict] = None
 
 
 class KnowledgeItemUpdate(BaseModel):
@@ -80,6 +85,7 @@ class KnowledgeItemUpdate(BaseModel):
     trade: Optional[str] = None
     unit: Optional[str] = None
     requires_inspection: Optional[bool] = None
+    production_model: Optional[dict] = None
 
 
 class RelationshipCreate(BaseModel):
@@ -137,6 +143,7 @@ async def create_knowledge_item(req: KnowledgeItemCreate, user: dict = Depends(g
             checklist_items=req.checklist_items, document_kind=req.document_kind,
             status=req.status, applicability=req.applicability,
             trade=req.trade, unit=req.unit, requires_inspection=req.requires_inspection,
+            production_model=req.production_model,
         )
     except ValueError as e:
         _raise_for(e)

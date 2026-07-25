@@ -153,6 +153,30 @@ async def assign_workflow_activity(activity_id: str, req: AssignActivityRequest,
         _raise_for(e)
 
 
+class ProductionInputsRequest(BaseModel):
+    # Freeform dict of {parameter_key: value} - which keys are valid is
+    # determined entirely by the activity's own production_model.inputs
+    # (see knowledge_engine.calculate_production_model), not fixed here,
+    # so new parameter types never require a schema change to this
+    # request model either.
+    inputs: dict
+
+
+@router.post("/workflow-activities/{activity_id}/production-inputs")
+async def set_workflow_activity_production_inputs(activity_id: str, req: ProductionInputsRequest,
+                                                   user: dict = Depends(get_current_user)):
+    """Construction Knowledge Base v2 — sets this activity instance's
+    production model input values (e.g. its actual wall area) and
+    immediately recalculates. Open to any authenticated role, same as
+    /schedule — a supervisor measuring and entering the actual wall
+    area on-site is exactly the intended use, not a management-only
+    action."""
+    try:
+        return await workflow_engine.set_production_inputs(activity_id, req.inputs, actor=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/workflow-meta")
 async def workflow_meta(user: dict = Depends(get_current_user)):
     """Static vocab for the frontend Workflow Viewer's status vocabulary,

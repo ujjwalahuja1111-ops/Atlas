@@ -185,6 +185,15 @@ async def generate_workflow(project_id: str, template_id: str, *, actor: dict) -
             "assigned_to_user_name": None,
             "assigned_at": None,
             "assignment_history": [],
+            # Construction Knowledge Base v2 — Parametric Production
+            # Models. Populated only when a user sets project-specific
+            # input values (e.g. this project's actual wall area) via
+            # set_production_inputs below; both stay None/empty
+            # otherwise, and resolve_expected_duration falls back to
+            # default_duration_days exactly as before this feature
+            # existed — Preserve Existing Projects, unmodified.
+            "production_model_inputs": {},
+            "production_model_result": None,
             "created_at": now,
             "updated_at": now,
             "status_updated_by_user_id": actor["id"],
@@ -207,6 +216,7 @@ async def generate_workflow(project_id: str, template_id: str, *, actor: dict) -
 
     for doc in docs:
         await db.workflow_activities.insert_one({**doc})
+        doc["expected_duration_days"] = resolve_expected_duration(doc)
 
     return docs
 
@@ -220,7 +230,10 @@ async def list_workflow(project_id: str, *, user: dict) -> list[dict]:
 
 
 async def get_workflow_activity(activity_id: str) -> Optional[dict]:
-    return await db.workflow_activities.find_one({"id": activity_id}, {"_id": 0})
+    doc = await db.workflow_activities.find_one({"id": activity_id}, {"_id": 0})
+    if doc:
+        doc["expected_duration_days"] = resolve_expected_duration(doc)
+    return doc
 
 
 async def _enrich_many(items: list[dict]) -> list[dict]:
@@ -237,7 +250,7 @@ async def _enrich_many(items: list[dict]) -> list[dict]:
             for dep_id in item.get("depends_on_activity_ids", [])
             if dep_id in by_id
         ]
-        out.append({**item, "depends_on": deps})
+        out.append({**item, "depends_on": deps, "expected_duration_days": resolve_expected_duration(item)})
     return out
 
 
@@ -324,6 +337,72 @@ async def assign_activity(activity_id: str, assignee: Optional[dict], *, actor: 
             "$push": {"assignment_history": history_entry},
         },
     )
+    return await get_workflow_activity(activity_id)
+
+
+# ---------------------------------------------------------------------------
+# Construction Knowledge Base v2 — Parametric Production Models applied
+# to a project-scoped workflow activity instance.
+#
+# The production model itself (calculation_method, input declarations,
+# defaults) lives on the Activity knowledge item — see
+# knowledge_engine's PRODUCTION_MODEL section. This module only stores
+# this INSTANCE's specific input values (e.g. this project's actual
+# wall area) and the resulting calculation, and resolves which duration
+# a workflow activity should actually use.
+# ---------------------------------------------------------------------------
+
+def resolve_expected_duration(activity: dict) -> Optional[float]:
+    """Preserve Existing Projects (item 8): if this activity has a
+    computed production_model_result, its duration_days IS the expected
+    duration. Otherwise — no production model was ever applied, exactly
+    the situation for every activity that existed before this feature —
+    fall back to the original default_duration_days, completely
+    unmodified. Never raises: a missing/invalid production model result
+    is treated the same as "no production model," not an error.
+    """
+    result = activity.get("production_model_result")
+    if result and result.get("outputs", {}).get("duration_days") is not None:
+        return result["outputs"]["duration_days"]
+    return activity.get("default_duration_days")
+
+
+async def set_production_inputs(activity_id: str, input_values: dict, *, actor: dict) -> dict:
+    """Sets this workflow activity instance's production model input
+    values (e.g. its actual wall area for THIS project) and immediately
+    recalculates — "changing productivity should immediately affect
+    derived duration" (item 4) holds here too: since the calculation
+    always reads the activity template's CURRENT production_model
+    (never a cached copy), editing the template's default productivity
+    and then re-calling this (even with the same instance inputs)
+    picks up the new default right away.
+
+    Requires the underlying Activity knowledge item to actually have a
+    production_model — raises ValueError otherwise, the same "explicit
+    reason, never a silent wrong number" principle
+    knowledge_engine.calculate_production_model itself follows.
+    """
+    activity = await db.workflow_activities.find_one({"id": activity_id}, {"_id": 0})
+    if not activity:
+        raise WorkflowNotFoundError(f"Workflow activity '{activity_id}' not found")
+    await _assert_project_visible(activity["project_id"], actor)
+
+    template_activity = await knowledge_engine.get_item(activity["knowledge_activity_id"])
+    if not template_activity or not template_activity.get("production_model"):
+        raise WorkflowError(
+            f"Activity '{activity['name']}' has no production model — nothing to calculate.")
+
+    merged_inputs = {**activity.get("production_model_inputs", {}), **input_values}
+    result = knowledge_engine.calculate_production_model(
+        template_activity["production_model"], merged_inputs)
+
+    now = _now()
+    upd = {
+        "production_model_inputs": merged_inputs,
+        "production_model_result": {**result, "calculated_at": now},
+        "updated_at": now,
+    }
+    await db.workflow_activities.update_one({"id": activity_id}, {"$set": upd})
     return await get_workflow_activity(activity_id)
 
 
