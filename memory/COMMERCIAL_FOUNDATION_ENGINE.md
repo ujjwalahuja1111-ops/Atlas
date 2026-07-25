@@ -1,11 +1,23 @@
 # Atlas Commercial Foundation Engine
 ### Architecture & Domain Specification
 
-**Status:** Architecture only. No implementation, no frontend, no APIs, no database changes. Every recommendation below is written to be implementable confidently in focused, sequential sprints — not implemented here.
+**Status: Architecture Frozen (post peer review).** No implementation, no frontend, no APIs, no database changes. Every recommendation below is written to be implementable confidently in focused, sequential sprints — not implemented here. This document has been through an independent architectural peer review (see the Peer Review Log immediately below) and is now considered stable: no further structural redesign should be necessary before implementation begins.
 
 **Grounding:** this specification is written from how real construction projects are commercially managed — BOQs, RA bills, work packages, retention, variations, milestone billing, procurement packages — not from how generic project-management software models "budget" and "invoice." Where a generic-software concept (Payment Request, Client Agreement, Scope, Tax) does not correspond to a distinct real-world commercial artifact, this document says so and recommends against giving it independent existence, per the brief's own instruction not to assume every candidate deserves an entity.
 
 **Continuity:** this document extends, and does not contradict, the Commercial Layer sketch in the Atlas Domain Model (§6) and the Future Vision framing in the Atlas Product Bible. Where this document reaches a more specific conclusion than that earlier sketch (Work Package's role, Retention's exact shape, Tax's placement), the more specific conclusion here supersedes the sketch — the sketch was written before this domain had been studied in depth; this document is that study.
+
+---
+
+## Peer Review Log
+
+This document was written once, then independently reviewed as a distinct pass before being frozen — a real peer-review discipline, not a formality. The review confirmed most original decisions unchanged, refined several with genuine improvements, and **explicitly rejected one recommendation it was asked to evaluate**, with reasoning given in §3. Every change below is a refinement of the original architecture, not a redesign of it — the entity boundaries, ownership model, and integration matrix from the original specification all stand.
+
+**Confirmed unchanged, after scrutiny:** Contract lifecycle, Budget/Contract separation, Invoice's dual-billing-method model, the Retention ledger shape, the Decision-entity trigger scoping, and the core Integration Matrix.
+
+**Refined with genuine improvements:** BOQ Item now carries a permanent, human-readable identity code (§5) — a real gap in the original, not a stylistic change. Cost Codes are now hierarchical rather than flat (§5), matching real cost-accounting practice. Commercial Snapshot and the newly-proposed "Commercial Baseline" are resolved as one entity with a flag, not two competing ones (§2.2). A Quantity Ownership Matrix was added (§2.3) to make explicit what was previously only implied. Commercial Events are now a unified, append-only ledger — reusing Operations Engine's own proven CQRS pattern — rather than scattered per-entity events (§8). A deterministic Commercial Health model is defined, scoped precisely to avoid duplicating CRE (§8.4). Procurement's future extraction path is now documented explicitly (§11).
+
+**Rejected, with reasoning:** the brief's proposed richer Work Package lifecycle (Planned → Tendered → Awarded → Procurement → Execution → Measurement → Commercial Closure → Closed) was evaluated and **not adopted as the universal model** — see §3 for why forcing every Work Package through a competitive-tender gate would misrepresent how Atlas's own established smaller-residential customer base actually operates, and what was adopted instead.
 
 ---
 
@@ -75,7 +87,7 @@ Evaluated against the brief's candidate list. Each verdict states whether indepe
 | Work Package | Independent entity. | Evaluated in full in §3 — a genuine construction-native grouping concept, distinct from both BOQ and Workflow Activity. |
 | BOQ | Independent entity, with Sections and Items as owned sub-structures (not separate top-level entities). | The priced backbone of the contract. Sections/Items only ever exist inside a BOQ; they have no identity independent of it. |
 | BOQ Item | Sub-structure of BOQ (see above). | |
-| Cost Code | Independent entity. | Internal cost classification (labour/material/equipment/overhead), reused across Budget lines and BOQ items — genuinely a shared vocabulary, not owned by either. |
+| Cost Code | Independent entity, **hierarchical** (refined at peer review — see §5.1). | Internal cost classification (labour/material/equipment/overhead), reused across Budget lines and BOQ items — genuinely a shared vocabulary, not owned by either. A flat list was the original design; hierarchy is a genuine improvement, not cosmetic — see §5.1 for why. |
 | Budget | Independent entity. | Internal cost planning, deliberately distinct from the client-facing Contract/BOQ value. See §6. |
 | Variation Order | Independent entity. | A formal, approved change to contract scope or price. |
 | Change Request | Not independent — absorbed into Variation Order as its draft/pending state. | A Change Request and an approved Variation Order are the same underlying thing at two different lifecycle stages, not two different entities. Modeling them separately would duplicate exactly what a state machine already exists to represent. |
@@ -84,16 +96,40 @@ Evaluated against the brief's candidate list. Each verdict states whether indepe
 | Invoice | Independent entity, generalized to represent both of construction's two real billing methods (RA Bill and Milestone Bill) as one entity with a billing_method field — not two separate entities. | See §5 and §8 — an RA Bill and a milestone-triggered bill differ in what determines the amount, not in what they fundamentally are (a billing document raised against a contract). |
 | Payment Request | Not independent. | The closest real analogue — an advance or milestone payment ask before formal billing — is adequately represented by an Invoice in an early lifecycle state (see §4's lifecycle), not a second entity. |
 | Payment | Independent entity. | Money actually received — deliberately distinct from Invoice, since an invoice can be partially paid over time. |
-| Retention | Not an independent top-level entity — modeled as a Contract-level policy plus a running ledger of withheld/released amounts tied to Invoices. | See §6.4 — retention is genuinely stateful (withheld per bill, released in tranches after the defect liability period) but that state is naturally a ledger of Invoice-linked entries, not a freestanding entity with its own top-level lifecycle independent of the bills it was withheld from. |
+| Retention | Not an independent top-level entity — modeled as a Contract-level policy plus a running ledger of withheld/released amounts tied to Invoices. | See §8.1 — retention is genuinely stateful (withheld per bill, released in tranches after the defect liability period) but that state is naturally a ledger of Invoice-linked entries, not a freestanding entity with its own top-level lifecycle independent of the bills it was withheld from. |
 | Tax | Not independent — a computed component of Invoice (and, where rates vary by item, of BOQ Item). | Tax has no identity or lifecycle of its own; it is always a calculated attribute of something else. |
 | Forecast | Not independent — a component of the Budget Model. | See §6 — Forecast Budget is one of Budget's own tracked values, not a competing calculation the way a separate Forecast entity would risk becoming. |
-| Commercial Snapshot | Independent entity. | A point-in-time, immutable capture of a project's full commercial state — mirroring the same pattern Construction Reasoning already uses for its own historical runs. Genuinely useful for audit, reporting, and — critically — the AI training signal described in §10, which needs comparable snapshots over time, not just current state. |
+| Commercial Snapshot | Independent entity, **with Baseline as a flag on it, not a second entity** (resolved at peer review — see §2.2). | A point-in-time, immutable capture of a project's full commercial state — mirroring the same pattern Construction Reasoning already uses for its own historical runs. Genuinely useful for audit, reporting, and — critically — the AI training signal described in §10, which needs comparable snapshots over time, not just current state. |
+
+### 2.2 Commercial Snapshot vs. Commercial Baseline — resolved
+
+Peer review raised a specific question: should the entity originally called Commercial Snapshot instead be called Commercial Baseline, or should both exist as distinct concepts? Neither renaming nor two competing entities is correct — the two ideas serve genuinely different purposes, and the right resolution is one entity with a flag, not two.
+
+A **Snapshot** (the general case) is a periodic or on-demand, immutable capture of a project's full commercial state — taken as often as is useful, purely for historical record and the AI training signal in §10.
+
+A **Baseline** is a *specific kind* of snapshot: one deliberately marked as the frozen reference point variance is measured against — the original baseline at contract activation, and, in real construction practice, a **new** baseline re-established after each major approved Variation Order (standard earned-value management practice: you do not measure variance against a plan that no longer reflects the agreed scope). This is not a different entity with a different lifecycle — it is the same Commercial Snapshot record, with an `is_baseline` flag and a `baseline_reason` field (`contract_activation`, `major_variation_approved`, `manual`).
+
+**Recommendation: one entity, Commercial Snapshot, with the baseline flag.** Introducing Commercial Baseline as a second entity would mean two records could exist for the same point in time with no structural link between them — precisely the "no duplicate truth" violation this entire specification exists to avoid. The flag captures everything the distinction needs without paying that cost.
+
+### 2.3 Quantity Ownership Matrix
+
+Atlas tracks the "same" real-world quantity — how much of something exists or was built — through several genuinely different lenses, at different points in a project's life, owned by different engines. Peer review asked for this to be made explicit rather than left implicit across several documents; it is a real gap worth closing precisely, because a quantity silently conflated across these rows is one of the most likely sources of a serious, hard-to-detect error in this entire domain.
+
+| Quantity | What it represents | Owning engine | Notes |
+|---|---|---|---|
+| **Contract Quantity** | What was agreed to be built, priced in the BOQ. | Commercial Foundation Engine | The BOQ Item's own `quantity` field (§5). Changes only through an approved Variation Order. |
+| **Calculated Quantity** | A quantity *derived* from a parametric definition (e.g., a project's actual wall area, computed from its own dimensions). | Knowledge Engine (the calculation/definition) | The per-project *resolved value* is stored on the Workflow Activity instance today — but storage location is not the same as ownership. Knowledge Engine's `CALCULATION_REGISTRY` remains the sole authority on *how* this number is derived; Workflow Engine is correctly just where a specific project's resolved result happens to live. |
+| **Executed Quantity** | What has actually been physically built, as measured on site. | Future Measurement Engine | Distinct from Contract Quantity by design — an RA Bill is computed from this number, never the contracted one (§5). |
+| **Verified Quantity** | Executed Quantity after joint or engineer certification. | Future Measurement Engine | Usually equal to Executed Quantity; occasionally corrected during verification. Modeled as a status on the same measurement record, not a second, separately-tracked number, unless a real discrepancy is recorded — in which case the correction itself is the auditable fact worth keeping, matching Atlas's platform-wide "corrections are additions, not overwrites" principle. |
+
+**Explicit principle, stated plainly because it is easy to violate by accident: Workflow Engine never owns a quantity's *definition or authoritative value* — only, where a Production Model input happens to already be stored there today, its *resolved value for one project instance*.** The distinction matters because it is exactly the kind of boundary that erodes silently if not stated: a future engineer extending Workflow Activity with a new field that looks like "the amount of X" is the specific mistake this row exists to prevent.
 
 ### Presentation Summary
 - Nine candidate concepts were evaluated and correctly not given independent existence: Client Agreement (= Contract), Scope (derived from BOQ + Variations), Change Request (= Variation Order's draft state), Milestone (reused from Workflow/STAGE_ORDER), Payment Request (= an early-state Invoice), Tax (a computed attribute), and Forecast (a Budget component).
 - Nine concepts were confirmed as genuinely independent entities: Contract, Work Package, BOQ, Cost Code, Budget, Variation Order, Procurement Package, Invoice, Payment, plus Commercial Snapshot.
 - Every "not independent" verdict follows the same principle already established elsewhere in Atlas: no duplicate truth, no two records of the same real-world fact.
 - Invoice is deliberately generalized to cover both RA billing and milestone billing as one entity — they differ in how the amount is determined, not in what they fundamentally are.
+- Peer review resolved two open questions precisely: Baseline is a flag on Snapshot, not a second entity; and every quantity in this domain now has an explicit, single owner, with storage location and authoritative ownership deliberately distinguished.
 
 ---
 
@@ -130,16 +166,32 @@ graph TD
 
 This directly matches, and confirms, the brief's own worked diagram: Work Package -> BOQ -> Activities -> Production Models -> Resources -> Measurements -> Documents -> Commercial -> Client Decisions — with one clarification this document adds precisely: the Activities link is a reference, not ownership, and Resources (labour/material/equipment allocation) is itself a future capability (§11), represented here as Procurement Package for the purchasing side of "resources" that already has a clear place in this architecture today.
 
-### Lifecycle
+### Lifecycle — evaluated and refined, not wholesale-adopted
+
+The original lifecycle (Planned → Active → Complete) was reviewed against a proposed richer alternative: Planned → Tendered → Awarded → Procurement → Execution → Measurement → Commercial Closure → Closed. **The richer lifecycle is not adopted as the universal model, and it is worth being precise about why, because the reasoning matters more than the conclusion.**
+
+"Tendered" and "Awarded" describe competitive sub-contracting — a Work Package put out for bid among multiple vendors, then formally awarded to one. This is real, common practice on large EPC-style projects. It is **not** how Atlas's own established customer base — smaller residential builds, the ₹50 lakh–5 crore projects the Client Experience specification is written for — typically operates: a Work Package there is usually executed directly by the contractor's own crew, procured from a known vendor, with no competitive tender step at all. Making Tendered/Awarded **mandatory** states every Work Package must pass through would force EPC-scale formality onto every project Atlas serves, including the ones that will never see a competitive tender — which is precisely the mistake the original specification's own grounding principle warns against: adapting construction to fit the software's assumptions, rather than the reverse.
+
+**What is adopted instead:** the lifecycle gains one genuinely universal stage — **Procurement** — because every Work Package, tendered or not, genuinely does need its materials/vendors committed before execution can begin; this is true on a small residential build exactly as it is on an EPC project, so it belongs in the universal backbone. Tendered/Awarded are **not** added as mandatory gates. Instead, they are supported as an **optional path within Procurement**: a Work Package whose linked Procurement Package genuinely went through a competitive RFQ process (the future Procurement Engine's own capability, §11) can record that its Procurement stage included a tender — without every other Work Package being forced through a state that never applied to it.
 
 ```mermaid
 stateDiagram-v2
     [*] --> planned: defined at contract/BOQ setup
-    planned --> active: linked Workflow Activities begin execution
+    planned --> procurement: materials/vendors being committed
+    procurement --> active: execution begins (Workflow Activities in progress)
     active --> substantially_complete: measured progress crosses threshold
-    substantially_complete --> complete: final measurement/billing settled
+    substantially_complete --> commercial_closure: final measurement and billing settled
+    commercial_closure --> complete
     complete --> [*]
+
+    note right of procurement
+        Optionally includes a tender/award
+        step if sourced competitively -
+        never a mandatory universal gate
+    end note
 ```
+
+This also folds in "Measurement" and "Commercial Closure" from the proposed richer lifecycle — both genuinely useful, unlike Tendered/Awarded, because every Work Package (regardless of project scale) does need its final quantities measured and its billing formally settled before it can be considered complete. The distinction that matters: **Measurement and Commercial Closure describe something every Work Package goes through; Tendered/Awarded describe something only some do.** A universal lifecycle should only mandate the former.
 
 ### Consumers
 Budget (cost roll-up), Client Experience (a future "progress by work package" view, more digestible than either raw BOQ or raw activity list), Portfolio Intelligence (a future cross-project "which category of work typically overruns" signal — directly feeding §10's AI readiness goals), and Procurement (which vendors/packages are tied to which piece of scope).
@@ -212,7 +264,19 @@ graph TD
 
 BOQ belongs to exactly one Contract. Section is a pure organizational grouping within a BOQ (matching how a real BOQ document is structured — Civil, MEP, Finishes, etc.) with no commercial meaning of its own beyond grouping. Item is the actual priced line: description, unit, quantity, rate, and the computed amount (quantity × rate) — the one place in this entire domain model where a number is genuinely calculated, and it should be calculated the same deterministic way every other calculated value in Atlas is (see the Production Model precedent — a plain, explicit, testable calculation, never a stored formula string).
 
-Cost Code classifies a BOQ Item for internal reporting (labour/material/equipment/overhead) independently of which Section it's organizationally filed under — the same item can be "in the Civil Works section" and "classified as Material cost" simultaneously; these are two different groupings serving two different purposes (client-facing organization vs. internal cost analysis), and Cost Code is what makes Budget's cost-type breakdown (§6) possible at all.
+Cost Code classifies a BOQ Item for internal reporting (labour/material/equipment/overhead) independently of which Section it's organizationally filed under — the same item can be "in the Civil Works section" and "classified as Material cost" simultaneously; these are two different groupings serving two different purposes (client-facing organization vs. internal cost analysis), and Cost Code is what makes Budget's cost-type breakdown (§6) possible at all. **Cost Code and Work Package are easy to confuse and worth distinguishing explicitly: Cost Code groups by the *nature* of the cost (what kind of expense), Work Package groups by the *scope* of the work (what physical piece of the project). They are orthogonal axes — a single Work Package spans many Cost Codes, and a single Cost Code appears across many Work Packages — not two names for the same grouping.**
+
+### 5.0 BOQ Item Identity — a genuine gap, closed at peer review
+
+The original specification gave BOQ Item a database identity but never a **permanent, human-readable code** — the "CW-001" style reference a real BOQ document, a real measurement sheet, and a real vendor invoice all already use in practice. This was a real omission, not a stylistic one: a database ID is opaque and internal; a site engineer writing up a measurement, a vendor referencing a purchase order, and an AI system extracting structure from a voice note describing "item CW-001" all need a *stable, meaningful* identifier that exists independently of Atlas's own internal storage. Every future consumer of a BOQ Item — Measurement, Billing, Procurement, Production Models, Cost Tracking, AI Analysis — should reference this code, not the database id, wherever a human or an external document is the origin of the reference.
+
+**Recommendation:** every BOQ Item carries a permanent `item_code` (e.g., `CW-001`), assigned once at BOQ creation, immutable thereafter, unique within its BOQ. This code — not the internal id — becomes the field an RA Bill line item cites, a Procurement Package's material request references, and an AI extraction from a field voice note ("we're short on item CW-001") resolves against.
+
+### 5.1 Hierarchical Cost Codes — a genuine improvement, adopted
+
+The original specification modeled Cost Code as a flat classification list. Peer review recommended expanding this to a hierarchy — e.g., `1000 Civil → 1100 Concrete → 1110 PCC → 1120 RCC → 1200 Masonry` — matching how construction cost accounting is actually done in practice (the same structural idea behind established standards like CSI MasterFormat). **This is adopted.**
+
+The long-term reporting benefit is specific and real: a flat list forces a choice between granularity (many flat codes, hard to summarize) and usefulness (few flat codes, too coarse to analyze). A hierarchy removes the tradeoff — a report can roll up to "total Civil cost" or drill into "just RCC" from the identical underlying data, with no second classification scheme required for the coarser view. This directly strengthens §10's AI-readiness signals too: "Cost Overruns by Cost Code" becomes meaningful at whatever level of granularity a future analysis needs, from broad trade category down to a specific sub-classification, without the data model changing.
 
 ### Integration with Production Models
 
@@ -223,7 +287,9 @@ This is where BOQ Architecture and Knowledge Base v2's parametric Production Mod
 A BOQ Item's contracted quantity (what was agreed) and its executed quantity (what has actually been measured and verified as complete) are deliberately two different numbers, tracked separately — an RA Bill is computed from the executed quantity, never the contracted one. This document defines the shape that distinction requires (a BOQ Item must be able to carry both an original quantity and an accumulating measured-to-date quantity) without building the Measurement Engine itself; the measured-to-date figure is populated by whatever future capture mechanism that engine provides, and this architecture is designed so that populating it is additive — it does not require restructuring the BOQ Item itself.
 
 ### Presentation Summary
-- BOQ -> Section (organizational grouping) -> Item (the actual priced line) -> Cost Code (independent internal cost classification, orthogonal to Section).
+- BOQ -> Section (organizational grouping) -> Item (the actual priced line) -> Cost Code (independent internal cost classification, orthogonal to Section, orthogonal to Work Package too).
+- Every BOQ Item now carries a permanent, human-readable item_code (e.g. CW-001) — the real, stable reference every downstream consumer (Measurement, Procurement, AI) should use, not an opaque internal id.
+- Cost Codes are now hierarchical, matching real construction cost-accounting practice — enabling roll-up reporting at any level from the same underlying data, with no second classification scheme needed.
 - Amount is always calculated deterministically (quantity x rate) — the same explicit-calculation discipline the Production Model registry already established.
 - A BOQ Item can share its quantity directly with an existing Production Model calculation, rather than re-entering a number Atlas already knows — a direct, concrete "no duplicate truth" win.
 - BOQ Items are designed to carry both contracted and measured-to-date quantities from day one, so a future Measurement Engine can populate the latter additively, without restructuring this layer.
@@ -310,21 +376,46 @@ Advance Payment is an early-lifecycle Invoice (§2's resolution of "Payment Requ
 
 Milestone-triggered billing (Foundation Complete -> Milestone Bill) reads a Workflow Activity's status or a project's STAGE_ORDER position directly — exactly the mechanism the Client Experience Sprint's own Project Timeline already uses to translate internal stage data into client-facing milestones, now reused as a billing trigger rather than only a display one. This is the same derived-data principle applied a second time, to a second consumer, without inventing a second way to determine "has this stage been reached."
 
-RA Bills are the recurring, measurement-driven billing method — each one computed from the BOQ Items' measured-to-date quantities (§5), cumulative, with the previous bill's amount deducted so each RA Bill represents only the new progress since the last one, and retention withheld per the Contract's policy (§6.4 below expands this).
+RA Bills are the recurring, measurement-driven billing method — each one computed from the BOQ Items' measured-to-date quantities (§5), cumulative, with the previous bill's amount deducted so each RA Bill represents only the new progress since the last one, and retention withheld per the Contract's policy (§8.1 below expands this).
 
 Variation Orders, once approved, modify the BOQ that subsequent RA Bills are computed from — a variation approved between RA Bill 1 and RA Bill 2 is reflected automatically in RA Bill 2's calculation, because RA Bill always reads the BOQ's current state, never a snapshot frozen at contract signing.
 
 Final Bill settles all remaining measured quantity once execution is complete. Retention Release follows the defect liability period, per Contract policy — the point the Contract itself reaches closed.
 
-### §6.4 — Retention, precisely
+### 8.1 — Retention, precisely
 
 Retention is withheld as a percentage of each RA Bill (and typically the Final Bill), not deducted once at the end — meaning the correct model is a running ledger: each Invoice of billing_method=ra_bill carries a retention_withheld amount (computed from the Contract's retention percentage), and the Contract's total retention balance is the sum of every such entry across every invoice raised, minus every release recorded against it. Release itself may happen in tranches (a partial release at practical completion, a final release at the end of the defect liability period) — modeled as its own small entry type (a Retention Release record, linked to the Contract, with an amount and a date) rather than a single "release" flag, because real contracts genuinely do release retention in more than one step.
 
+### 8.2 — Advance Payment recovery (independent addition — see §13)
+
+The original specification named Advance Payment as an early-lifecycle Invoice but did not address how it is actually recovered. In real practice, an advance is not simply given — it is *recovered* proportionally against subsequent RA Bills (a fixed percentage deducted from each RA Bill until the advance is fully offset), structurally the same shape as Retention's own withholding: a running ledger of deductions against a known total, tracked to zero. **This is modeled using the identical ledger pattern already established for Retention** (§8.1) — an `advance_recovered` amount on each RA Bill, with the Contract's outstanding advance balance being the original advance minus the cumulative recovery — rather than inventing a second mechanism for what is structurally the same problem.
+
+### 8.3 Commercial Events — a unified ledger, not scattered per-entity events
+
+The original specification implied commercial events (an invoice raised, a payment received, a variation approved) reach Timeline Engine as individual notifications from whichever entity produced them. Peer review evaluated introducing a single, generic **Commercial Event** abstraction instead — and this is adopted, for a specific reason: **it is not a new pattern for Atlas, it is the direct reuse of one that already works.** Operations Engine's own `operational_events` collection is exactly this — an append-only ledger every mutation writes to, which downstream consumers read from as a single feed rather than needing to understand every operational item's own internal update logic. Commercial Foundation Engine should adopt the identical shape: a `commercial_events` ledger, with entries like `contract_activated`, `invoice_raised`, `invoice_paid`, `variation_approved`, `budget_revised`, `retention_released`, each carrying a reference to the entity that produced it and a snapshot of the relevant facts at that moment.
+
+This simplifies Timeline Engine's own job — one feed to compose from, not an ever-growing list of entity-specific event types it needs to know about individually — and gives the Commercial Foundation Engine its own audit trail for free, in the same CQRS shape Operations Engine has already proven at scale within Atlas.
+
+### 8.4 Commercial Health — deterministic indicators, not a second reasoning engine
+
+Peer review asked whether Commercial Foundation Engine should publish deterministic commercial health indicators, explicitly *without* building CRE-style reasoning logic into this specification. The answer is yes, scoped precisely: Commercial Foundation Engine computes and publishes plain, auditable indicators, directly from its own data — it does not evaluate rules, does not produce findings with severity, and does not decide what a project's overall health *means*. That synthesis remains CRE's job, exactly as the original Integration Matrix (§9) already described as a future, optional, one-directional read.
+
+| Indicator | Deterministic definition |
+|---|---|
+| Budget Risk | Current Cost trending toward or exceeding Approved Budget, at the current burn rate. |
+| Cash Flow Risk | Outstanding (raised but unpaid) Invoice value as a proportion of recent Payment inflow. |
+| Payment Delay | Days between an Invoice's due date and actual Payment date, for currently-overdue invoices. |
+| Variation Exposure | Cumulative approved Variation value as a percentage of original Contract value. |
+| Margin Risk | Forecast Budget approaching or exceeding Contract value (the gap that represents profit narrowing). |
+
+**These five indicators are Commercial Foundation Engine's own published output — not a CRE finding.** A future CRE integration would *consume* them the same way it consumes Workflow/Operations data today, potentially producing a genuine finding like "this project's margin risk and schedule variance are both worsening together" — but that synthesis, and the judgment about what it means for overall project health, stays CRE's, never duplicated here.
+
 ### Presentation Summary
-- Commercial events are entries in Atlas's existing composed Timeline, never a separate, competing project history.
+- Commercial events are entries in Atlas's existing composed Timeline, never a separate, competing project history — now formalized as a unified Commercial Event ledger, directly reusing Operations Engine's own proven CQRS pattern rather than inventing a new one.
 - Milestone billing reuses the exact same Workflow-stage-derived mechanism the Client Experience Sprint's Project Timeline already established for display — now reused for billing, without a second way of determining "has this stage been reached."
 - RA Bills always compute from the BOQ's current state, so an approved Variation Order is reflected automatically in the next bill, with no manual reconciliation step.
-- Retention is modeled as a running ledger across every RA Bill withheld, with release itself supporting multiple tranches — matching how retention genuinely works on real contracts, not a single end-of-project flag.
+- Retention and Advance Payment recovery are both modeled as running ledgers with the identical shape — two real construction mechanics, one proven pattern, not two.
+- Five deterministic Commercial Health indicators are defined as this engine's own published output — explicitly not a second reasoning engine; synthesis into an overall judgment remains CRE's job alone.
 
 ---
 
@@ -377,21 +468,29 @@ Design principle held throughout this section: every signal is defined as a calc
 
 How the Commercial Foundation Engine should relate to capabilities that don't exist yet, and to external systems, without becoming tightly coupled to any of them:
 
+**Procurement Engine (the clearest, most concrete future extraction).** Procurement Package remains inside the Commercial Foundation Engine for Version 1 — it is not yet complex enough to justify a dedicated engine, and vendor-facing purchasing genuinely is a commercial concern this engine should own at V1's scale. But the boundary for a future, dedicated Procurement Engine is worth naming precisely now, so V1's model doesn't have to be restructured to support the extraction later: a future Procurement Engine would own **RFQs, Vendor Quotations, Quote Comparison, Purchase Orders, Delivery Tracking, Material Receipts, and Vendor Performance** — the full purchasing lifecycle Procurement Package today only summarizes as a single commitment. V1's Procurement Package should therefore be scoped narrowly and deliberately — vendor, amount committed, linked Work Package/Cost Code, status — so that when the fuller engine is built, Procurement Package becomes that engine's *summary record* (what a Work Package needs to know: total committed, current status) while the new engine owns the detailed process underneath it, rather than V1's Procurement Package needing to be torn apart and rebuilt.
+
 Measurement Engine — the Commercial Foundation Engine defines the data shape (BOQ Item's contracted vs. measured-to-date quantity, §5) that a future Measurement Engine populates. The relationship is additive by design: Measurement Engine's job is to get a verified quantity into that field; it never needs to restructure BOQ itself to do so.
 
 Decision Engine — as established in §7, the Commercial Foundation Engine is precisely the trigger condition the Domain Model named for finally building a first-class Decision entity, scoped specifically to commercial approvals (Variation Orders, and eventually Payment approvals) in the same implementation phase as this engine.
 
+**Resource Engine — a genuinely adjacent, not overlapping, future concern.** A future Resource Engine would own labour/crew and equipment *allocation* — assigning a resource to a piece of work — which is a different concern from Procurement Package's scope (vendor-sourced purchasing). The two relate without requiring any change to the Commercial model: Resource Engine would *reference* a Procurement Package where a resource was vendor-sourced (e.g., "this excavator was procured via Procurement Package X, now allocated to Work Package Y") — a one-directional read, exactly like every other future integration in this section. Commercial Foundation Engine never needs to know about allocation; Resource Engine never needs to duplicate procurement data.
+
 Document Engine — every Contract, Invoice, and Variation Order will eventually need to reference a real, uploaded document (the signed contract PDF, the invoice document, supporting photos for a variation). The Commercial Foundation Engine should reference Document Engine's future entities for file storage, never reimplement document storage itself — this specification's entities should carry a document_ids reference field where relevant, ready for that future engine to populate, rather than needing modification when Document Engine arrives.
 
-Notification Engine — payments due, variations pending approval, and milestones reached are natural, high-value notification triggers, exactly the pattern the Domain Model's own Notification specification already describes: Commercial Foundation Engine publishes the state change; Notification Engine observes and decides how and to whom to alert; Commercial Foundation Engine never becomes a second place "should this person be notified" gets decided.
+Notification Engine — payments due, variations pending approval, and milestones reached are natural, high-value notification triggers, exactly the pattern the Domain Model's own Notification specification already describes: Commercial Foundation Engine publishes the state change (now concretely, via the Commercial Event ledger, §8.3); Notification Engine observes and decides how and to whom to alert; Commercial Foundation Engine never becomes a second place "should this person be notified" gets decided.
 
 Business Intelligence — the AI-readiness signals in §10 are precisely Business Intelligence's future raw material — this section is written to be that future engine's direct input, without Business Intelligence needing its own copy of the same commercial data.
+
+**Future Tender Engine — Atlas currently begins at Contract Award, and this is a deliberate, acknowledged boundary, not an oversight.** A future Tender Engine would own the pre-contract process — RFP issuance, bid submission, bid comparison, award decision — entirely upstream of anything this specification models. The integration point is already natural and requires no change to what's specified here: a Tender Engine's awarded bid becomes a Contract entering `draft` (§4) — the exact same entry point a Contract assembled without any tender process would use. No structural accommodation is needed now; the boundary is simply worth stating explicitly, so a future Tender Engine's implementer knows precisely where their engine's output is expected to hand off, rather than needing to discover it by reading Contract's lifecycle from scratch.
 
 ERP Systems and Accounting Software — the correct integration boundary is a defined export/sync interface, not deep coupling: Atlas publishes commercial facts (invoices raised, payments recorded, budget positions) in a well-defined shape; an external accounting system consumes them into its own books. Atlas should never attempt to become an accounting system, and should never require an external ERP's data model to shape Atlas's own entities. The specific integration mechanism (API, scheduled export, webhook) is implementation detail for whichever future sprint builds this bridge — the architectural commitment made here is only the boundary: one-directional publication of facts outward, never a live, bidirectional dependency on an external system's own data model.
 
 ### Presentation Summary
 - Every future integration point is designed as an additive, one-directional relationship — Commercial Foundation Engine publishes facts; other engines and systems consume, observe, or store against them.
-- Measurement Engine populates a field this architecture already defines; Document Engine is referenced, never reimplemented; Notification Engine observes state changes without Commercial Foundation Engine deciding who gets notified.
+- Procurement Package's V1 scope is deliberately narrow so a future Procurement Engine can absorb the full RFQ-to-Vendor-Performance lifecycle without V1's model needing to be rebuilt — Procurement Package becomes that engine's summary record, not a discarded one.
+- Resource Engine and Procurement Package are adjacent, not overlapping — allocation vs. purchasing — related only by a one-directional reference.
+- A future Tender Engine's natural handoff point (an awarded bid becomes a Contract entering draft) already exists in this specification's Contract lifecycle — named explicitly now so it doesn't need rediscovering later.
 - ERP/Accounting integration is explicitly scoped as fact-publication outward, never a live, bidirectional dependency on an external system's data model — Atlas never becomes, or is shaped by, an accounting system.
 - This section confirms, concretely, that the Decision Engine's build trigger (named in the Domain Model) is met by this specification.
 
@@ -417,6 +516,93 @@ Technical debt. None yet — this is a pure specification with no implementation
 
 ---
 
+## 13. Independent Architectural Review
+
+This section deliberately sets aside every recommendation evaluated above and asks: reviewing this architecture as if it were my own company's, what would I add, question, or challenge that hasn't come up yet?
+
+### Missing abstraction: client-facing BOQ granularity is unaddressed
+
+The original specification says Client Experience reads "Contract value, Invoice/Payment history, pending Variation Orders" but never states *how much BOQ detail* a client actually sees. This matters more than it first appears: real practice is that a client typically sees a **summarized** view — by Work Package or Section — not the full line-item BOQ with individual rates, because a contractor's item-level rate breakdown is commonly treated as their own pricing detail, not something owned jointly with the client the way the total contract value is. This specification should say so explicitly rather than leaving it to be decided ad hoc when Client Experience's financial views are eventually built: **Client Experience should read BOQ data aggregated to Work Package or Section level by default; item-level detail is not assumed client-visible.** This is a genuine gap, not a nitpick — get it wrong and either a client is confused by a hundred-line BOQ, or a contractor's internal pricing detail is exposed to a client who never should have seen it.
+
+### Construction industry practice not yet modeled: price escalation
+
+Longer-duration contracts commonly include price escalation clauses — a formula-driven rate adjustment tied to a material cost index, protecting both parties from long-duration price risk. Nothing in this specification, including this review, models it. This is named explicitly as a **known gap**, not a silent omission: BOQ Item rates today are treated as fixed for the contract's duration, and a genuinely long-running project with an escalation clause would need this specification extended before it could be modeled correctly. Recommended for a future version, not V1 — Atlas's established project durations (residential builds, months not years) make this a real but lower-priority gap than the ones already addressed above.
+
+### Data relationship valuable for AI, correctly out of this engine's scope
+
+Construction delay is heavily weather- and season-influenced, and a future correlation between commercial variance (cost overruns, schedule slippage reflected in billing patterns) and weather/seasonal data would be a genuinely valuable Business Intelligence signal. This is named here deliberately as an **observation, not a recommendation for this engine** — weather/season data has no natural home in Commercial Foundation Engine, and forcing it in would violate this document's own "no data captured without an operational purpose" principle (§10). The correct home, if this is ever pursued, is a future Business Intelligence capability correlating Commercial Foundation Engine's own data (already collected for real operational reasons) against an external weather data source — never a field this engine itself needs to own.
+
+### Presentation Summary
+- Client-facing BOQ granularity was an unaddressed gap: resolved here as Work-Package/Section-level by default, never item-level rate detail, protecting both client clarity and contractor pricing confidentiality.
+- Price escalation clauses are named as a known, real gap — not modeled in this specification, correctly deferred rather than silently ignored.
+- A weather/seasonal correlation with commercial variance is named as a genuinely interesting future BI signal, explicitly kept out of this engine's own scope, consistent with §10's own data-capture discipline.
+
+---
+
+## 14. Long-Term Construction Intelligence (5–10 years)
+
+What will construction companies wish they had captured from day one, a decade from now? Three answers, each already achievable within this specification's existing fields — no speculative new capability required, only discipline in capturing what's already modeled, consistently, from the start:
+
+**Which BOQ items, by Cost Code, are consistently under- or over-priced relative to what they actually cost to deliver** — directly answerable from §10's Budget Accuracy signal, cross-referenced against the hierarchical Cost Code structure adopted in §5.1, *if* every project consistently populates Cost Code from day one rather than treating it as optional. The long-term value here is entirely contingent on present-day discipline, not on any future capability.
+
+**Which Work Package types, on which kind of project (by scale — directly available via Knowledge Base v2's own Production Model inputs, e.g. a project's total built-up area), reliably see the most Variation Order activity** — a genuinely predictive signal ("villas over a certain size in this region consistently see 15%+ scope growth in MEP work") only available because Work Package (§3), Variation Order (§7), and Production Model quantities (§5's integration) were all kept as clean, separately-owned entities related through shared structure rather than merged for short-term convenience.
+
+**The true, fully-loaded cost of a client relationship**, not just a project — a future capability, once a client's data spans multiple contracts, of aggregating Payment Delay and Variation Frequency (§10) *by client* rather than only by project. Nothing in this specification prevents this today (Contract already relates to a client User, per the Domain Model's identity model) — it is named here specifically so a future implementer doesn't discard client-level rollup as out of scope, when the underlying data relationship already exists.
+
+### Presentation Summary
+- The highest long-term value is not a new field to add now — it is disciplined, consistent use of Cost Code and Work Package from day one, since both already unlock powerful future analysis if populated faithfully.
+- Cross-referencing Work Package variation activity against Knowledge Base v2's own project-scale data is a genuinely predictive signal, available only because these entities were kept cleanly separate and related, not merged.
+- Client-level (not just project-level) commercial rollup is already possible from this specification's existing relationships — named explicitly so it isn't overlooked later.
+
+---
+
+## 15. Future Engine Readiness — confirmed
+
+Reviewed against every future engine named in this sprint's brief. Improvements were made where a genuine gap existed (Procurement, Resource, Tender — all addressed in §11); the remainder were already sound and are confirmed, not re-litigated:
+
+| Future Engine | Integration boundary | Status |
+|---|---|---|
+| Resource Engine | References Procurement Package for vendor-sourced resources; Commercial model unchanged. | Clarified this review (§11). |
+| Measurement Engine | Populates BOQ Item's measured-to-date quantity field. | Sound in the original specification; unchanged. |
+| Decision Engine | Built alongside Variation Order, scoped to commercial approvals. | Confirmed, now concretely triggered (§7, §11). |
+| Procurement Engine | Absorbs the full RFQ-to-Vendor-Performance lifecycle; V1 Procurement Package becomes its summary record. | Clarified this review (§11). |
+| Document Engine | Referenced via document_ids, never reimplemented. | Sound in the original specification; unchanged. |
+| Communication Engine | Not separately named in the original specification — but this document's own structured client communication concept (from the Client Experience specification's Communication Centre) already establishes the pattern any future Communication Engine should extend, not replace. | Confirmed via existing precedent; no new boundary needed. |
+| Notification Engine | Observes the Commercial Event ledger (§8.3); never decides commercial state. | Strengthened this review — a concrete ledger to observe, not an implied one. |
+| Business Intelligence | Consumes §10's deterministic signals directly. | Sound in the original specification; unchanged. |
+| AI Layer | Consumes deterministic outputs only (§10's signals, §8.4's health indicators) — never a path for AI to write commercial state. | Confirmed and strengthened — §8.2's Commercial Health indicators are an additional, concrete deterministic surface AI can safely read. |
+
+### Presentation Summary
+- Every future engine named in the brief has a confirmed, one-directional integration boundary — three were genuinely strengthened this review (Resource, Procurement, Notification), the rest were already sound.
+- Communication Engine has no dedicated boundary of its own yet, but the Client Experience specification's existing Communication Centre already establishes the pattern a future engine should extend.
+- The AI Layer boundary is now stronger, not just preserved — §8.4 gives it a second, genuinely deterministic surface (Commercial Health) to read from, on top of §10's original signals.
+
+---
+
+## 16. Architecture Health Assessment
+
+**Strengths.** Every entity has exactly one owner, confirmed explicitly (§2.0). No duplicate truth was found or introduced anywhere in this domain, including after this review's own additions. Retention and Advance Recovery — two genuinely different real-world mechanics — are modeled with one proven ledger pattern, not two. The Commercial Event ledger reuses Operations Engine's own proven CQRS shape rather than inventing a new one. Every integration with existing Atlas engines remains strictly one-directional even after this review's additions.
+
+**Weaknesses.** Price escalation is a named, real gap (§13) — a genuinely long-duration contract cannot yet be fully modeled. Client-facing BOQ granularity was underspecified until this review; it is resolved now, but its absence in the original specification is a fair criticism of the first pass. This specification, even after review, remains unimplemented — its actual soundness under real data volume and real edge cases can only be confirmed once building begins.
+
+**Risks.** The RA Bill incremental-calculation performance risk named in the original §12 review stands, unchanged and unresolved by this pass — worth flagging again rather than assuming it was addressed simply because this document has been reviewed. The procedural risk named in the original §12 (a future sprint silently reintroducing an entity this document recommended against) is now joined by a second, similar risk: a future sprint building Work Package's lifecycle could quietly reintroduce Tendered/Awaited as mandatory states, exactly the mistake §3 explains at length why to avoid — worth the same explicit re-read discipline recommended for §2's entity table.
+
+**Technical Debt.** None yet, consistent with the original assessment — this remains a pure specification.
+
+**Future Flexibility.** High, and deliberately strengthened this review: the Procurement extraction boundary (§11), the Resource Engine's one-directional reference, and the Decision Engine's now-concrete trigger all mean the next several engines this platform will need can be built without touching this specification's core entities.
+
+**Complexity.** Deliberately moderate, not minimal — nine independent entities plus their sub-structures is real complexity, but every piece of it corresponds to a genuine, named real-world construction concept (this review's own §1 grounding), not an abstraction invented for the software's convenience. The one place complexity was actively resisted rather than added: Work Package's lifecycle (§3), where the fuller, more complex option was explicitly rejected in favor of a simpler universal backbone with an optional richer path.
+
+**Scalability.** Sound at the entity/relationship level; the one named concern (RA Bill calculation cost at large BOQ scale) is a computation-pattern concern, not a schema concern, and doesn't require any structural change to address when it's actually built.
+
+**Construction Fidelity.** This review's single greatest contribution to fidelity: BOQ Item Identity (§5.0), Hierarchical Cost Codes (§5.1), Advance Recovery (§8.2), and the rejected Work Package lifecycle (§3) all directly reflect actually going back to real construction practice rather than accepting the brief's own suggestions uncritically — including one case (§3) where a suggestion from the brief itself was evaluated and found to reduce fidelity for Atlas's actual customer base, not increase it.
+
+**Maintainability.** Strong — the Peer Review Log at the top of this document, and the explicit "re-read §2/§3 before adding an entity" procedural recommendations, are themselves maintainability investments: they make it harder for a future implementer to accidentally undo a deliberate decision without realizing one was made.
+
+**Innovation.** The genuinely novel contribution of this specification, confirmed by this review, is not any single entity — it is the discipline of connecting a construction-specific commercial layer directly to Atlas's existing parametric Production Models (§5's Production Model integration) and existing derived-milestone infrastructure (§8's billing-trigger reuse), producing commercial data that is correct *because* it's connected to execution reality, not maintained as a parallel, potentially-drifting commercial fiction.
+
+---
+
 ## Executive Summary
 
 The Atlas Commercial Foundation Engine is the architecture for how Atlas will become the authoritative source of truth for a construction project's complete commercial lifecycle — from a priced Bill of Quantities through Variation Orders, procurement, progress billing, and retention, to final settlement — without becoming, or depending on, an accounting system.
@@ -433,18 +619,46 @@ Every integration this architecture defines with Atlas's existing engines is one
 
 Looking outward, this specification defines every future integration point — Measurement Engine, Decision Engine, Document Engine, Notification Engine, Business Intelligence, and external ERP/accounting systems — as additive and one-directional, never a live, bidirectional dependency that would let an external system's data model shape Atlas's own. And it defines the deterministic data foundation — budget accuracy, variation frequency, cash flow patterns, cost overruns by Work Package, payment delays, scope growth, and the direct bridge between Knowledge Base v2's existing production-duration calculations and this document's new cost data — that a future, genuinely valuable Business Intelligence capability will eventually be built on, without designing that capability itself, and without capturing a single field of data that doesn't already need to be correct for the Commercial Foundation Engine's own operational purpose.
 
+**This specification has since been through an independent architectural peer review**, applying genuine scrutiny rather than rubber-stamping every suggestion put to it. Most of the original architecture was confirmed unchanged. Several genuine gaps were closed: BOQ Items now carry the permanent, human-readable identity codes real construction documents already use; Cost Codes are now hierarchical, matching real cost-accounting practice; a Quantity Ownership Matrix makes explicit what was previously only implied, closing off a real class of future confusion; and Commercial Events are now a single, unified ledger, directly reusing a pattern Atlas has already proven at scale in Operations Engine, rather than a new one invented for this layer. One recommendation put to this review — adopting a fuller, tender-and-award-oriented Work Package lifecycle — was evaluated and explicitly not adopted as the universal model, because it would misrepresent how Atlas's own established smaller-residential customer base actually operates; a narrower, genuinely universal refinement was adopted instead. The architecture is now considered frozen: implementation-ready, and not expected to need further structural redesign.
+
 ## Success Criteria
 
 This sprint succeeds if, and only if, the following are true of the document above, checkable directly against it:
 
 - Every commercial entity's existence is justified, not assumed — §2's table gives an explicit reasoned verdict for all eighteen candidates from the brief, including the nine recommended against independent existence.
-- Every entity has exactly one owner — stated explicitly throughout §§3-8 and confirmed structurally in the Integration Matrix (§9), where no engine both consumes from and publishes to the Commercial Foundation Engine.
+- Every entity has exactly one owner — stated explicitly throughout §§3-8 and confirmed structurally in the Integration Matrix (§9) and the dedicated Ownership Matrix (§2.0), where no engine both consumes from and publishes to the Commercial Foundation Engine.
 - Every entity relationship is diagrammed — Mermaid relationship diagrams appear in §§3, 5, 7, 8, and 9's matrix is itself a relationship specification in tabular form.
-- Every entity with a real lifecycle has a state diagram — Contract (§4) and Work Package (§3); entities without a genuine multi-state lifecycle (Cost Code, Commercial Snapshot) are correctly not forced into one.
-- The specification integrates with, and does not redesign, every existing Atlas engine — confirmed explicitly in §1 and exhaustively in §9's Integration Matrix.
-- The Work Package question is answered directly, not deferred — §3 states plainly that it should exist, and precisely what it should and should not become.
-- AI readiness is deterministic data, not a designed AI feature — every signal in §10 is a stated calculation, with the design principle (no data captured solely for AI) made explicit.
-- Future integrations are scoped without coupling Atlas to systems that don't exist yet — §11 addresses all six named future integration points, each as an additive, one-directional relationship.
+- Every entity with a real lifecycle has a state diagram — Contract (§4) and Work Package (§3, now reflecting the peer-reviewed lifecycle); entities without a genuine multi-state lifecycle (Cost Code, Commercial Snapshot) are correctly not forced into one.
+- The specification integrates with, and does not redesign, every existing Atlas engine — confirmed explicitly in §1 and exhaustively in §9's Integration Matrix, re-confirmed after this review's additions in §15.
+- The Work Package question is answered directly, not deferred — §3 states plainly that it should exist, precisely what it should and should not become, and — after review — precisely which of the brief's own suggested lifecycle refinements to adopt and which to reject, with reasoning for both.
+- AI readiness is deterministic data, not a designed AI feature — every signal in §10 is a stated calculation, with the design principle (no data captured solely for AI) made explicit and reinforced by §8.4's Commercial Health indicators.
+- Future integrations are scoped without coupling Atlas to systems that don't exist yet — §11 addresses all named future integration points (Procurement, Measurement, Decision, Resource, Document, Notification, Business Intelligence, Tender, and external ERP/Accounting), each as an additive, one-directional relationship.
+- **This review did not optimize for agreement with its own brief** — §3 documents one explicit rejection, with reasoning, exactly as the brief's own Final Instruction required.
 - The document is detailed enough to implement confidently in focused sprints — every entity's ownership, lifecycle, and relationships are specified precisely enough that "what does this sprint need to build" has a clear, unambiguous answer at every point in this document, without requiring the implementer to make a domain-modeling decision this document should have already made.
+- **Architecture Frozen is justified**: no open question remains in this document that would require a structural (as opposed to additive) change to resolve — every remaining gap named (price escalation, §13) is explicitly scoped as a future version, not a blocking omission for V1.
 
 A future implementer reading only this document, with no other context, should be able to answer every one of the five questions this sprint set out to answer — what commercial entities exist, who owns them, how they relate, how they integrate with existing Atlas engines, and how future engines can build on this without architectural drift — directly from what is written above.
+
+---
+
+## Independent Architectural Recommendations
+
+Recommendations that emerged from this review's own reasoning, not requested by either the original specification brief or this review's own brief — offered because they strengthen the architecture, not because they were asked for. Split explicitly by urgency, per this review's own deliverables requirement.
+
+### Recommended for Version 1
+
+- **BOQ Item Identity, Hierarchical Cost Codes, and the Quantity Ownership Matrix** (§5.0, §5.1, §2.3) — already folded into the main specification above rather than listed separately here, because they are corrections to genuine V1 gaps, not optional enhancements. Restated here only to be explicit that they are V1-recommended, not deferred.
+- **Client-facing BOQ granularity rule** (§13) — Work-Package/Section-level by default for Client Experience, never item-level rate detail. This should be treated as a V1 constraint on the future Client Experience financial views, not a nice-to-have, because getting it wrong risks exposing contractor pricing detail to a client by default rather than by deliberate choice.
+
+### Recommended for Future Versions
+
+- **Procurement Engine extraction** (§11) — the boundary is defined now; the extraction itself is correctly future work, once Procurement Package's V1 scope proves the summary-record shape is right.
+- **Resource Engine** — allocation of labour/crew/equipment, referencing Procurement Package where resources are vendor-sourced.
+- **Price escalation clauses** (§13) — a real gap, correctly deferred given Atlas's current project-duration profile, but should not be forgotten when longer-duration or larger-scale projects become a real part of Atlas's customer base.
+- **Client-level (not just project-level) commercial rollup** (§14) — the relationship already exists in this data model; the aggregation itself is a future reporting capability, not a schema change.
+
+### Interesting Ideas (not recommended yet)
+
+- **Weather/seasonal correlation with commercial variance** (§13) — genuinely interesting as a future Business Intelligence signal, explicitly not recommended as anything this engine should own, and not yet justified as a priority against the other future work already queued above.
+- **A Work Package "template" concept** (by analogy with Knowledge Engine's own reusable Activity templates) — if a construction company repeatedly runs the same kind of Work Package (e.g., "Standard MEP Package" for a repeated house design), a reusable Work Package template, mirroring how Knowledge Engine's Activity templates already work, could reduce repetitive setup. Not recommended now: there is no evidence yet that Work Package composition is repetitive enough across real projects to justify it, and introducing it speculatively would risk exactly the kind of premature abstraction this specification has otherwise been careful to avoid throughout. Worth revisiting once real usage data exists to confirm the pattern.
+
