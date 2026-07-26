@@ -29,6 +29,7 @@ from routes import admin_users as admin_users_routes
 from routes import admin_system as admin_system_routes
 from routes import workflow as workflow_routes
 from routes import reasoning as reasoning_routes
+from routes import commercial as commercial_routes
 
 
 logging.basicConfig(
@@ -81,6 +82,7 @@ app.include_router(admin_users_routes.router)
 app.include_router(admin_system_routes.router)
 app.include_router(workflow_routes.router)
 app.include_router(reasoning_routes.router)
+app.include_router(commercial_routes.router)
 
 
 @app.get("/api/")

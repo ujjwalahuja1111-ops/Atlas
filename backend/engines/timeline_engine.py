@@ -120,3 +120,60 @@ async def resolve_event_timeline(event: dict) -> dict:
         "actual_start": event.get("actual_start"),
         "actual_finish": event.get("actual_finish"),
     }
+
+
+# ---------------------------------------------------------------------------
+# Commercial Timeline (CF-01) — "every commercial event becomes a
+# timeline event... integrates into existing Timeline Engine, do not
+# duplicate timeline logic." This reads directly from
+# commercial_engine's own event ledger (the single, unified feed every
+# commercial mutation already writes to) and translates it into a
+# minimal, timeline-compatible shape — it does not reimplement any of
+# for_site()'s Reality/Analysis/Correction composition above, and it
+# does not maintain a second copy of commercial event data.
+# ---------------------------------------------------------------------------
+
+COMMERCIAL_EVENT_LABELS: dict[str, str] = {
+    "contract_created": "Contract Created",
+    "contract_status_changed": "Contract Status Changed",
+    "milestone_created": "Milestone Created",
+    "milestone_status_changed": "Milestone Status Updated",
+    "milestone_closed": "Milestone Closed",
+    "payment_request_raised": "Payment Request Raised",
+    "payment_request_status_changed": "Payment Request Status Updated",
+    "payment_received": "Payment Received",
+    "variation_created": "Variation Created",
+    "variation_submitted": "Variation Submitted",
+    "variation_sent_for_client_review": "Variation Sent for Client Review",
+    "variation_approved": "Variation Approved",
+    "variation_rejected": "Variation Rejected",
+    "budget_created": "Budget Created",
+    "budget_revised": "Budget Revised",
+    "cost_committed": "Cost Committed",
+    "actual_cost_recorded": "Actual Cost Recorded",
+    "commercial_snapshot_taken": "Commercial Snapshot Taken",
+}
+
+
+async def for_project_commercial(project_id: str, limit: int = 200) -> list[dict]:
+    """The Commercial Timeline — every commercial_events ledger entry
+    for a project, translated into the same {kind, title, actor, date}
+    shape a chronological timeline consumer expects. Read-only, same
+    as every other function in this module."""
+    from . import commercial_engine
+    events = await commercial_engine.list_commercial_events(project_id, limit=limit)
+    return [
+        {
+            "id": e["id"],
+            "source": "commercial",
+            "kind": e["kind"],
+            "title": COMMERCIAL_EVENT_LABELS.get(e["kind"], e["kind"].replace("_", " ").title()),
+            "entity_type": e["entity_type"],
+            "entity_id": e["entity_id"],
+            "actor_user_name": e["actor_user_name"],
+            "payload": e["payload"],
+            "created_at": e["created_at"],
+        }
+        for e in events
+    ]
+

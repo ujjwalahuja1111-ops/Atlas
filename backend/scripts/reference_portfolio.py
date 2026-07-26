@@ -342,6 +342,100 @@ async def seed_rp001_commercial_reference() -> dict:
     return data
 
 
+async def migrate_rp001_to_commercial_engine(*, close_when_done: bool = True) -> dict:
+    """CF-01 — populates RP-001 (the ACDP villa) with real Commercial
+    Foundation Engine data: a genuine Contract, Milestones with a real
+    achieved/paid history, a Variation that was actually approved
+    (matching the ₹12L approved variation figure the lightweight
+    commercial_reference already used), and a Budget — replacing the
+    single-snapshot placeholder with real, state-machine-governed
+    entities, using the exact same headline figures so the two layers
+    agree rather than silently disagreeing about RP-001's own numbers.
+    Idempotent: safe to re-run, matching every Reference Portfolio
+    seeder's own established convention.
+    """
+    from engines import commercial_engine as ce, memory_engine
+
+    project = await db.projects.find_one({"code": "ACDP-VILLA"}, {"_id": 0})
+    if not project:
+        raise RuntimeError("ACDP (RP-001) must be seeded first — run scripts/seed_demo_project.py")
+    admin = await memory_engine.get_user_by_phone("9800000001")  # ACDP's own management user
+    client = await memory_engine.get_user_by_phone("9800000005")  # ACDP's own client user
+    pid = project["id"]
+
+    contract = await ce.get_contract(pid)
+    if not contract:
+        contract = await ce.create_contract(
+            actor=admin, project_id=pid, client_id=client["id"] if client else None,
+            original_contract_value=27300000,  # original, pre-variation — 2.85cr current implies ~12L approved variation on top
+            contract_date="2025-06-01", duration_days=540, retention_percent=5, advance_percent=10,
+        )
+        await ce.transition_contract_status(pid, "review", actor=admin)
+        await ce.transition_contract_status(pid, "approved", actor=admin)
+        await ce.transition_contract_status(pid, "active", actor=admin)
+
+    budget = await ce.get_budget(pid)
+    if not budget:
+        await ce.create_budget(actor=admin, project_id=pid, original_budget=23200000)
+        await ce.commit_cost(pid, 23200000, actor=admin, reason="Full scope committed across all trade packages")
+        await ce.record_actual_cost(pid, 10800000, actor=admin, reason="Cumulative actual spend to date, per site records")
+
+    existing_variations = await ce.list_variations(pid)
+    if not existing_variations:
+        var = await ce.create_variation(
+            actor=admin, project_id=pid, title="Upgraded modular kitchen specification",
+            description="Client requested a full upgrade from the originally specified laminate modular kitchen "
+                        "to a solid-surface countertop with soft-close fittings across Main Residence and Guest House.",
+            original_cost=0, proposed_cost=1200000, time_impact_days=8,
+        )
+        await ce.submit_variation(var["id"], actor=admin)
+        await ce.send_variation_to_client_review(var["id"], actor=admin)
+        await ce.decide_variation(var["id"], "approved", actor=client or admin)
+
+        var2 = await ce.create_variation(
+            actor=admin, project_id=pid, title="Additional landscape lighting package",
+            description="Client requested additional exterior lighting for the rear garden and pool deck, "
+                        "beyond the originally scoped landscape package.",
+            original_cost=0, proposed_cost=500000, time_impact_days=3,
+        )
+        await ce.submit_variation(var2["id"], actor=admin)
+        await ce.send_variation_to_client_review(var2["id"], actor=admin)
+        # Left in client_review — this is RP-001's own "Pending Variations: ₹5 Lakh" figure
+
+    existing_milestones = await ce.list_milestones(pid)
+    if not existing_milestones:
+        milestone_specs = [
+            ("Advance & Mobilisation", 1, 10, "Contract signed and site mobilised", "2025-06-05"),
+            ("Foundation Complete", 2, 15, "Foundation cast and cured across all zones", "2025-08-01"),
+            ("Structure Complete (Ground + First Floor)", 3, 25, "RCC structure cast through roof level", "2025-11-15"),
+            ("Brickwork & Plaster Complete", 4, 15, "External and internal brickwork and plaster complete", "2026-01-20"),
+            ("MEP Rough-in Complete", 5, 10, "Electrical, plumbing, and HVAC first fix complete", "2026-03-01"),
+            ("Finishes & Handover", 6, 25, "Flooring, painting, fixtures, and final snagging complete", "2026-06-01"),
+        ]
+        for name, seq, pct, trigger, planned in milestone_specs:
+            ms = await ce.create_milestone(
+                actor=admin, project_id=pid, name=name, sequence=seq,
+                planned_percent=pct, trigger=trigger, planned_date=planned,
+            )
+            if seq <= 2:  # matches ACDP's own ~118-day-in narrative: mobilisation + foundation genuinely complete
+                await ce.transition_milestone_status(ms["id"], "ready", actor=admin)
+                ms = await ce.transition_milestone_status(ms["id"], "achieved", actor=admin)
+                pr = await ce.create_payment_request(
+                    actor=admin, project_id=pid, milestone_id=ms["id"], amount=ms["contract_value"],
+                    raised_date=planned, due_date=planned, notes=f"RA Bill for {name}",
+                )
+                await ce.transition_payment_request_status(pr["id"], "raised", actor=admin)
+                await ce.transition_payment_request_status(pr["id"], "sent", actor=admin)
+                await ce.record_payment(actor=client or admin, payment_request_id=pr["id"],
+                                        amount=ms["contract_value"], date=planned, method="bank_transfer",
+                                        reference=f"RTGS-{seq:03d}")
+            elif seq == 3:
+                # In progress — matches RP-001's third RA Bill being "Pending"
+                await ce.transition_milestone_status(ms["id"], "ready", actor=admin)
+
+    return await ce.get_project_commercial_summary(pid)
+
+
 async def generate_expected_state(project_id: str, *, admin: dict) -> dict:
     """Regression baseline for one project — deliberately built by
     calling the SAME comparison logic the live API uses
