@@ -63,9 +63,9 @@ Every mutation above appends exactly one commercial_events entry (past-tense kin
 
 ## Integration Points
 
-- Existing Commercial section (Project Dashboard, app/projects/[id].tsx): unmodified this sprint. GET /api/projects/{id}/commercial-reference (the lightweight layer) remains the data source that screen reads. GET /api/projects/{id}/commercial/summary is the new, richer composed read a future frontend pass should switch to — extending, not breaking, the existing screen, per the brief's own "existing UI should automatically become richer... do not break existing screens" instruction. This sprint delivers the backend; wiring the existing screen to prefer the richer summary when present is named explicitly as remaining work below.
+- Existing Commercial section (Project Dashboard, app/projects/[id].tsx): now prefers GET /api/projects/{id}/commercial/summary (the real Commercial Foundation Engine data) when a project has one, falling back to the lightweight commercial_reference layer unchanged for any project without real commercial data yet. This is a genuine "existing UI becomes richer without redesign" upgrade - the same Commercial section, same tiles, now showing real Paid/Outstanding amounts and Milestone Completion where the data exists to back them, rather than "Not Available Yet."
 - RBAC: write operations are management/project_manager-only, matching every other commercially-adjacent action in Atlas. Reads are open to any role with project visibility, including client — except Budget, which is never client-visible (internal-only, per the frozen specification's own §6). Deciding a Variation is deliberately open to the client too, matching the existing client_approval pattern's precedent that approval decisions on a client's own contract belong to the client.
-- Reference Portfolio: RP-001 (ACDP) migrated to real Commercial Foundation Engine data (scripts/reference_portfolio.py::migrate_rp001_to_commercial_engine) — a genuine Contract, six Milestones with a real achieved/paid history, an approved Variation and a pending one, and a Budget — using the exact figures the lightweight commercial_reference already established, so the two layers agree rather than silently disagreeing about RP-001's own numbers. RP-002 migration is not done this sprint — named explicitly below.
+- Reference Portfolio: both RP-001 (ACDP) and RP-002 (Neoteric Corporate Office) are migrated to real Commercial Foundation Engine data (scripts/reference_portfolio.py::migrate_rp001_to_commercial_engine / migrate_rp002_to_commercial_engine) — genuine Contracts, Milestones with real achieved/paid histories, approved and pending Variations, and Budgets — using the exact figures each project's lightweight commercial_reference already established, verified matching precisely (including RP-002's "watch" cash-flow signal, reproduced as attention from a genuinely designed payment history — three milestones paid, one sent-but-unpaid, one raised-but-not-yet-sent — not just a matching label), so the two layers agree rather than silently disagreeing about either project's own numbers.
 
 ## Future Expansion — Compatibility, Not Implementation
 
@@ -79,9 +79,11 @@ This engine's boundaries are designed so the following can be added without rede
 
 None of the above are implemented this sprint — only the extension points are confirmed to exist.
 
-## What Was Not Done This Sprint — Named Explicitly
+## What Was Not Done — Named Explicitly
 
-- RP-002 migration. RP-001 was migrated with genuine, verified data; RP-002 (the Commercial Office) was not — the lightweight commercial_reference remains its only commercial data source. Real remaining work, not silently skipped.
-- Frontend wiring. The existing Project Dashboard's Commercial section was not changed to prefer get_project_commercial_summary over the lightweight reference layer. The backend is ready; the frontend switch is a small, well-scoped follow-up.
+Two gaps from the original sprint have since been closed in a continuation pass: RP-002 migration (scripts/reference_portfolio.py::migrate_rp002_to_commercial_engine, verified reproducing RP-002's own "watch" cash-flow signal, not just its headline figures) and the frontend wiring (app/projects/[id].tsx's Commercial section now prefers the real summary, falling back to the lightweight reference layer unchanged where no real data exists).
+
+Remaining, still genuinely open:
+
 - Work Package / BOQ / Cost Code / Procurement Package from the frozen specification remain unimplemented — this sprint's brief scoped a simpler six-entity model (Contract, Milestone, Payment Request, Payment, Variation, Budget), and that simpler model is what was built. The frozen specification's fuller model remains the reference for whenever that additional scope is picked up.
 - Milestone forecast-date recalculation. forecast_date is a plain field a caller can update via transition_milestone_status's own forecast_date parameter — there is no automatic schedule-variance-driven recalculation of it yet (that would naturally consume Workflow Engine's own schedule variance data, a genuine future integration, not built here).

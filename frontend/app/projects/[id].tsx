@@ -15,7 +15,7 @@ import {
 } from '@/src/api';
 import { apiListKnowledgeItems, type KnowledgeItem } from '@/src/knowledge_api';
 import { apiGetWorkflow, apiGenerateWorkflow, type WorkflowActivity } from '@/src/workflow_api';
-import { apiGetCommercialReference, type CommercialReference } from '@/src/commercial_api';
+import { apiGetCommercialReference, apiGetCommercialSummary, type CommercialReference, type CommercialSummary } from '@/src/commercial_api';
 
 export default function ProjectDetail() {
   const router = useRouter();
@@ -34,6 +34,7 @@ export default function ProjectDetail() {
   // Sprint 5 — Construction Workflow Engine
   const [workflowCount, setWorkflowCount] = useState<number | null>(null);
   const [commercial, setCommercial] = useState<CommercialReference>(null);
+  const [commercialSummary, setCommercialSummary] = useState<CommercialSummary>(null);
   const [templates, setTemplates] = useState<KnowledgeItem[]>([]);
   const [pickingTemplate, setPickingTemplate] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -49,16 +50,18 @@ export default function ProjectDetail() {
       const projs = await apiListProjects(true);
       const p = projs.find((x) => x.id === id) || null;
       setProject(p);
-      const [s, sm, wf, cRef] = await Promise.all([
+      const [s, sm, wf, cRef, cSummary] = await Promise.all([
         apiListSites(id, showArchived),
         apiProjectSummary(id).catch(() => null),
         apiGetWorkflow(id).catch(() => []),
         apiGetCommercialReference(id).catch(() => null),
+        apiGetCommercialSummary(id).catch(() => null),
       ]);
       setSites(s);
       setSummary(sm);
       setWorkflowCount(wf.length);
       setCommercial(cRef);
+      setCommercialSummary(cSummary);
     } catch (e: any) {
       // Sprint 4.1 fix (audit H4): surface load failures instead of
       // silently swallowing them.
@@ -207,15 +210,31 @@ export default function ProjectDetail() {
             </View>
           )}
 
-          {/* UI Integration Sprint (UI-01) — Commercial section, added to
-              the existing Project Dashboard, not a new screen. Every value
-              is read directly from the commercial reference layer; fields
-              that layer doesn't store (amount paid, amount outstanding,
-              upcoming payment) are honestly shown as unavailable rather
-              than fabricated — see commercial_api.ts's own header comment. */}
+          {/* CF-01 continuation — Commercial section now prefers the real
+              Commercial Foundation Engine summary when a project has one
+              (richer: real Paid/Outstanding, Milestone Completion, Budget
+              Variance — all genuinely computed, not fabricated). Falls
+              back to the lightweight commercial_reference layer,
+              unchanged, for any project without real Commercial Foundation
+              Engine data yet — extending, not breaking, this screen. */}
           <View style={styles.workflowCard}>
             <Text style={styles.sectionLabel}>COMMERCIAL</Text>
-            {commercial ? (
+            {commercialSummary ? (
+              <View style={styles.commercialGrid}>
+                <CommercialTile label="Current Contract" value={formatInr(commercialSummary.contract.current_contract_value)} />
+                <CommercialTile label="Budget" value={commercialSummary.budget ? formatInr(commercialSummary.budget.current_budget) : 'Not Available Yet'} unavailable={!commercialSummary.budget} />
+                <CommercialTile label="Forecast" value={commercialSummary.budget ? formatInr(commercialSummary.budget.forecast_cost) : 'Not Available Yet'} unavailable={!commercialSummary.budget} />
+                <CommercialTile label="Cash Flow Signal" value={commercialSummary.cash_flow_signal} />
+                <CommercialTile label="Approved Variations" value={formatInr(commercialSummary.approved_variations_total)} />
+                <CommercialTile label="Pending Variations" value={formatInr(commercialSummary.pending_variations_total)} />
+                <CommercialTile label="Paid" value={formatInr(commercialSummary.outstanding_payments.received)} />
+                <CommercialTile label="Outstanding" value={formatInr(commercialSummary.outstanding_payments.outstanding)} />
+                <CommercialTile label="Milestone Completion" value={`${commercialSummary.milestone_completion_percent}%`} />
+                {commercialSummary.budget ? (
+                  <CommercialTile label="Budget Variance" value={formatInr(commercialSummary.budget.variance)} />
+                ) : null}
+              </View>
+            ) : commercial ? (
               <View style={styles.commercialGrid}>
                 <CommercialTile label="Current Contract" value={formatInr(commercial.contract_value)} />
                 <CommercialTile label="Budget" value={formatInr(commercial.budget)} />

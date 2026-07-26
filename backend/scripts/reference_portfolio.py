@@ -480,11 +480,123 @@ async def seed_rp002() -> dict:
     }
 
 
+async def migrate_rp002_to_commercial_engine() -> dict:
+    """CF-01 continuation — populates RP-002 (Neoteric Corporate
+    Office) with real Commercial Foundation Engine data, using the
+    exact figures the lightweight commercial_reference already
+    established for this project (Contract Rs 4.85 Cr, Approved
+    Variations Rs 48L, Pending Variations Rs 23L, Budget Rs 4.05 Cr,
+    Actual Cost Rs 2.71 Cr, Forecast Rs 4.29 Cr, cash flow "watch") —
+    verified to reproduce the same "watch"/attention-level signal, not
+    just the same headline numbers, so a caller reading either layer
+    for RP-002 sees a consistent story. Idempotent, matching every
+    other Reference Portfolio seeder's own convention.
+    """
+    from engines import commercial_engine as ce, memory_engine
+
+    project = await db.projects.find_one({"code": RP002_PROJECT_CODE}, {"_id": 0})
+    if not project:
+        raise RuntimeError("RP-002 must be seeded first — run reference_portfolio.seed_rp002()")
+    admin = await memory_engine.get_user_by_phone("9880000001")   # Rohit Malhotra, Director
+    client = await memory_engine.get_user_by_phone("9880000004")  # Anaya Kapoor, client contact
+    pid = project["id"]
+
+    contract = await ce.get_contract(pid)
+    if not contract:
+        # Original + the Rs 48L approved variation below = the
+        # established Rs 4.85 Cr current contract value.
+        contract = await ce.create_contract(
+            actor=admin, project_id=pid, client_id=client["id"] if client else None,
+            original_contract_value=43700000, contract_date="2026-02-02", duration_days=240,
+            retention_percent=5, advance_percent=10,
+        )
+        await ce.transition_contract_status(pid, "review", actor=admin)
+        await ce.transition_contract_status(pid, "approved", actor=admin)
+        await ce.transition_contract_status(pid, "active", actor=admin)
+
+    budget = await ce.get_budget(pid)
+    if not budget:
+        await ce.create_budget(actor=admin, project_id=pid, original_budget=40500000)
+        # Forecast Cost = max(committed, actual); committed set to the
+        # established Rs 4.29 Cr forecast figure directly.
+        await ce.commit_cost(pid, 42900000, actor=admin,
+                             reason="Full scope committed across structural, MEP, and fit-out packages")
+        await ce.record_actual_cost(pid, 27100000, actor=admin,
+                                    reason="Cumulative actual spend to date, day 137 of 240")
+
+    existing_variations = await ce.list_variations(pid)
+    if not existing_variations:
+        var = await ce.create_variation(
+            actor=admin, project_id=pid, title="Server room enclosure specification upgrade",
+            description="Client requested an upgraded, higher fire-rated enclosure and additional cooling "
+                        "capacity for the Floor 2 server room, beyond the originally scoped specification.",
+            original_cost=0, proposed_cost=4800000, time_impact_days=12,
+        )
+        await ce.submit_variation(var["id"], actor=admin)
+        await ce.send_variation_to_client_review(var["id"], actor=admin)
+        await ce.decide_variation(var["id"], "approved", actor=client or admin)
+
+        var2 = await ce.create_variation(
+            actor=admin, project_id=pid, title="Additional network drops and cabling — Floor 2",
+            description="Client added 12 additional network drops to the Floor 2 scope after the original "
+                        "data cabling contract was signed, requiring a requote from the subcontractor.",
+            original_cost=0, proposed_cost=2300000, time_impact_days=5,
+        )
+        await ce.submit_variation(var2["id"], actor=admin)
+        await ce.send_variation_to_client_review(var2["id"], actor=admin)
+        # Left in client_review — this is RP-002's own "Pending
+        # Variations: Rs 23 Lakh" figure.
+
+    existing_milestones = await ce.list_milestones(pid)
+    if not existing_milestones:
+        # Percentages sum to 52% — matching RP-002's own established
+        # "Progress: 52%" figure exactly. Three paid, one sent-but-
+        # unpaid, one raised-but-not-yet-sent — deliberately producing
+        # a received/raised ratio in the "attention" band (not
+        # "healthy"), matching the reference layer's "watch" signal.
+        milestone_specs = [
+            ("Advance & Mobilisation", 1, 8, "Contract signed and site mobilised", "2026-02-05", "paid"),
+            ("Strip-out & Demolition Complete", 2, 8, "All three zones stripped and demolition complete", "2026-02-20", "paid"),
+            ("Partition & Drywall Complete", 3, 9, "Partition framing and drywall complete across all zones", "2026-03-10", "paid"),
+            ("MEP First Fix Complete", 4, 15, "Electrical, HVAC, and fire sprinkler first fix complete", "2026-04-15", "sent"),
+            ("Ceiling Grid Ready for Finishes", 5, 12, "False ceiling grid installed, ready for finishes across all zones", "2026-05-01", "raised"),
+        ]
+        for name, seq, pct, trigger, planned, target_pr_state in milestone_specs:
+            ms = await ce.create_milestone(
+                actor=admin, project_id=pid, name=name, sequence=seq,
+                planned_percent=pct, trigger=trigger, planned_date=planned,
+            )
+            await ce.transition_milestone_status(ms["id"], "ready", actor=admin)
+            ms = await ce.transition_milestone_status(ms["id"], "achieved", actor=admin)
+            pr = await ce.create_payment_request(
+                actor=admin, project_id=pid, milestone_id=ms["id"], amount=ms["contract_value"],
+                raised_date=planned, due_date=planned, notes=f"RA Bill for {name}",
+            )
+            if target_pr_state in ("sent", "paid"):
+                await ce.transition_payment_request_status(pr["id"], "raised", actor=admin)
+                await ce.transition_payment_request_status(pr["id"], "sent", actor=admin)
+            if target_pr_state == "paid":
+                await ce.record_payment(actor=client or admin, payment_request_id=pr["id"],
+                                        amount=ms["contract_value"], date=planned, method="bank_transfer",
+                                        reference=f"NEFT-{seq:03d}")
+            # target_pr_state == "raised": left exactly at "draft" ->
+            # "raised" is NOT called, so it stays in the state
+            # create_payment_request leaves it — "draft" — representing
+            # "under review," internally, not yet sent to the client.
+
+    return await ce.get_project_commercial_summary(pid)
+
+
 async def main() -> None:
     result = await seed_rp002()
     rp001_commercial = await seed_rp001_commercial_reference()
+    rp001_summary = await migrate_rp001_to_commercial_engine()
+    rp002_summary = await migrate_rp002_to_commercial_engine()
     print(f"RP-002 seeded: {result['activities']} activities, {result['operational_items']} operational items")
     print(f"RP-001 commercial reference set: contract value Rs {rp001_commercial['contract_value']:,}")
+    print(f"RP-001 Commercial Foundation Engine data: current contract value Rs {rp001_summary['contract']['current_contract_value']:,.0f}")
+    print(f"RP-002 Commercial Foundation Engine data: current contract value Rs {rp002_summary['contract']['current_contract_value']:,.0f}, "
+          f"cash flow signal: {rp002_summary['cash_flow_signal']}")
 
 
 if __name__ == "__main__":

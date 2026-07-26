@@ -60,3 +60,69 @@ export async function apiCompareProjects(projectIds: string[]): Promise<{ projec
   if (!r.ok) throw new Error('compare-projects');
   return r.json();
 }
+
+// CF-01 — the real Commercial Foundation Engine's composed summary.
+// Returns null for any project without a real Contract yet (the
+// engine's own get_project_commercial_summary does this deliberately)
+// so callers can fall back to the lightweight CommercialReference
+// layer above without treating that as an error.
+export type Contract = {
+  id: string; project_id: string; client_id: string | null;
+  original_contract_value: number; current_contract_value: number; approved_variations_total: number;
+  contract_date: string; duration_days: number;
+  retention_percent: number; advance_percent: number; gst_percent: number;
+  status: string;
+};
+
+export type Milestone = {
+  id: string; project_id: string; name: string; sequence: number;
+  planned_percent: number; contract_value: number; trigger: string;
+  planned_date: string | null; forecast_date: string | null; actual_date: string | null;
+  status: string;
+};
+
+export type PaymentRequest = {
+  id: string; project_id: string; number: string; milestone_id: string;
+  amount: number; raised_date: string; due_date: string; status: string; notes: string;
+};
+
+export type Payment = {
+  id: string; payment_request_id: string; project_id: string;
+  amount: number; date: string; method: string; reference: string; status: string;
+};
+
+export type Variation = {
+  id: string; project_id: string; title: string; description: string;
+  original_cost: number; proposed_cost: number; approved_cost: number | null;
+  time_impact_days: number; status: string;
+  raised_by_user_name: string; approved_by_user_name: string | null;
+};
+
+export type Budget = {
+  id: string; project_id: string;
+  original_budget: number; current_budget: number; committed_cost: number; actual_cost: number;
+  forecast_cost: number; variance: number; remaining_budget: number;
+};
+
+export type CommercialSummary = {
+  project_id: string;
+  contract: Contract;
+  budget: Budget | null;
+  milestones: Milestone[];
+  milestone_completion_percent: number;
+  payment_requests: PaymentRequest[];
+  payments: Payment[];
+  outstanding_payments: { raised: number; received: number; outstanding: number };
+  cash_flow_signal: string;
+  variations: Variation[];
+  approved_variations_total: number;
+  pending_variations_total: number;
+} | null;
+
+export async function apiGetCommercialSummary(projectId: string): Promise<CommercialSummary> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/commercial/summary`, {
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error('commercial-summary');
+  return r.json();
+}
