@@ -1894,6 +1894,18 @@ async def _project_comparison_row(project_id: str, *, user: dict) -> dict:
     }
 
 
+async def get_commercial_reference(project_id: str, *, user: dict) -> Optional[dict]:
+    """Visual Validation (VV-01) — visibility-checked read of a
+    project's Commercial reference data. Kept in reasoning_engine
+    (not called directly from the route against memory_engine) so the
+    visibility check stays inside the engine layer, matching Atlas's
+    own architecture guard: routes translate HTTP <-> engine only,
+    every visibility check lives inside the engine, never in a route
+    calling a private function directly."""
+    await _assert_project_visible(project_id, user)
+    return await memory_engine.get_commercial_reference(project_id)
+
+
 async def compare_projects(project_ids: list[str], *, user: dict) -> dict:
     """RP-01's cross-project comparison utility — Workflow, Operations,
     Commercial, and Timeline side by side, plus each project's own

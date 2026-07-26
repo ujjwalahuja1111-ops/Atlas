@@ -110,6 +110,23 @@ async def get_project_health(project_id: str,
         _raise_for(e)
 
 
+@router.get("/projects/{project_id}/commercial-reference")
+async def get_project_commercial_reference(project_id: str,
+                                           user: dict = Depends(get_current_user)):
+    """Visual Validation (VV-01) — a project's Commercial reference
+    data (see memory_engine.set_commercial_reference's own docstring:
+    this is deliberately NOT a Commercial Foundation Engine
+    implementation, just the reference figures the Reference Portfolio
+    seeded). Returns null if none was ever set for this project — the
+    frontend is expected to show an honest "not available" state, not
+    treat null as an error."""
+    _forbid_client(user)
+    try:
+        return await reasoning_engine.get_commercial_reference(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/projects/{project_id}/lookahead")
 async def get_project_lookahead(project_id: str,
                                 user: dict = Depends(get_current_user)):
