@@ -1,6 +1,9 @@
-// Visual Validation (VV-01) — API functions for the internal
-// engineering dashboard. Read-only throughout: this tool exists to
-// validate that every engine behaves correctly, not to edit data.
+// Commercial reference data and cross-project comparison API functions.
+// The commercial reference layer is deliberately NOT a Commercial
+// Foundation Engine implementation — see
+// memory_engine.set_commercial_reference's own docstring on the
+// backend. Used by the Project Dashboard's Commercial section and the
+// Admin Dashboard's Portfolio Summary widget.
 import { authHeaders, apiFetch } from './http';
 
 const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;

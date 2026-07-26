@@ -187,6 +187,9 @@ export type PortfolioSummary = {
   projects_behind_schedule: number;
   pending_client_approvals: number;
   critical_operational_items: number;
+  total_contract_value: number | null;
+  total_forecast_cost: number | null;
+  total_outstanding_receivables: number | null;
 };
 
 export type PortfolioControlCenter = {

@@ -15,6 +15,7 @@ import {
 } from '@/src/api';
 import { apiListKnowledgeItems, type KnowledgeItem } from '@/src/knowledge_api';
 import { apiGetWorkflow, apiGenerateWorkflow, type WorkflowActivity } from '@/src/workflow_api';
+import { apiGetCommercialReference, type CommercialReference } from '@/src/commercial_api';
 
 export default function ProjectDetail() {
   const router = useRouter();
@@ -32,6 +33,7 @@ export default function ProjectDetail() {
   const [loadError, setLoadError] = useState<string | null>(null);
   // Sprint 5 — Construction Workflow Engine
   const [workflowCount, setWorkflowCount] = useState<number | null>(null);
+  const [commercial, setCommercial] = useState<CommercialReference>(null);
   const [templates, setTemplates] = useState<KnowledgeItem[]>([]);
   const [pickingTemplate, setPickingTemplate] = useState(false);
   const [generating, setGenerating] = useState(false);
@@ -47,14 +49,16 @@ export default function ProjectDetail() {
       const projs = await apiListProjects(true);
       const p = projs.find((x) => x.id === id) || null;
       setProject(p);
-      const [s, sm, wf] = await Promise.all([
+      const [s, sm, wf, cRef] = await Promise.all([
         apiListSites(id, showArchived),
         apiProjectSummary(id).catch(() => null),
         apiGetWorkflow(id).catch(() => []),
+        apiGetCommercialReference(id).catch(() => null),
       ]);
       setSites(s);
       setSummary(sm);
       setWorkflowCount(wf.length);
+      setCommercial(cRef);
     } catch (e: any) {
       // Sprint 4.1 fix (audit H4): surface load failures instead of
       // silently swallowing them.
@@ -202,6 +206,30 @@ export default function ProjectDetail() {
               </View>
             </View>
           )}
+
+          {/* UI Integration Sprint (UI-01) — Commercial section, added to
+              the existing Project Dashboard, not a new screen. Every value
+              is read directly from the commercial reference layer; fields
+              that layer doesn't store (amount paid, amount outstanding,
+              upcoming payment) are honestly shown as unavailable rather
+              than fabricated — see commercial_api.ts's own header comment. */}
+          <View style={styles.workflowCard}>
+            <Text style={styles.sectionLabel}>COMMERCIAL</Text>
+            {commercial ? (
+              <View style={styles.commercialGrid}>
+                <CommercialTile label="Current Contract" value={formatInr(commercial.contract_value)} />
+                <CommercialTile label="Budget" value={formatInr(commercial.budget)} />
+                <CommercialTile label="Forecast" value={formatInr(commercial.forecast)} />
+                <CommercialTile label="Cash Flow Signal" value={commercial.cash_flow_signal || 'Not Available Yet'} />
+                <CommercialTile label="Approved Variations" value={formatInr(commercial.approved_variations)} />
+                <CommercialTile label="Pending Variations" value={formatInr(commercial.pending_variations)} />
+                <CommercialTile label="Paid" value="Not Available Yet" unavailable />
+                <CommercialTile label="Outstanding" value="Not Available Yet" unavailable />
+              </View>
+            ) : (
+              <Text style={styles.commercialEmpty}>Not Available Yet — no commercial reference data for this project.</Text>
+            )}
+          </View>
 
           {/* Sprint 6 — Project Workspace: quick-links into existing screens,
               pre-scoped to this project's site. No new screens — reuses
@@ -399,6 +427,22 @@ function SummaryTile({ icon, label, value, sub, testID }: any) {
   );
 }
 
+function formatInr(n: number | null | undefined): string {
+  if (n == null) return 'Not Available Yet';
+  if (n >= 10000000) return `₹${(n / 10000000).toFixed(2)} Cr`;
+  if (n >= 100000) return `₹${(n / 100000).toFixed(1)}L`;
+  return `₹${n.toLocaleString('en-IN')}`;
+}
+
+function CommercialTile({ label, value, unavailable }: { label: string; value: string; unavailable?: boolean }) {
+  return (
+    <View style={styles.commercialTile}>
+      <Text style={styles.commercialTileLabel}>{label}</Text>
+      <Text style={[styles.commercialTileValue, unavailable && styles.commercialTileValueUnavailable]}>{value}</Text>
+    </View>
+  );
+}
+
 function Field({ label, value, onChangeText, testID }: any) {
   return (
     <View style={{ marginBottom: 10 }}>
@@ -444,6 +488,12 @@ const styles = StyleSheet.create({
   templateOptionSub: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
   summaryRow: { flexDirection: 'row', gap: 10, marginBottom: 8 },
   tile: { flex: 1, backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, padding: 12 },
+  commercialGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  commercialTile: { width: '47%', backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, padding: 10 },
+  commercialTileLabel: { color: theme.color.textDim, fontSize: 11, fontWeight: '700', marginBottom: 4 },
+  commercialTileValue: { color: theme.color.text, fontSize: 14, fontWeight: '800' },
+  commercialTileValueUnavailable: { color: theme.color.textDim, fontWeight: '400', fontStyle: 'italic', fontSize: 12 },
+  commercialEmpty: { color: theme.color.textDim, fontSize: 13, fontStyle: 'italic' },
   tileHead: { flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 8 },
   tileLabel: { color: theme.color.textDim, fontSize: 11, fontWeight: '800', letterSpacing: 1 },
   tileValue: { color: theme.color.text, fontSize: 28, fontWeight: '900' },

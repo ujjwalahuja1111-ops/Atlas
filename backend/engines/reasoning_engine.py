@@ -92,6 +92,7 @@ Collections owned by CRE:
 """
 from __future__ import annotations
 import json
+import asyncio
 import logging
 import uuid
 from datetime import timedelta
@@ -2268,9 +2269,37 @@ async def portfolio_control_center(*, user: dict) -> dict:
     see _portfolio_sort_key — plus a portfolio-level summary computed
     from those exact same rows (no separate/duplicated aggregation).
     Role enforcement (management-only) is the caller's responsibility,
-    same as every other reasoning route in this file."""
+    same as every other reasoning route in this file.
+
+    UI-01 adds financial aggregates to the summary, reusing the
+    Commercial reference layer added for the Reference Portfolio
+    sprint (memory_engine.get_commercial_reference — see that
+    function's own docstring: still not a Commercial Foundation
+    Engine implementation). Only totals the reference data can
+    actually back are computed: total_contract_value and
+    total_forecast_cost are real sums. total_outstanding_receivables
+    is deliberately NOT computed and returned as None — the reference
+    layer stores RA bill counts (paid/pending/under_review), not
+    amounts paid, so an "outstanding" figure would have to be
+    fabricated to exist at all. Per this sprint's own rule ("never
+    fabricate values... display an honest Not Available Yet state"),
+    the frontend is expected to show that field as unavailable, not a
+    guessed number.
+    """
     portfolio = await _portfolio(user)
     rows = sorted((_project_row(p) for p in portfolio), key=_portfolio_sort_key)
+
+    commercial_refs = await asyncio.gather(
+        *(memory_engine.get_commercial_reference(r["project_id"]) for r in rows))
+    total_contract_value = 0
+    total_forecast_cost = 0
+    any_commercial_data = False
+    for ref in commercial_refs:
+        if not ref:
+            continue
+        any_commercial_data = True
+        total_contract_value += ref.get("contract_value") or 0
+        total_forecast_cost += ref.get("forecast") or 0
 
     summary = {
         "active_projects": len(rows),
@@ -2282,6 +2311,9 @@ async def portfolio_control_center(*, user: dict) -> dict:
             if r["schedule_variance_days"] is not None and r["schedule_variance_days"] > 0),
         "pending_client_approvals": sum(r["pending_client_approvals"] for r in rows),
         "critical_operational_items": sum(r["critical_operational_items"] for r in rows),
+        "total_contract_value": total_contract_value if any_commercial_data else None,
+        "total_forecast_cost": total_forecast_cost if any_commercial_data else None,
+        "total_outstanding_receivables": None,  # see docstring — not computable honestly yet
     }
 
     return {"summary": summary, "projects": rows, "generated_at": _iso(_now())}
