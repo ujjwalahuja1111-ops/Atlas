@@ -434,6 +434,7 @@ async def set_status(activity_id: str, new_status: str, *, actor: dict) -> dict:
 
     await _assert_project_visible(activity["project_id"], actor)
 
+    siblings_by_id: Optional[dict[str, dict]] = None
     if new_status in _DEPENDENCY_GATED_STATUSES:
         siblings = await db.workflow_activities.find(
             {"project_id": activity["project_id"]}, {"_id": 0},
@@ -467,18 +468,37 @@ async def set_status(activity_id: str, new_status: str, *, actor: dict) -> dict:
     )
 
     if new_status == "completed":
-        await _promote_unlocked_siblings(activity["project_id"], activity_id)
+        # Reuse the siblings already fetched above (guaranteed present:
+        # "completed" is always in _DEPENDENCY_GATED_STATUSES) instead of
+        # re-querying the entire project's activities a second time.
+        # The in-memory copy of THIS activity still shows its pre-update
+        # status (the DB write above happened after the fetch) - corrected
+        # here before use, since a stale status would make
+        # _dependencies_satisfied wrongly conclude a dependent sibling
+        # isn't unlockable yet.
+        assert siblings_by_id is not None
+        siblings_by_id[activity_id] = {**siblings_by_id[activity_id], "status": "completed"}
+        await _promote_unlocked_siblings(activity["project_id"], activity_id, siblings_by_id)
 
     return await get_workflow_activity(activity_id)
 
 
-async def _promote_unlocked_siblings(project_id: str, completed_activity_id: str) -> None:
+async def _promote_unlocked_siblings(project_id: str, completed_activity_id: str,
+                                     siblings_by_id: Optional[dict[str, dict]] = None) -> None:
     """After completing an activity, auto-promote any sibling sitting at
-    not_started whose dependencies are now all satisfied."""
-    siblings = await db.workflow_activities.find({"project_id": project_id}, {"_id": 0}).to_list(1000)
-    siblings_by_id = {s["id"]: s for s in siblings}
+    not_started whose dependencies are now all satisfied.
+
+    siblings_by_id, when provided by set_status (the common path), is
+    reused directly rather than re-querying the project's full activity
+    list a second time — a measured, genuine inefficiency (roughly 10
+    workflow_activities round trips per activity across a full ACDP
+    simulation) fixed here. Still independently callable with no
+    siblings_by_id (fetches its own, unchanged) for any other caller."""
+    if siblings_by_id is None:
+        siblings = await db.workflow_activities.find({"project_id": project_id}, {"_id": 0}).to_list(1000)
+        siblings_by_id = {s["id"]: s for s in siblings}
     now = _now()
-    for s in siblings:
+    for s in siblings_by_id.values():
         if s["status"] != "not_started":
             continue
         if completed_activity_id not in s.get("depends_on_activity_ids", []):

@@ -1,8 +1,39 @@
-"""Single Mongo client + db handle shared by all engines."""
+"""Single Mongo client + db handle shared by all engines.
+
+Connection pool settings (DEV-02): a long-running process — most
+visibly bootstrap.py's own multi-stage pipeline, which can hold this
+client open across thousands of sequential operations — risks a
+pooled connection sitting idle long enough for a network intermediary
+(a corporate firewall, NAT, or MongoDB Atlas's own cloud
+infrastructure) to close it before the client's next use of it. When
+that happens, PyMongo/Motor's own retry machinery is what determines
+whether the caller sees a transparent retry on a fresh connection or a
+raw ConnectionResetError — so both settings below are set explicitly,
+not left to library defaults that may vary by driver version or be
+silently disabled by a connection string that doesn't request them.
+See scripts/DEV02_ROOT_CAUSE.md for the full investigation this is
+addressing.
+"""
 from motor.motor_asyncio import AsyncIOMotorClient
 from .settings import MONGO_URL, DB_NAME
 
-client = AsyncIOMotorClient(MONGO_URL)
+client = AsyncIOMotorClient(
+    MONGO_URL,
+    # Proactively recycle a pooled connection after 45s idle - safely
+    # under common cloud/firewall idle-kill windows (MongoDB Atlas's
+    # own load balancer, and most corporate NAT/firewall idle timeouts,
+    # commonly sit at 60s or higher) so the client discards a
+    # connection on its own schedule rather than discovering it was
+    # already killed by something else on the next attempted use.
+    maxIdleTimeMS=45000,
+    # Explicit, not assumed from the driver's own default (which does
+    # already default to True in modern PyMongo, but a connection
+    # string or deployment topology can silently disable it - stated
+    # here so it's never an accident whether a stale connection gets
+    # transparently retried on a fresh one or surfaces as an error).
+    retryReads=True,
+    retryWrites=True,
+)
 db = client[DB_NAME]
 
 
