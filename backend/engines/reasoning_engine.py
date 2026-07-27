@@ -1827,6 +1827,132 @@ async def client_project_timeline(project_id: str, *, user: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Client Experience Layer (CX-01) — "Your Investment," Payment Journey,
+# and the client-facing Variation view. All three are thin presentation
+# wrappers over commercial_engine's own data and calculations — no
+# value here is computed by this module; every number is read directly
+# from what commercial_engine already returns. Internal-only fields
+# (Budget, Forecast, Committed/Actual Cost) are never included in any
+# of these three responses — not filtered out at the edge, simply
+# never read from the commercial summary's own "budget" key at all.
+# ---------------------------------------------------------------------------
+
+async def client_investment_summary(project_id: str, *, user: dict) -> Optional[dict]:
+    """"Your Investment" — Contract Value, Paid, Outstanding, Current
+    Variation Total, Upcoming Payment. Returns None if this project has
+    no real Commercial Foundation Engine Contract yet (the frontend is
+    expected to show an honest "not available" state, matching the
+    same convention the lightweight commercial_reference layer's own
+    route already established)."""
+    await _assert_project_visible(project_id, user)
+    from engines import commercial_engine as ce
+    summary = await ce.get_project_commercial_summary(project_id)
+    if not summary:
+        return None
+
+    contract = summary["contract"]
+    outstanding = summary["outstanding_payments"]
+
+    upcoming_payment = None
+    unpaid_prs = [pr for pr in summary["payment_requests"] if pr["status"] not in ("paid", "cancelled")]
+    if unpaid_prs:
+        # Earliest due date first — the one the client should expect next.
+        next_pr = min(unpaid_prs, key=lambda pr: pr["due_date"])
+        already_paid_on_this_pr = sum(
+            p["amount"] for p in summary["payments"] if p["payment_request_id"] == next_pr["id"])
+        milestone = next((m for m in summary["milestones"] if m["id"] == next_pr["milestone_id"]), None)
+        upcoming_payment = {
+            "amount": round(next_pr["amount"] - already_paid_on_this_pr, 2),
+            "due_date": next_pr["due_date"],
+            "due_after": milestone["name"] if milestone else None,
+        }
+
+    return {
+        "project_id": project_id,
+        "contract_value": contract["current_contract_value"],
+        "paid": outstanding["received"],
+        "outstanding": outstanding["outstanding"],
+        "current_variation_total": summary["approved_variations_total"],
+        "upcoming_payment": upcoming_payment,
+    }
+
+
+async def client_payment_journey(project_id: str, *, user: dict) -> Optional[dict]:
+    """The visual Contract -> Milestone -> Payment sequence, derived
+    entirely from Commercial Foundation Engine Milestones and Payment
+    Requests — never a second, workflow-stage-based milestone list
+    (client_project_timeline's own STAGE_ORDER milestones remain a
+    separate, construction-progress view; this one is specifically the
+    money view the brief's own worked example describes). Each
+    Milestone is paired with its own Payment Request's status, if one
+    has been raised, so a single ordered list already carries both
+    "was this construction stage reached" and "was it paid" — no
+    frontend merging of two feeds required.
+    """
+    await _assert_project_visible(project_id, user)
+    from engines import commercial_engine as ce
+    summary = await ce.get_project_commercial_summary(project_id)
+    if not summary:
+        return None
+
+    pr_by_milestone = {pr["milestone_id"]: pr for pr in summary["payment_requests"]}
+    steps = []
+    for m in summary["milestones"]:
+        pr = pr_by_milestone.get(m["id"])
+        steps.append({
+            "milestone_id": m["id"],
+            "name": m["name"],
+            "sequence": m["sequence"],
+            "milestone_status": m["status"],
+            "payment_status": pr["status"] if pr else None,
+            "amount": m["contract_value"],
+            "planned_date": m["planned_date"],
+            "actual_date": m["actual_date"],
+        })
+    return {"project_id": project_id, "contract_value": summary["contract"]["current_contract_value"], "steps": steps}
+
+
+async def client_variation_centre(project_id: str, *, user: dict) -> Optional[dict]:
+    """The client-facing "Approval Centre" for commercial Variations —
+    distinct from client_approval_centre (above), which handles
+    material/drawing/design approvals raised as Operational Items.
+    Every Variation here already carries its own calculated impact
+    (commercial_engine.calculate_variation_impact — the exact function
+    decide_variation itself calls) so "what would approving this
+    actually mean" is answered before a client ever taps Approve, not
+    only after."""
+    await _assert_project_visible(project_id, user)
+    from engines import commercial_engine as ce
+    variations = await ce.list_variations(project_id)
+    if not variations and not await ce.get_contract(project_id):
+        return None
+
+    def _view(v: dict) -> dict:
+        return {
+            "id": v["id"],
+            "title": v["title"],
+            "description": v["description"],
+            "before_cost": v["original_cost"],
+            "after_cost": v.get("approved_cost") if v["status"] == "approved" else v["proposed_cost"],
+            "impact": ce.calculate_variation_impact(v),
+            "linked_drawing_ids": v["linked_drawing_ids"],
+            "linked_photo_ids": v["linked_photo_ids"],
+            "linked_quotation_ids": v["linked_quotation_ids"],
+            "status": v["status"],
+            "raised_by": v["raised_by_user_name"],
+            "decided_at": v["decided_at"],
+            "approved_by": v["approved_by_user_name"],
+        }
+
+    views = [_view(v) for v in variations]
+    return {
+        "project_id": project_id,
+        "pending": [v for v in views if v["status"] in ("submitted", "client_review")],
+        "history": [v for v in views if v["status"] in ("approved", "rejected", "implemented")],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Reference Portfolio (RP-01) — cross-project comparison.
 #
 # Composes existing per-engine data for two (or more) projects side by

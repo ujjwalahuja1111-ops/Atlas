@@ -235,6 +235,41 @@ async def get_client_project_timeline(project_id: str,
         _raise_for(e)
 
 
+@router.get("/projects/{project_id}/client-investment")
+async def get_client_investment_summary(project_id: str,
+                                        user: dict = Depends(get_current_user)):
+    """CX-01 — "Your Investment." Contract Value, Paid, Outstanding,
+    Current Variation Total, Upcoming Payment. Never Budget/Forecast/
+    internal costs — see reasoning_engine.client_investment_summary's
+    own docstring."""
+    try:
+        return await reasoning_engine.client_investment_summary(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/client-payment-journey")
+async def get_client_payment_journey(project_id: str,
+                                     user: dict = Depends(get_current_user)):
+    """CX-01 — the visual Contract -> Milestone -> Payment sequence."""
+    try:
+        return await reasoning_engine.client_payment_journey(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/projects/{project_id}/client-variations")
+async def get_client_variation_centre(project_id: str,
+                                      user: dict = Depends(get_current_user)):
+    """CX-01 — the client-facing Variation approval centre, each entry
+    carrying its own pre-calculated Cost/Schedule/Payment/Forecast
+    impact from commercial_engine directly."""
+    try:
+        return await reasoning_engine.client_variation_centre(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/portfolio/compare")
 async def get_portfolio_comparison(project_ids: str,
                                    user: dict = Depends(get_current_user)):

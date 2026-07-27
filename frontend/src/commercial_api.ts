@@ -126,3 +126,86 @@ export async function apiGetCommercialSummary(projectId: string): Promise<Commer
   if (!r.ok) throw new Error('commercial-summary');
   return r.json();
 }
+
+// ---------------------------------------------------------------------------
+// Client Experience Layer (CX-01) — thin, client-safe views over the
+// same commercial_engine data above. Never includes Budget/Forecast/
+// internal cost fields — see reasoning_engine.client_investment_summary's
+// own docstring on the backend for why those are never even read here,
+// not merely filtered out.
+// ---------------------------------------------------------------------------
+
+export type ClientInvestmentSummary = {
+  project_id: string;
+  contract_value: number;
+  paid: number;
+  outstanding: number;
+  current_variation_total: number;
+  upcoming_payment: { amount: number; due_date: string; due_after: string | null } | null;
+} | null;
+
+export async function apiGetClientInvestment(projectId: string): Promise<ClientInvestmentSummary> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/client-investment`, {
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error('client-investment');
+  return r.json();
+}
+
+export type PaymentJourneyStep = {
+  milestone_id: string;
+  name: string;
+  sequence: number;
+  milestone_status: string;
+  payment_status: string | null;
+  amount: number;
+  planned_date: string | null;
+  actual_date: string | null;
+};
+
+export type ClientPaymentJourney = {
+  project_id: string;
+  contract_value: number;
+  steps: PaymentJourneyStep[];
+} | null;
+
+export async function apiGetClientPaymentJourney(projectId: string): Promise<ClientPaymentJourney> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/client-payment-journey`, {
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error('client-payment-journey');
+  return r.json();
+}
+
+export type ClientVariationView = {
+  id: string; title: string; description: string;
+  before_cost: number; after_cost: number;
+  impact: { cost_impact: number; schedule_impact_days: number; payment_impact: number; forecast_impact: number };
+  linked_drawing_ids: string[]; linked_photo_ids: string[]; linked_quotation_ids: string[];
+  status: string; raised_by: string; decided_at: string | null; approved_by: string | null;
+};
+
+export type ClientVariationCentre = {
+  project_id: string;
+  pending: ClientVariationView[];
+  history: ClientVariationView[];
+} | null;
+
+export async function apiGetClientVariationCentre(projectId: string): Promise<ClientVariationCentre> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/client-variations`, {
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error('client-variations');
+  return r.json();
+}
+
+export async function apiDecideVariation(variationId: string, decision: 'approved' | 'rejected'): Promise<ClientVariationView> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/variations/${variationId}/decide`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ decision }),
+  });
+  if (!r.ok) throw new Error('decide-variation');
+  return r.json();
+}
+

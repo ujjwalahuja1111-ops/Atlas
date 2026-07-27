@@ -19,6 +19,11 @@ import {
 } from '@/src/api';
 import { apiGetWorkflow, type WorkflowActivity } from '@/src/workflow_api';
 import { apiClientDashboard, type ClientDashboard } from '@/src/cre_api';
+import {
+  apiGetClientInvestment, apiGetClientPaymentJourney, apiGetClientVariationCentre, apiDecideVariation,
+  type ClientInvestmentSummary, type ClientPaymentJourney, type ClientVariationCentre, type ClientVariationView,
+  type PaymentJourneyStep,
+} from '@/src/commercial_api';
 import { apiListItems, type OperationalItem } from '@/src/ops_api';
 
 const TYPE_ICON: Record<string, any> = {
@@ -279,6 +284,10 @@ function ClientDashboardScreen() {
   const [creDash, setCreDash] = useState<ClientDashboard | null>(null);
   const [photos, setPhotos] = useState<{ base64: string; eventId: string }[]>([]);
   const [approvals, setApprovals] = useState<OperationalItem[]>([]);
+  const [investment, setInvestment] = useState<ClientInvestmentSummary>(null);
+  const [paymentJourney, setPaymentJourney] = useState<ClientPaymentJourney>(null);
+  const [variationCentre, setVariationCentre] = useState<ClientVariationCentre>(null);
+  const [decidingVariationId, setDecidingVariationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -303,18 +312,27 @@ function ClientDashboardScreen() {
     setApprovals(items);
 
     if (projectId) {
-      const [s, wf, cd] = await Promise.all([
+      const [s, wf, cd, inv, journey, varCentre] = await Promise.all([
         apiProjectSummary(projectId).catch(() => null),
         apiGetWorkflow(projectId).catch(() => [] as WorkflowActivity[]),
         apiClientDashboard(projectId).catch(() => null),
+        apiGetClientInvestment(projectId).catch(() => null),
+        apiGetClientPaymentJourney(projectId).catch(() => null),
+        apiGetClientVariationCentre(projectId).catch(() => null),
       ]);
       setSummary(s);
       setActivities(wf);
       setCreDash(cd);
+      setInvestment(inv);
+      setPaymentJourney(journey);
+      setVariationCentre(varCentre);
     } else {
       setSummary(null);
       setActivities([]);
       setCreDash(null);
+      setInvestment(null);
+      setPaymentJourney(null);
+      setVariationCentre(null);
     }
   }, []);
 
@@ -353,6 +371,28 @@ function ClientDashboardScreen() {
     const site = sites.find((x) => x.id === id);
     await loadForSite(id, site?.project_id);
     setLoading(false);
+  };
+
+  const onDecideVariation = async (variationId: string, decision: 'approved' | 'rejected') => {
+    if (decidingVariationId) return;
+    setDecidingVariationId(variationId);
+    try {
+      await apiDecideVariation(variationId, decision);
+      if (activeSite?.project_id) {
+        const [inv, journey, varCentre] = await Promise.all([
+          apiGetClientInvestment(activeSite.project_id).catch(() => null),
+          apiGetClientPaymentJourney(activeSite.project_id).catch(() => null),
+          apiGetClientVariationCentre(activeSite.project_id).catch(() => null),
+        ]);
+        setInvestment(inv);
+        setPaymentJourney(journey);
+        setVariationCentre(varCentre);
+      }
+    } catch (e: any) {
+      console.warn(e);
+    } finally {
+      setDecidingVariationId(null);
+    }
   };
 
   const completedCount = activities.filter((a) => a.status === 'completed').length;
@@ -444,6 +484,62 @@ function ClientDashboardScreen() {
               )}
             </DashCard>
 
+            {/* Your Investment (CX-01) — Contract Value, Paid, Outstanding,
+                Current Variation Total, Upcoming Payment. Every number read
+                directly from the client-investment endpoint; nothing is
+                calculated here. Budget/Forecast/internal costs are never
+                present in this response at all — see the backend's own
+                docstring. */}
+            {investment && (
+              <DashCard title="YOUR INVESTMENT" icon="wallet" testID="dash-investment">
+                <View style={dash.investmentGrid}>
+                  <InvestmentTile label="Contract Value" value={formatInr(investment.contract_value)} />
+                  <InvestmentTile label="Paid" value={formatInr(investment.paid)} />
+                  <InvestmentTile label="Outstanding" value={formatInr(investment.outstanding)} />
+                  <InvestmentTile label="Current Variation Total" value={formatInr(investment.current_variation_total)} />
+                </View>
+                {investment.upcoming_payment && (
+                  <View style={dash.upcomingPaymentBox}>
+                    <Ionicons name="calendar" size={18} color={theme.color.brand} />
+                    <View style={{ flex: 1, marginLeft: 8 }}>
+                      <Text style={dash.upcomingPaymentAmount}>{formatInr(investment.upcoming_payment.amount)} due</Text>
+                      {investment.upcoming_payment.due_after && (
+                        <Text style={dash.mutedText}>After {investment.upcoming_payment.due_after}</Text>
+                      )}
+                    </View>
+                  </View>
+                )}
+              </DashCard>
+            )}
+
+            {/* Payment Journey (CX-01) — the visual Contract -> Milestone ->
+                Payment sequence, derived entirely from the client-payment-
+                journey endpoint (itself entirely Commercial Foundation
+                Engine data). */}
+            {paymentJourney && paymentJourney.steps.length > 0 && (
+              <DashCard title="PAYMENT JOURNEY" icon="git-commit" testID="dash-payment-journey">
+                {paymentJourney.steps.map((step, i) => (
+                  <View key={step.milestone_id} style={dash.journeyRow}>
+                    <View style={dash.journeyIconCol}>
+                      <Ionicons
+                        name={step.milestone_status === 'paid' || step.milestone_status === 'closed' ? 'checkmark-circle'
+                          : step.payment_status === 'partially_paid' || step.payment_status === 'sent' || step.payment_status === 'raised' ? 'time'
+                          : step.milestone_status === 'achieved' || step.milestone_status === 'payment_requested' ? 'ellipse'
+                          : 'ellipse-outline'}
+                        size={20}
+                        color={step.milestone_status === 'paid' || step.milestone_status === 'closed' ? theme.color.success : theme.color.brand}
+                      />
+                      {i < paymentJourney.steps.length - 1 && <View style={dash.journeyConnector} />}
+                    </View>
+                    <View style={{ flex: 1, paddingBottom: 16 }}>
+                      <Text style={dash.journeyName}>{step.name}</Text>
+                      <Text style={dash.mutedText}>{formatInr(step.amount)} · {journeyStatusLabel(step)}</Text>
+                    </View>
+                  </View>
+                ))}
+              </DashCard>
+            )}
+
             {/* Milestones — prefers the CRE-reasoned "what's coming next"
                 (dependency-aware, not just the raw activity list) when
                 available; falls back to the plain workflow list if CRE
@@ -518,6 +614,67 @@ function ClientDashboardScreen() {
               )}
             </DashCard>
 
+            {/* Variation Approvals (CX-01) — commercial change requests,
+                distinct from the material/drawing approvals above. Every
+                card already carries its own calculated Cost/Schedule/
+                Payment/Forecast impact from commercial_engine directly -
+                nothing computed here. */}
+            {variationCentre && (variationCentre.pending.length > 0 || variationCentre.history.length > 0) && (
+              <DashCard title="VARIATION APPROVALS" icon="swap-horizontal" testID="dash-variations">
+                {variationCentre.pending.length === 0 ? (
+                  <Text style={dash.mutedText}>No variations awaiting your decision.</Text>
+                ) : (
+                  variationCentre.pending.map((v) => (
+                    <View key={v.id} testID={`dash-variation-${v.id}`} style={dash.variationCard}>
+                      <Text style={dash.variationTitle}>{v.title}</Text>
+                      <Text style={dash.mutedText}>{v.description}</Text>
+                      <View style={dash.variationRow}>
+                        <Text style={dash.mutedText}>Before: {formatInr(v.before_cost)}</Text>
+                        <Ionicons name="arrow-forward" size={14} color={theme.color.textDim} />
+                        <Text style={dash.variationAfter}>After: {formatInr(v.after_cost)}</Text>
+                      </View>
+                      <View style={dash.variationImpactRow}>
+                        <Text style={dash.impactChip}>Cost {formatInr(v.impact.cost_impact)}</Text>
+                        {v.impact.schedule_impact_days > 0 && (
+                          <Text style={dash.impactChip}>+{v.impact.schedule_impact_days} days</Text>
+                        )}
+                      </View>
+                      <View style={dash.variationActionsRow}>
+                        <Pressable
+                          testID={`dash-variation-reject-${v.id}`}
+                          disabled={decidingVariationId === v.id}
+                          onPress={() => onDecideVariation(v.id, 'rejected')}
+                          style={dash.rejectButton}
+                        >
+                          <Text style={dash.rejectButtonText}>DECLINE</Text>
+                        </Pressable>
+                        <Pressable
+                          testID={`dash-variation-approve-${v.id}`}
+                          disabled={decidingVariationId === v.id}
+                          onPress={() => onDecideVariation(v.id, 'approved')}
+                          style={dash.approveButton}
+                        >
+                          <Text style={dash.approveButtonText}>APPROVE</Text>
+                        </Pressable>
+                      </View>
+                    </View>
+                  ))
+                )}
+                {variationCentre.history.length > 0 && (
+                  <>
+                    <Text style={[dash.mutedText, { marginTop: 12, marginBottom: 4, fontWeight: '700' }]}>HISTORY</Text>
+                    {variationCentre.history.map((v) => (
+                      <View key={v.id} style={dash.variationHistoryRow}>
+                        <Ionicons name={v.status === 'approved' || v.status === 'implemented' ? 'checkmark-circle' : 'close-circle'}
+                          size={16} color={v.status === 'approved' || v.status === 'implemented' ? theme.color.success : theme.color.error} />
+                        <Text style={dash.milestoneText} numberOfLines={1}>{v.title} — {formatInr(v.impact.cost_impact)}</Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+              </DashCard>
+            )}
+
             {/* Documents — placeholder; no documents store exists yet */}
             <DashCard title="DOCUMENTS" icon="document-text" testID="dash-documents">
               <Text style={dash.mutedText}>No documents shared yet.</Text>
@@ -548,6 +705,29 @@ function DashStat({ label, value }: { label: string; value: number }) {
       <Text style={dash.statLabel}>{label}</Text>
     </View>
   );
+}
+
+function InvestmentTile({ label, value }: { label: string; value: string }) {
+  return (
+    <View style={dash.investmentTile}>
+      <Text style={dash.investmentTileLabel}>{label}</Text>
+      <Text style={dash.investmentTileValue}>{value}</Text>
+    </View>
+  );
+}
+
+function formatInr(n: number): string {
+  if (n >= 10000000) return `₹${(n / 10000000).toFixed(2)} Cr`;
+  if (n >= 100000) return `₹${(n / 100000).toFixed(1)}L`;
+  return `₹${n.toLocaleString('en-IN')}`;
+}
+
+function journeyStatusLabel(step: PaymentJourneyStep): string {
+  if (step.milestone_status === 'paid' || step.milestone_status === 'closed') return 'Paid';
+  if (step.payment_status === 'partially_paid') return 'Partially paid';
+  if (step.payment_status === 'sent' || step.payment_status === 'raised') return 'Payment due';
+  if (step.milestone_status === 'achieved' || step.milestone_status === 'payment_requested') return 'Completed';
+  return 'Upcoming';
 }
 
 function TimelineRow({ item, isLast, onPress }: { item: TimelineItem; isLast: boolean; onPress: () => void }) {
@@ -714,4 +894,39 @@ const dash = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: theme.color.border,
   },
   approvalTitle: { color: theme.color.text, fontSize: 15, fontWeight: '700' },
+  investmentGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
+  investmentTile: { width: '47%', backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, padding: 10 },
+  investmentTileLabel: { color: theme.color.textDim, fontSize: 11, fontWeight: '700', marginBottom: 4 },
+  investmentTileValue: { color: theme.color.text, fontSize: 16, fontWeight: '900' },
+  upcomingPaymentBox: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: theme.color.brandTint,
+    borderRadius: theme.radius.sm, padding: 10, marginTop: 8, borderWidth: 1, borderColor: theme.color.brand,
+  },
+  upcomingPaymentAmount: { color: theme.color.text, fontSize: 15, fontWeight: '900' },
+  journeyRow: { flexDirection: 'row' },
+  journeyIconCol: { alignItems: 'center', width: 28 },
+  journeyConnector: { width: 2, flex: 1, backgroundColor: theme.color.border, marginVertical: 2 },
+  journeyName: { color: theme.color.text, fontSize: 15, fontWeight: '800', marginBottom: 2 },
+  variationCard: {
+    backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, padding: 12, marginBottom: 10, gap: 6,
+  },
+  variationTitle: { color: theme.color.text, fontSize: 15, fontWeight: '800' },
+  variationRow: { flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 4 },
+  variationAfter: { color: theme.color.text, fontSize: 13, fontWeight: '700' },
+  variationImpactRow: { flexDirection: 'row', gap: 8, flexWrap: 'wrap' },
+  impactChip: {
+    color: theme.color.brand, fontSize: 12, fontWeight: '800', backgroundColor: theme.color.brandTint,
+    paddingHorizontal: 8, paddingVertical: 3, borderRadius: theme.radius.pill, overflow: 'hidden',
+  },
+  variationActionsRow: { flexDirection: 'row', gap: 8, marginTop: 6 },
+  rejectButton: {
+    flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: theme.radius.sm,
+    borderWidth: 1, borderColor: theme.color.error,
+  },
+  rejectButtonText: { color: theme.color.error, fontWeight: '800', fontSize: 13 },
+  approveButton: {
+    flex: 1, alignItems: 'center', paddingVertical: 10, borderRadius: theme.radius.sm, backgroundColor: theme.color.brand,
+  },
+  approveButtonText: { color: theme.color.onBrand, fontWeight: '800', fontSize: 13 },
+  variationHistoryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
 });
