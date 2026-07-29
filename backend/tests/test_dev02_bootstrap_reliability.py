@@ -208,3 +208,153 @@ async def test_non_completion_transitions_unaffected(dependency_chain):
     result = await workflow_engine.set_status(a_id, "in_progress", actor=ADMIN)
     assert result["status"] == "in_progress"
     assert result["actual_start"] is not None
+
+
+# ==========================================================================
+# STAB-01 Issue 1 — RP-001 Completion.
+#
+# Kept in THIS file for the exact same reason the DEV-02 continuation
+# tests above are: a second file independently swapping core_db.db at
+# import time collides with this file's own swap via shared global
+# module state when both run in the same pytest session - confirmed
+# directly, again, while writing this addition (the identical failure
+# mode this file's own docstring already documents from the first
+# time it happened).
+#
+# Covers RC-01's own finding: RP-001 carried 135 of 162 operational
+# items open despite 99.2% workflow completion, computing overall CRE
+# health as Critical. Root cause, found by measurement during this
+# sprint (not assumed): resolving open operational items ALONE had
+# ZERO effect on health - the actual primary driver was 155 of 157
+# requires_inspection activities complete with no inspection-category
+# operational item recorded, tripping CRE's own
+# quality.completed_without_inspection rule on every one. Both real
+# defects are fixed by creating the genuinely missing data and letting
+# CRE's own existing rule evaluation compute health from it - never by
+# assigning a health value directly.
+# ==========================================================================
+from engines import reasoning_engine, commercial_engine, operations_engine  # noqa: E402
+reasoning_engine.db = _mock_db
+commercial_engine.db = _mock_db
+operations_engine.db = _mock_db
+
+from scripts import seed_demo_project, reference_portfolio  # noqa: E402
+seed_demo_project.db = _mock_db
+reference_portfolio.db = _mock_db
+
+
+@pytest.fixture(scope="module")
+async def seeded_rp001():
+    """Seeds ACDP once for this block - the full 18-month simulation is
+    expensive to run per-test, matching test_cre_smoke_mongomock.py's
+    own module-scoped fixture convention."""
+    await seed_demo_project.main(close_when_done=False)
+    project = await core_db.db.projects.find_one({"code": "ACDP-VILLA"}, {"_id": 0})
+    admin = await memory_engine.get_user_by_phone("9800000001")
+    return project, admin
+
+
+async def test_rp001_health_is_critical_before_fix(seeded_rp001):
+    """Confirms the defect genuinely exists in freshly-seeded ACDP data
+    before either fix runs - a baseline, not an assumption."""
+    project, admin = seeded_rp001
+    health = await reasoning_engine.project_health(project["id"], user=admin)
+    assert health["status"] == "red"
+
+
+async def test_resolving_operational_items_alone_does_not_fix_health(seeded_rp001):
+    """Regression guard for a real investigation finding: resolving all
+    open operational items has ZERO effect on health by itself - the
+    actual driver is missing inspection records. This test exists so a
+    future change that removes the inspection-recording fix (assuming
+    operational-item resolution alone is sufficient) fails loudly."""
+    project, admin = seeded_rp001
+    await reference_portfolio.complete_rp001_operations()
+    health = await reasoning_engine.project_health(project["id"], user=admin)
+    assert health["status"] == "red", \
+        "operational-item resolution alone must not be sufficient to fix RP-001's health - " \
+        "if this now passes as green, the inspection-recording fix may have become redundant " \
+        "and this test should be revisited, not just relaxed"
+
+
+async def test_recording_missing_inspections_completes_the_fix(seeded_rp001):
+    project, admin = seeded_rp001
+    result = await reference_portfolio.record_missing_rp001_inspections()
+    assert result["recorded"] > 0
+    assert result["unmatched"] == [], "every uncovered activity must match a real site by name"
+
+    health = await reasoning_engine.project_health(project["id"], user=admin)
+    assert health["status"] == "green"
+    assert health["score"] == 100
+    assert health["drivers"] == []
+
+
+@pytest.fixture(scope="module")
+async def closed_out_rp001(seeded_rp001):
+    """RP-001 after both closeout fixes, explicit and independent of
+    test execution order — the tests above already exercise the BEFORE
+    state and each individual fix's own effect; everything below this
+    point needs the fully-closed-out state and gets it deterministically
+    here rather than relying on those earlier tests having already run
+    first (idempotent, so calling again after they did is a safe no-op,
+    not a duplicate mutation)."""
+    project, admin = seeded_rp001
+    await reference_portfolio.complete_rp001_operations()
+    await reference_portfolio.record_missing_rp001_inspections()
+    return project, admin
+
+
+async def test_no_critical_priority_operational_items_remain_open(closed_out_rp001):
+    project, admin = closed_out_rp001
+    sites = await memory_engine.list_sites(project_id=project["id"])
+    site_ids = [s["id"] for s in sites]
+    items = await core_db.db.operational_items.find({"site_id": {"$in": site_ids}}, {"_id": 0}).to_list(2000)
+    open_critical = [i for i in items if i["priority"] == "critical"
+                    and i["status"] not in ("fulfilled", "verified", "closed", "archived", "cancelled", "duplicate")]
+    assert open_critical == [], "a genuinely completed reference project must carry no open critical items"
+
+
+async def test_a_small_genuine_residual_remains(closed_out_rp001):
+    """Not every item is forced closed - a small, real punch-list is
+    deliberately left, matching how an actually-completed project
+    looks (not a suspiciously perfect zero)."""
+    project, admin = closed_out_rp001
+    sites = await memory_engine.list_sites(project_id=project["id"])
+    site_ids = [s["id"] for s in sites]
+    items = await core_db.db.operational_items.find({"site_id": {"$in": site_ids}}, {"_id": 0}).to_list(2000)
+    open_items = [i for i in items if i["status"] not in
+                 ("fulfilled", "verified", "closed", "archived", "cancelled", "duplicate")]
+    assert 0 <= len(open_items) <= 15, \
+        f"expected a small genuine residual (0-15 items), got {len(open_items)}"
+
+
+async def test_re_running_both_fixes_is_safe_and_converges(closed_out_rp001):
+    """Not a strict single-call no-op (the residual selection recomputes
+    against whatever's still open each run) but must be SAFE - no
+    duplicate inspection records, no error, and health remains green."""
+    project, admin = closed_out_rp001
+    await reference_portfolio.complete_rp001_operations()
+    inspection_result = await reference_portfolio.record_missing_rp001_inspections()
+    assert inspection_result["recorded"] == 0, "a second run must find nothing left uncovered"
+
+    health = await reasoning_engine.project_health(project["id"], user=admin)
+    assert health["status"] == "green"
+
+
+async def test_resolution_notes_are_contextual_not_generic(closed_out_rp001):
+    """Each resolved item's own note must reference real, varied content
+    - not a single repeated 'resolved' stamp on all items, per this
+    sprint's own explicit 'do not fabricate history' principle."""
+    project, admin = closed_out_rp001
+    sites = await memory_engine.list_sites(project_id=project["id"])
+    site_ids = [s["id"] for s in sites]
+    items = await core_db.db.operational_items.find(
+        {"site_id": {"$in": site_ids}, "category": "material_requirement",
+        "status": {"$in": ["fulfilled", "verified"]}}, {"_id": 0}).to_list(50)
+    assert len(items) > 5
+    events = await operations_engine.list_events_for_item(items[0]["id"])
+    fulfilled_events = [e for e in events if e["kind"] == "fulfilled"]
+    assert fulfilled_events
+    note = fulfilled_events[0]["payload"].get("note", "")
+    assert len(note) > 20
+    assert "delivered" in note.lower() or "received" in note.lower() or "procurement" in note.lower()

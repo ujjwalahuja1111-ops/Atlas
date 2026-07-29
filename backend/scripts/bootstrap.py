@@ -168,6 +168,8 @@ async def stage_reference_portfolio() -> None:
     await reference_portfolio.seed_rp001_commercial_reference()
     await reference_portfolio.migrate_rp001_to_commercial_engine()
     await reference_portfolio.migrate_rp002_to_commercial_engine()
+    await reference_portfolio.complete_rp001_operations()
+    await reference_portfolio.record_missing_rp001_inspections()
     print("Stage 5 — Reference Portfolio (RP-001, RP-002) and Commercial Foundation data ready.")
 
 

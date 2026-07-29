@@ -142,3 +142,49 @@ def test_regression_commercial_summary_available_for_reference_portfolio(admin):
 
 def test_regression_core_platform_unaffected(admin):
     assert requests.get(f"{API}/portfolio/control-center", headers=admin["headers"], timeout=20).status_code == 200
+
+
+# ==========================================================================
+# STAB-01 Issue 2 — Commercial Summary Consistency.
+#
+# RC-01 found: GET /commercial/summary returned 200 null for a
+# genuinely nonexistent project, indistinguishable from a real project
+# with no Contract yet. Verified here to already be resolved as a
+# direct, correct side effect of RC-01's own visibility fix
+# (commercial_engine.assert_project_visible calls memory_engine.get_project
+# first and raises CommercialNotFoundError -> 404 if the project truly
+# doesn't exist, before ever reaching the "does it have a contract"
+# question) - no additional code change was needed, only verification
+# that the fix already in place actually closes this specific finding
+# too, across every commercial route, not just /summary.
+# ==========================================================================
+COMMERCIAL_NULL_CAPABLE_PATHS = ["commercial/summary", "commercial/contract"]
+COMMERCIAL_LIST_PATHS = ["commercial/milestones", "commercial/payment-requests",
+                        "commercial/payments", "commercial/variations", "commercial/events"]
+
+
+@pytest.mark.parametrize("path", COMMERCIAL_NULL_CAPABLE_PATHS + COMMERCIAL_LIST_PATHS + ["commercial/budget"])
+def test_nonexistent_project_returns_404_not_200(path, admin):
+    r = requests.get(f"{API}/projects/nonexistent_stab01_check/{path}", headers=admin["headers"], timeout=20)
+    assert r.status_code == 404, f"{path}: a genuinely nonexistent project must 404, got {r.status_code}"
+
+
+@pytest.mark.parametrize("path", COMMERCIAL_NULL_CAPABLE_PATHS)
+def test_real_project_without_contract_returns_200_null(path, admin):
+    """A real project that simply has no Contract yet is a genuinely
+    different case from one that doesn't exist - this must remain 200
+    null, not be over-corrected into a 404 too."""
+    proj = requests.post(f"{API}/projects", json={"name": "STAB01 No Contract", "code": "STAB01NC"},
+                         headers=admin["headers"], timeout=20).json()
+    r = requests.get(f"{API}/projects/{proj['id']}/{path}", headers=admin["headers"], timeout=20)
+    assert r.status_code == 200
+    assert r.json() is None
+
+
+@pytest.mark.parametrize("path", COMMERCIAL_LIST_PATHS)
+def test_real_project_without_data_returns_200_empty_list(path, admin):
+    proj = requests.post(f"{API}/projects", json={"name": "STAB01 No Data", "code": "STAB01ND"},
+                         headers=admin["headers"], timeout=20).json()
+    r = requests.get(f"{API}/projects/{proj['id']}/{path}", headers=admin["headers"], timeout=20)
+    assert r.status_code == 200
+    assert r.json() == []
