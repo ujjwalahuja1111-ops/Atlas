@@ -47,6 +47,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from core.db import db
+from engines import memory_engine
 
 # ---------------------------------------------------------------------------
 # Helpers — matching every other engine's own established convention
@@ -78,6 +79,26 @@ class CommercialError(ValueError):
 
 class CommercialNotFoundError(CommercialError):
     pass
+
+
+async def assert_project_visible(project_id: str, user: dict) -> dict:
+    """RC-01 fix — every project-scoped read in routes/commercial.py
+    must call this before returning data. Out-of-scope projects behave
+    as if they do not exist (404, not 403), matching the exact same
+    convention workflow_engine._assert_project_visible and
+    reasoning_engine._assert_project_visible already establish. Public
+    (no leading underscore) specifically so routes/commercial.py can
+    call it directly without touching a private function — the same
+    architecture boundary the VV-01 sprint's own guard test enforces
+    platform-wide: a route may call a public engine function, never an
+    engine's private internals."""
+    project = await memory_engine.get_project(project_id)
+    if not project:
+        raise CommercialNotFoundError(f"Project '{project_id}' not found")
+    if memory_engine._is_project_scoped(user):
+        if project_id not in (user.get("assigned_project_ids") or []):
+            raise CommercialNotFoundError(f"Project '{project_id}' not found")
+    return project
 
 
 # ---------------------------------------------------------------------------

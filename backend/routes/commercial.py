@@ -64,6 +64,10 @@ async def create_contract(req: ContractCreate, user: dict = Depends(get_current_
 
 @router.get("/projects/{project_id}/commercial/contract")
 async def get_contract(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        await ce.assert_project_visible(project_id, user)
+    except ValueError as e:
+        _raise_for(e)
     contract = await ce.get_contract(project_id)
     if not contract:
         return None
@@ -108,6 +112,10 @@ async def create_milestone(req: MilestoneCreate, user: dict = Depends(get_curren
 
 @router.get("/projects/{project_id}/commercial/milestones")
 async def list_milestones(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        await ce.assert_project_visible(project_id, user)
+    except ValueError as e:
+        _raise_for(e)
     return await ce.list_milestones(project_id)
 
 
@@ -150,6 +158,10 @@ async def create_payment_request(req: PaymentRequestCreate, user: dict = Depends
 
 @router.get("/projects/{project_id}/commercial/payment-requests")
 async def list_payment_requests(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        await ce.assert_project_visible(project_id, user)
+    except ValueError as e:
+        _raise_for(e)
     return await ce.list_payment_requests(project_id)
 
 
@@ -191,6 +203,10 @@ async def record_payment(req: PaymentCreate, user: dict = Depends(get_current_us
 
 @router.get("/projects/{project_id}/commercial/payments")
 async def list_payments(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        await ce.assert_project_visible(project_id, user)
+    except ValueError as e:
+        _raise_for(e)
     return await ce.list_payments(project_id)
 
 
@@ -221,6 +237,10 @@ async def create_variation(req: VariationCreate, user: dict = Depends(get_curren
 
 @router.get("/projects/{project_id}/commercial/variations")
 async def list_variations(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        await ce.assert_project_visible(project_id, user)
+    except ValueError as e:
+        _raise_for(e)
     return await ce.list_variations(project_id)
 
 
@@ -284,6 +304,10 @@ async def create_budget(req: BudgetCreate, user: dict = Depends(get_current_user
 @router.get("/projects/{project_id}/commercial/budget")
 async def get_budget(project_id: str, user: dict = Depends(get_current_user)):
     _require_write_access(user)  # Budget is internal-only — never client-visible, per the frozen spec's own §6
+    try:
+        await ce.assert_project_visible(project_id, user)
+    except ValueError as e:
+        _raise_for(e)
     return await ce.get_budget(project_id)
 
 
@@ -330,6 +354,10 @@ async def record_actual_cost(project_id: str, req: CostEntry, user: dict = Depen
 
 @router.get("/projects/{project_id}/commercial/events")
 async def list_commercial_events(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        await ce.assert_project_visible(project_id, user)
+    except ValueError as e:
+        _raise_for(e)
     return await ce.list_commercial_events(project_id)
 
 
@@ -350,4 +378,8 @@ async def get_project_commercial_summary(project_id: str, user: dict = Depends(g
     falling back to the lightweight commercial_reference layer
     otherwise (see routes/reasoning.py's own
     get_project_commercial_reference)."""
+    try:
+        await ce.assert_project_visible(project_id, user)
+    except ValueError as e:
+        _raise_for(e)
     return await ce.get_project_commercial_summary(project_id)
