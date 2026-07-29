@@ -426,3 +426,93 @@ async def test_client_recent_activity_requires_project_visibility(seeded_rp001):
     outsider = await memory_engine.set_user_projects(outsider["id"], [])
     with pytest.raises(Exception):
         await reasoning_engine.client_recent_activity(project["id"], user=outsider)
+
+
+# ==========================================================================
+# Beta-02 — Commercial Workspace Completion: Cross-Validation.
+#
+# The sprint's own explicit requirement: Client Investment must match
+# Commercial Contract, Payment Journey must match Payment Requests,
+# Variation Centre must match Commercial Variations, Portfolio
+# Financials must match Commercial Summary. Verified here directly
+# against RP-001's own real, already-migrated Commercial Foundation
+# Engine data - not synthetic fixtures - so any future change that
+# makes one of these views diverge from its own source of truth fails
+# a real test, not just a manual spot-check.
+# ==========================================================================
+async def test_client_investment_matches_commercial_contract(seeded_rp001):
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+    client = await memory_engine.get_user_by_phone("9800000005")
+
+    summary = await commercial_engine.get_project_commercial_summary(project["id"])
+    investment = await reasoning_engine.client_investment_summary(project["id"], user=client)
+
+    assert investment["contract_value"] == summary["contract"]["current_contract_value"]
+    assert investment["current_variation_total"] == summary["approved_variations_total"]
+    assert investment["paid"] == summary["outstanding_payments"]["received"]
+    assert investment["outstanding"] == summary["outstanding_payments"]["outstanding"]
+
+
+async def test_payment_journey_matches_payment_requests(seeded_rp001):
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+
+    summary = await commercial_engine.get_project_commercial_summary(project["id"])
+    journey = await reasoning_engine.client_payment_journey(project["id"], user=admin)
+
+    summary_milestone_ids = {m["id"] for m in summary["milestones"]}
+    journey_milestone_ids = {s["milestone_id"] for s in journey["steps"]}
+    assert summary_milestone_ids == journey_milestone_ids
+
+    pr_by_milestone = {pr["milestone_id"]: pr for pr in summary["payment_requests"]}
+    for step in journey["steps"]:
+        pr = pr_by_milestone.get(step["milestone_id"])
+        expected_status = pr["status"] if pr else None
+        assert step["payment_status"] == expected_status
+
+
+async def test_variation_centre_matches_commercial_variations(seeded_rp001):
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+
+    summary = await commercial_engine.get_project_commercial_summary(project["id"])
+    centre = await reasoning_engine.client_variation_centre(project["id"], user=admin)
+
+    summary_ids = {v["id"] for v in summary["variations"]}
+    centre_ids = {v["id"] for v in centre["pending"]} | {v["id"] for v in centre["history"]}
+    assert summary_ids == centre_ids
+
+    summary_by_id = {v["id"]: v for v in summary["variations"]}
+    for v in centre["pending"] + centre["history"]:
+        source = summary_by_id[v["id"]]
+        assert v["before_cost"] == source["original_cost"]
+        assert v["status"] == source["status"]
+
+
+async def test_portfolio_financials_match_commercial_summary(seeded_rp001):
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+
+    summary = await commercial_engine.get_project_commercial_summary(project["id"])
+    portfolio = await reasoning_engine.portfolio_control_center(user=admin)
+    row = next(r for r in portfolio["projects"] if r["project_id"] == project["id"])
+
+    assert row["financials"]["budget"] == summary["budget"]["current_budget"]
+    assert row["financials"]["forecast_cost"] == summary["budget"]["forecast_cost"]
+    assert row["financials"]["cost_variance"] == summary["budget"]["variance"]
+    assert row["financials"]["cash_flow_signal"] == summary["cash_flow_signal"]
+
+
+async def test_commercial_summary_upcoming_payment_reused_not_duplicated(seeded_rp001):
+    """Regression guard for the Beta-02 refactor: client_investment_summary
+    must read commercial/summary's own upcoming_payment field rather than
+    recomputing it - confirmed here by checking they're identical, not just
+    similar."""
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+    client = await memory_engine.get_user_by_phone("9800000005")
+
+    summary = await commercial_engine.get_project_commercial_summary(project["id"])
+    investment = await reasoning_engine.client_investment_summary(project["id"], user=client)
+    assert investment["upcoming_payment"] == summary["upcoming_payment"]

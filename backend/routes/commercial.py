@@ -377,9 +377,20 @@ async def get_project_commercial_summary(project_id: str, user: dict = Depends(g
     once real Commercial Foundation Engine data exists for a project,
     falling back to the lightweight commercial_reference layer
     otherwise (see routes/reasoning.py's own
-    get_project_commercial_reference)."""
+    get_project_commercial_reference).
+
+    Beta-02 — Budget is stripped from the response for any role other
+    than management, matching "Budget (management only)" as documented
+    throughout Atlas (the frozen spec's own §6, this sprint's own
+    RBAC section). This is a route-level filter, not an engine change:
+    commercial_engine.get_project_commercial_summary itself stays
+    role-agnostic and unchanged, correct for its other internal callers
+    (client_investment_summary never reads budget from it at all)."""
     try:
         await ce.assert_project_visible(project_id, user)
     except ValueError as e:
         _raise_for(e)
-    return await ce.get_project_commercial_summary(project_id)
+    summary = await ce.get_project_commercial_summary(project_id)
+    if summary and user["role"] != "management":
+        summary = {**summary, "budget": None}
+    return summary

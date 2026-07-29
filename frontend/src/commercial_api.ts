@@ -104,6 +104,10 @@ export type Budget = {
   forecast_cost: number; variance: number; remaining_budget: number;
 };
 
+export type UpcomingPayment = {
+  amount: number; due_date: string; due_after: string | null; payment_request_id: string;
+} | null;
+
 export type CommercialSummary = {
   project_id: string;
   contract: Contract;
@@ -114,6 +118,7 @@ export type CommercialSummary = {
   payments: Payment[];
   outstanding_payments: { raised: number; received: number; outstanding: number };
   cash_flow_signal: string;
+  upcoming_payment: UpcomingPayment;
   variations: Variation[];
   approved_variations_total: number;
   pending_variations_total: number;
@@ -229,6 +234,23 @@ export async function apiGetClientRecentActivity(projectId: string): Promise<Cli
     headers: await authHeaders(),
   });
   if (!r.ok) throw new Error('client-recent-activity');
+  return r.json();
+}
+
+// Beta-02 — Commercial Timeline. The one piece of Commercial Foundation
+// data not already included in commercial/summary.
+export type CommercialEvent = {
+  id: string; project_id: string; kind: string;
+  entity_type: string; entity_id: string;
+  actor_user_id: string; actor_user_name: string;
+  payload: Record<string, any>; created_at: string;
+};
+
+export async function apiListCommercialEvents(projectId: string): Promise<CommercialEvent[]> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/commercial/events`, {
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error('commercial-events');
   return r.json();
 }
 

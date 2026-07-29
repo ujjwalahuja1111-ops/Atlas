@@ -1853,27 +1853,13 @@ async def client_investment_summary(project_id: str, *, user: dict) -> Optional[
     contract = summary["contract"]
     outstanding = summary["outstanding_payments"]
 
-    upcoming_payment = None
-    unpaid_prs = [pr for pr in summary["payment_requests"] if pr["status"] not in ("paid", "cancelled")]
-    if unpaid_prs:
-        # Earliest due date first — the one the client should expect next.
-        next_pr = min(unpaid_prs, key=lambda pr: pr["due_date"])
-        already_paid_on_this_pr = sum(
-            p["amount"] for p in summary["payments"] if p["payment_request_id"] == next_pr["id"])
-        milestone = next((m for m in summary["milestones"] if m["id"] == next_pr["milestone_id"]), None)
-        upcoming_payment = {
-            "amount": round(next_pr["amount"] - already_paid_on_this_pr, 2),
-            "due_date": next_pr["due_date"],
-            "due_after": milestone["name"] if milestone else None,
-        }
-
     return {
         "project_id": project_id,
         "contract_value": contract["current_contract_value"],
         "paid": outstanding["received"],
         "outstanding": outstanding["outstanding"],
         "current_variation_total": summary["approved_variations_total"],
-        "upcoming_payment": upcoming_payment,
+        "upcoming_payment": summary["upcoming_payment"],
     }
 
 
@@ -1943,6 +1929,14 @@ async def client_variation_centre(project_id: str, *, user: dict) -> Optional[di
             "decided_at": v["decided_at"],
             "approved_by": v["approved_by_user_name"],
         }
+
+    views = [_view(v) for v in variations]
+    return {
+        "project_id": project_id,
+        "pending": [v for v in views if v["status"] in ("submitted", "client_review")],
+        "history": [v for v in views if v["status"] in ("approved", "rejected", "implemented")],
+    }
+
 
 async def client_recent_activity(project_id: str, *, user: dict, days: int = 7) -> dict:
     """Beta-01 — closes the client dashboard's "WEEKLY SUMMARY" gap,

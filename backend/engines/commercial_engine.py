@@ -680,6 +680,29 @@ def cash_flow_signal(payment_requests: list[dict], payments: list[dict]) -> str:
     return "critical"
 
 
+def upcoming_payment(payment_requests: list[dict], payments: list[dict], milestones: list[dict]) -> Optional[dict]:
+    """The next payment expected: earliest-due unpaid Payment Request,
+    with its remaining balance (amount minus whatever's already been
+    paid against it) and which milestone triggered it. Beta-02 —
+    extracted here (moved, not duplicated) from what was previously
+    only reasoning_engine.client_investment_summary's own inline
+    calculation, so every caller of get_project_commercial_summary
+    (Client Investment, the Commercial Workspace's Cash Flow section,
+    Portfolio) reads the same one computation."""
+    unpaid_prs = [pr for pr in payment_requests if pr["status"] not in ("paid", "cancelled")]
+    if not unpaid_prs:
+        return None
+    next_pr = min(unpaid_prs, key=lambda pr: pr["due_date"])
+    already_paid = sum(p["amount"] for p in payments if p["payment_request_id"] == next_pr["id"])
+    milestone = next((m for m in milestones if m["id"] == next_pr["milestone_id"]), None)
+    return {
+        "amount": round(next_pr["amount"] - already_paid, 2),
+        "due_date": next_pr["due_date"],
+        "due_after": milestone["name"] if milestone else None,
+        "payment_request_id": next_pr["id"],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Commercial Snapshot
 # ---------------------------------------------------------------------------
@@ -741,6 +764,7 @@ async def get_project_commercial_summary(project_id: str) -> Optional[dict]:
         "payments": payments,
         "outstanding_payments": outstanding_payments(payment_requests, payments),
         "cash_flow_signal": cash_flow_signal(payment_requests, payments),
+        "upcoming_payment": upcoming_payment(payment_requests, payments, milestones),
         "variations": variations,
         "approved_variations_total": contract.get("approved_variations_total", 0),
         "pending_variations_total": sum(

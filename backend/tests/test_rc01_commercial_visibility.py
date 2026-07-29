@@ -188,3 +188,69 @@ def test_real_project_without_data_returns_200_empty_list(path, admin):
     r = requests.get(f"{API}/projects/{proj['id']}/{path}", headers=admin["headers"], timeout=20)
     assert r.status_code == 200
     assert r.json() == []
+
+
+# ==========================================================================
+# Beta-02 — Commercial Workspace Completion.
+#
+# Verifying RBAC while building the new admin/PM Commercial Workspace
+# surfaced a real gap: GET /commercial/summary returned the full budget
+# object to any role with project visibility - management, project
+# manager, and site_supervisor alike - contradicting "Budget
+# (management only)" as documented throughout Atlas (CF-01's own
+# frozen spec §6, this sprint's own RBAC section). The new workspace
+# screen already gated the Budget section's DISPLAY to management, but
+# the underlying API data was never actually restricted - "never
+# calculate/expose in the frontend" only works if the backend itself
+# doesn't over-share first. Fixed at the route level (not the engine,
+# which stays role-agnostic and correct for its other internal
+# callers - client_investment_summary never reads budget from this
+# summary at all, so it was never affected).
+# ==========================================================================
+@pytest.fixture()
+def project_with_budget(admin):
+    client, client_h = _login("client", "9990000201", "Beta02 Client")
+    pm, pm_h = _login("project_manager", "9990000202", "Beta02 PM")
+    sup, sup_h = _login("site_supervisor", "9990000203", "Beta02 Supervisor")
+    proj = requests.post(f"{API}/projects", json={"name": "Beta02 Budget Test", "code": "B02BUD"},
+                         headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj["id"], "client_id": client["id"],
+        "original_contract_value": 5000000, "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/commercial/budgets", json={
+        "project_id": proj["id"], "original_budget": 4000000,
+    }, headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/admin/users/{pm['id']}/projects", json={"project_ids": [proj["id"]]},
+                 headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/admin/users/{sup['id']}/projects", json={"project_ids": [proj["id"]]},
+                 headers=admin["headers"], timeout=20)
+    return proj, pm_h, sup_h, client_h
+
+
+def test_commercial_summary_budget_visible_to_management(admin, project_with_budget):
+    proj, _, _, _ = project_with_budget
+    r = requests.get(f"{API}/projects/{proj['id']}/commercial/summary", headers=admin["headers"], timeout=20)
+    assert r.json()["budget"] is not None
+
+
+@pytest.mark.parametrize("role_headers_index", [1, 2, 3])  # pm, supervisor, client
+def test_commercial_summary_budget_hidden_from_non_management(role_headers_index, project_with_budget):
+    proj = project_with_budget[0]
+    headers = project_with_budget[role_headers_index]
+    r = requests.get(f"{API}/projects/{proj['id']}/commercial/summary", headers=headers, timeout=20)
+    assert r.status_code == 200
+    assert r.json()["budget"] is None, \
+        "Budget must never be exposed via commercial/summary to any role other than management"
+
+
+def test_commercial_summary_other_fields_still_visible_to_pm(project_with_budget):
+    """Confirms the fix is scoped to budget only - PM's own 'operational
+    commercial visibility' (contract, milestones, variations, payments)
+    must remain intact."""
+    proj, pm_h, _, _ = project_with_budget
+    r = requests.get(f"{API}/projects/{proj['id']}/commercial/summary", headers=pm_h, timeout=20)
+    body = r.json()
+    assert body["contract"] is not None
+    assert body["contract"]["current_contract_value"] == 5000000
+    assert "cash_flow_signal" in body

@@ -218,7 +218,13 @@ export default function ProjectDetail() {
               unchanged, for any project without real Commercial Foundation
               Engine data yet — extending, not breaking, this screen. */}
           <View style={styles.workflowCard}>
-            <Text style={styles.sectionLabel}>COMMERCIAL</Text>
+            <Pressable onPress={() => router.push(`/commercial/${id}`)} style={styles.commercialHeaderRow} testID="commercial-open-workspace">
+              <Text style={styles.sectionLabel}>COMMERCIAL</Text>
+              <View style={styles.commercialHeaderLink}>
+                <Text style={styles.commercialHeaderLinkText}>Full Workspace</Text>
+                <Ionicons name="chevron-forward" size={16} color={theme.color.brand} />
+              </View>
+            </Pressable>
             {commercialSummary ? (
               <View style={styles.commercialGrid}>
                 <CommercialTile label="Current Contract" value={formatInr(commercialSummary.contract.current_contract_value)} />
@@ -486,6 +492,9 @@ const styles = StyleSheet.create({
   primary: { backgroundColor: theme.color.brand },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   sectionLabel: { color: theme.color.brand, fontSize: 11, fontWeight: '900', letterSpacing: 2, marginBottom: 8 },
+  commercialHeaderRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  commercialHeaderLink: { flexDirection: 'row', alignItems: 'center', gap: 2, marginBottom: 8 },
+  commercialHeaderLinkText: { color: theme.color.brand, fontSize: 12, fontWeight: '700' },
   errorBanner: {
     flexDirection: 'row', alignItems: 'center', gap: 8, marginHorizontal: theme.spacing.md,
     marginBottom: theme.spacing.sm, padding: 10, borderRadius: theme.radius.sm,
