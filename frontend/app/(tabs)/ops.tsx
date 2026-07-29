@@ -148,8 +148,15 @@ export default function OpsScreen() {
   return (
     <SafeAreaView style={styles.safe} edges={['top']}>
       <View style={styles.header}>
-        <Text style={styles.h1}>OPS</Text>
-        <Text style={styles.h2}>{viewRole === 'supervisor' ? 'My Tasks' : 'Operational Center'}</Text>
+        <View>
+          <Text style={styles.h1}>OPS</Text>
+          <Text style={styles.h2}>{viewRole === 'supervisor' ? 'My Tasks' : 'Operational Center'}</Text>
+        </View>
+        {viewRole !== 'client' && (
+          <Pressable testID="ops-create-item" onPress={() => router.push('/op/create')} style={styles.createButton}>
+            <Ionicons name="add" size={22} color={theme.color.onBrand} />
+          </Pressable>
+        )}
       </View>
 
       {loading ? (
@@ -468,7 +475,14 @@ export function humanBlocker(c: string) {
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: theme.color.surface },
-  header: { paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: theme.spacing.sm },
+  header: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: theme.spacing.sm,
+  },
+  createButton: {
+    width: 40, height: 40, borderRadius: 20, backgroundColor: theme.color.brand,
+    alignItems: 'center', justifyContent: 'center',
+  },
   h1: { color: theme.color.text, fontSize: 32, fontWeight: '900', letterSpacing: 2 },
   h2: { color: theme.color.brand, fontSize: 14, fontWeight: '700', marginTop: 2 },
   center: { flex: 1, alignItems: 'center', justifyContent: 'center' },

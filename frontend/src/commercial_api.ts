@@ -209,3 +209,26 @@ export async function apiDecideVariation(variationId: string, decision: 'approve
   return r.json();
 }
 
+// Beta-01 — a factual, data-driven activity rollup replacing the
+// client dashboard's previous permanent "AI summaries coming soon"
+// placeholder. No AI, no new engine — a count of real events already
+// stored, in the last N days.
+export type ClientRecentActivity = {
+  project_id: string;
+  period_days: number;
+  activities_completed: number;
+  photos_captured: number;
+  voice_updates: number;
+  payments_received: number;
+  variations_decided: number;
+  has_activity: boolean;
+};
+
+export async function apiGetClientRecentActivity(projectId: string): Promise<ClientRecentActivity> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/client-recent-activity`, {
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error('client-recent-activity');
+  return r.json();
+}
+

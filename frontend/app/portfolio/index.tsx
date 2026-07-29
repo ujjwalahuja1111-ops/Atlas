@@ -25,6 +25,15 @@ function formatDate(iso: string | null): string {
   catch { return '—'; }
 }
 
+function formatInr(n: number | null): string {
+  if (n === null) return '—';
+  const sign = n < 0 ? '-' : '';
+  const abs = Math.abs(n);
+  if (abs >= 10000000) return `${sign}₹${(abs / 10000000).toFixed(2)} Cr`;
+  if (abs >= 100000) return `${sign}₹${(abs / 100000).toFixed(1)}L`;
+  return `${sign}₹${abs.toLocaleString('en-IN')}`;
+}
+
 function formatVariance(days: number | null): string {
   if (days === null) return '—';
   if (days === 0) return 'On schedule';
@@ -200,11 +209,36 @@ function ProjectRow({ row, onPress }: { row: PortfolioProjectRow; onPress: () =>
         </View>
       )}
 
-      {/* Future Ready — Phase 2 placeholders, visibly disabled, no data. */}
-      {!row.financials.enabled && (
+      {row.financials.enabled ? (
+        <View style={styles.financialsRow} testID={`portfolio-financials-${row.project_id}`}>
+          <View style={styles.financialsItem}>
+            <Text style={styles.financialsLabel}>BUDGET</Text>
+            <Text style={styles.financialsValue}>{formatInr(row.financials.budget)}</Text>
+          </View>
+          <View style={styles.financialsItem}>
+            <Text style={styles.financialsLabel}>FORECAST</Text>
+            <Text style={styles.financialsValue}>{formatInr(row.financials.forecast_cost)}</Text>
+          </View>
+          <View style={styles.financialsItem}>
+            <Text style={styles.financialsLabel}>VARIANCE</Text>
+            <Text style={[styles.financialsValue,
+              (row.financials.cost_variance ?? 0) < 0 && styles.financialsValueNegative]}>
+              {formatInr(row.financials.cost_variance)}
+            </Text>
+          </View>
+          {row.financials.cash_flow_signal ? (
+            <View style={styles.financialsItem}>
+              <Text style={styles.financialsLabel}>CASH FLOW</Text>
+              <Text style={styles.financialsValue}>
+                {row.financials.cash_flow_signal.charAt(0).toUpperCase() + row.financials.cash_flow_signal.slice(1)}
+              </Text>
+            </View>
+          ) : null}
+        </View>
+      ) : (
         <View style={styles.financialsPlaceholder} testID={`portfolio-financials-disabled-${row.project_id}`}>
           <Ionicons name="lock-closed-outline" size={12} color={theme.color.textDim} />
-          <Text style={styles.financialsPlaceholderText}>Budget · Cost · Profitability — coming soon</Text>
+          <Text style={styles.financialsPlaceholderText}>No commercial data yet</Text>
         </View>
       )}
     </Pressable>
@@ -285,4 +319,13 @@ const styles = StyleSheet.create({
     borderTopWidth: 1, borderTopColor: theme.color.border, opacity: 0.5,
   },
   financialsPlaceholderText: { color: theme.color.textDim, fontSize: 11, fontStyle: 'italic' },
+
+  financialsRow: {
+    flexDirection: 'row', flexWrap: 'wrap', gap: theme.spacing.md, paddingTop: theme.spacing.sm,
+    borderTopWidth: 1, borderTopColor: theme.color.border,
+  },
+  financialsItem: { minWidth: '30%' },
+  financialsLabel: { color: theme.color.textDim, fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
+  financialsValue: { color: theme.color.text, fontSize: 13, fontWeight: '700', marginTop: 1 },
+  financialsValueNegative: { color: theme.color.error },
 });

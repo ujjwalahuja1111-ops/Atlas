@@ -21,7 +21,9 @@ import { apiGetWorkflow, type WorkflowActivity } from '@/src/workflow_api';
 import { apiClientDashboard, type ClientDashboard } from '@/src/cre_api';
 import {
   apiGetClientInvestment, apiGetClientPaymentJourney, apiGetClientVariationCentre, apiDecideVariation,
+  apiGetClientRecentActivity,
   type ClientInvestmentSummary, type ClientPaymentJourney, type ClientVariationCentre, type ClientVariationView,
+  type ClientRecentActivity,
   type PaymentJourneyStep,
 } from '@/src/commercial_api';
 import { apiListItems, type OperationalItem } from '@/src/ops_api';
@@ -287,6 +289,7 @@ function ClientDashboardScreen() {
   const [investment, setInvestment] = useState<ClientInvestmentSummary>(null);
   const [paymentJourney, setPaymentJourney] = useState<ClientPaymentJourney>(null);
   const [variationCentre, setVariationCentre] = useState<ClientVariationCentre>(null);
+  const [recentActivity, setRecentActivity] = useState<ClientRecentActivity | null>(null);
   const [decidingVariationId, setDecidingVariationId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -312,13 +315,14 @@ function ClientDashboardScreen() {
     setApprovals(items);
 
     if (projectId) {
-      const [s, wf, cd, inv, journey, varCentre] = await Promise.all([
+      const [s, wf, cd, inv, journey, varCentre, activity] = await Promise.all([
         apiProjectSummary(projectId).catch(() => null),
         apiGetWorkflow(projectId).catch(() => [] as WorkflowActivity[]),
         apiClientDashboard(projectId).catch(() => null),
         apiGetClientInvestment(projectId).catch(() => null),
         apiGetClientPaymentJourney(projectId).catch(() => null),
         apiGetClientVariationCentre(projectId).catch(() => null),
+        apiGetClientRecentActivity(projectId).catch(() => null),
       ]);
       setSummary(s);
       setActivities(wf);
@@ -326,6 +330,7 @@ function ClientDashboardScreen() {
       setInvestment(inv);
       setPaymentJourney(journey);
       setVariationCentre(varCentre);
+      setRecentActivity(activity);
     } else {
       setSummary(null);
       setActivities([]);
@@ -333,6 +338,7 @@ function ClientDashboardScreen() {
       setInvestment(null);
       setPaymentJourney(null);
       setVariationCentre(null);
+      setRecentActivity(null);
     }
   }, []);
 
@@ -585,15 +591,39 @@ function ClientDashboardScreen() {
               )}
             </DashCard>
 
-            {/* AI-generated summaries — placeholder; no summary-generation
-                engine exists yet (explicitly a future, dedicated capability) */}
-            <DashCard title="WEEKLY SUMMARY" icon="sparkles" testID="dash-ai-summary">
-              <View style={dash.placeholderBox}>
-                <Ionicons name="hourglass-outline" size={22} color={theme.color.textDim} />
-                <Text style={dash.mutedText}>
-                  AI-generated summaries are not available yet. Your project team can share updates directly in the meantime.
-                </Text>
-              </View>
+            {/* Recent Activity (Beta-01) — a factual 7-day rollup,
+                replacing the previous permanent "AI summaries coming
+                soon" placeholder, which also mislabeled itself as an
+                AI capability Atlas doesn't have. Every number here is
+                a plain count read directly from existing collections
+                — no calculation happens on this screen. */}
+            <DashCard title="RECENT ACTIVITY" icon="pulse" testID="dash-recent-activity">
+              {recentActivity && recentActivity.has_activity ? (
+                <View style={dash.activityGrid}>
+                  {recentActivity.activities_completed > 0 && (
+                    <ActivityStat icon="checkmark-circle" label="activities completed"
+                      value={recentActivity.activities_completed} />
+                  )}
+                  {recentActivity.photos_captured > 0 && (
+                    <ActivityStat icon="camera" label="photos added"
+                      value={recentActivity.photos_captured} />
+                  )}
+                  {recentActivity.voice_updates > 0 && (
+                    <ActivityStat icon="mic" label="voice updates"
+                      value={recentActivity.voice_updates} />
+                  )}
+                  {recentActivity.payments_received > 0 && (
+                    <ActivityStat icon="cash" label="payments recorded"
+                      value={recentActivity.payments_received} />
+                  )}
+                  {recentActivity.variations_decided > 0 && (
+                    <ActivityStat icon="swap-horizontal" label="variations decided"
+                      value={recentActivity.variations_decided} />
+                  )}
+                </View>
+              ) : (
+                <Text style={dash.mutedText}>No new activity in the last 7 days.</Text>
+              )}
             </DashCard>
 
             {/* Pending approvals */}
@@ -712,6 +742,15 @@ function InvestmentTile({ label, value }: { label: string; value: string }) {
     <View style={dash.investmentTile}>
       <Text style={dash.investmentTileLabel}>{label}</Text>
       <Text style={dash.investmentTileValue}>{value}</Text>
+    </View>
+  );
+}
+
+function ActivityStat({ icon, label, value }: { icon: any; label: string; value: number }) {
+  return (
+    <View style={dash.activityStat}>
+      <Ionicons name={icon} size={16} color={theme.color.brand} />
+      <Text style={dash.activityStatText}><Text style={dash.activityStatValue}>{value}</Text> {label}</Text>
     </View>
   );
 }
@@ -929,4 +968,8 @@ const dash = StyleSheet.create({
   },
   approveButtonText: { color: theme.color.onBrand, fontWeight: '800', fontSize: 13 },
   variationHistoryRow: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 4 },
+  activityGrid: { gap: 10 },
+  activityStat: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  activityStatText: { color: theme.color.textMuted, fontSize: 14 },
+  activityStatValue: { color: theme.color.text, fontWeight: '800' },
 });

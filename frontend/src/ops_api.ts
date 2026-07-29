@@ -170,6 +170,19 @@ export async function apiListItems(filter: {
   return r.json();
 }
 
+export async function apiCreateItem(input: {
+  site_id: string; category: string; title: string; description?: string;
+  priority?: 'low' | 'normal' | 'high' | 'critical'; required_by?: string;
+}): Promise<OperationalItem> {
+  const r = await apiFetch(`${BACKEND}/api/operational-items`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await headers()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error('create-item');
+  return r.json();
+}
+
 export async function apiGetItem(id: string): Promise<{ item: OperationalItem; history: OperationalEvent[]; evidence: any | null }> {
   const r = await apiFetch(`${BACKEND}/api/operational-items/${id}`, { headers: await headers() });
   if (!r.ok) throw new Error('item');

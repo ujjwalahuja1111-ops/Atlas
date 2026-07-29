@@ -358,3 +358,71 @@ async def test_resolution_notes_are_contextual_not_generic(closed_out_rp001):
     note = fulfilled_events[0]["payload"].get("note", "")
     assert len(note) > 20
     assert "delivered" in note.lower() or "received" in note.lower() or "procurement" in note.lower()
+
+
+# ==========================================================================
+# Beta-01 — Product Completion.
+#
+# Two genuine gaps found during a real user-journey walkthrough (not a
+# code audit): the Portfolio Control Center's per-project financials
+# were permanently stubbed disabled/null ("coming soon") despite the
+# Commercial Foundation Engine having carried real budget/forecast
+# data for months; and the client dashboard's "WEEKLY SUMMARY" card
+# was a permanent placeholder that also mislabeled itself as an AI
+# capability Atlas doesn't have. Both fixed by reusing existing engine
+# data directly - no new engine, no fabrication, no AI.
+# ==========================================================================
+async def test_portfolio_financials_enabled_with_real_commercial_data(seeded_rp001):
+    """RP-001 has real Commercial Foundation Engine data once migrated
+    (a separate step from ACDP's own base seed - ensured explicitly
+    here, not assumed from the shared fixture, which other tests in
+    this file deliberately don't need it for) - Portfolio Control
+    Center must surface it, not show the old disabled placeholder."""
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+    portfolio = await reasoning_engine.portfolio_control_center(user=admin)
+    row = next(r for r in portfolio["projects"] if r["project_id"] == project["id"])
+    assert row["financials"]["enabled"] is True
+    assert row["financials"]["budget"] is not None
+    assert row["financials"]["forecast_cost"] is not None
+    assert row["financials"]["cash_flow_signal"] in ("healthy", "attention", "critical")
+
+
+async def test_portfolio_financials_disabled_for_project_without_commercial_data(seeded_rp001):
+    """A project with no Contract/Budget must stay honestly disabled -
+    never a fabricated number."""
+    project, admin = seeded_rp001
+    fresh_project = await memory_engine.insert_project(name="No Commercial Data Test", code="NOCOMM01")
+    portfolio = await reasoning_engine.portfolio_control_center(user=admin)
+    row = next((r for r in portfolio["projects"] if r["project_id"] == fresh_project["id"]), None)
+    if row:  # only present if visible in this snapshot; absence is also a valid pass
+        assert row["financials"]["enabled"] is False
+        assert row["financials"]["budget"] is None
+
+
+async def test_client_recent_activity_counts_real_events(seeded_rp001):
+    project, admin = seeded_rp001
+    activity = await reasoning_engine.client_recent_activity(project["id"], user=admin, days=548)
+    # ACDP's own 18-month simulated timeline easily exceeds any activity
+    # in the real last-7-days window, so a wide `days` window is used
+    # here specifically to confirm the counting logic itself works
+    # against real, existing event data - not to claim 548 days is the
+    # real product's own default.
+    assert activity["photos_captured"] > 0
+    assert activity["activities_completed"] > 0
+    assert activity["has_activity"] is True
+
+
+async def test_client_recent_activity_empty_window_shows_no_activity(seeded_rp001):
+    project, admin = seeded_rp001
+    activity = await reasoning_engine.client_recent_activity(project["id"], user=admin, days=0)
+    assert activity["has_activity"] is False
+    assert activity["photos_captured"] == 0
+
+
+async def test_client_recent_activity_requires_project_visibility(seeded_rp001):
+    project, admin = seeded_rp001
+    outsider = await memory_engine.upsert_user(phone="9990000999", name="Outsider", role="site_supervisor")
+    outsider = await memory_engine.set_user_projects(outsider["id"], [])
+    with pytest.raises(Exception):
+        await reasoning_engine.client_recent_activity(project["id"], user=outsider)

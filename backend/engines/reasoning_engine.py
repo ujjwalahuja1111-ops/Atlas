@@ -1944,15 +1944,50 @@ async def client_variation_centre(project_id: str, *, user: dict) -> Optional[di
             "approved_by": v["approved_by_user_name"],
         }
 
-    views = [_view(v) for v in variations]
+async def client_recent_activity(project_id: str, *, user: dict, days: int = 7) -> dict:
+    """Beta-01 — closes the client dashboard's "WEEKLY SUMMARY" gap,
+    which was a permanent placeholder ("AI-generated summaries are not
+    available yet") that also mislabeled itself as an AI capability
+    Atlas doesn't have. This is deliberately NOT that — no summary
+    generation, no new engine, just a factual count of real activity
+    in the last `days` days, read directly from the same collections
+    every other client-facing view already reads from. Reused, not
+    duplicated: the same event/workflow/commercial data client_timeline,
+    client_payment_journey, and the Photos card already read.
+    """
+    await _assert_project_visible(project_id, user)
+    cutoff = (_now() - timedelta(days=days))
+    cutoff_iso = _iso(cutoff)
+
+    events = await db.events.find(
+        {"project_id": project_id, "server_created_at": {"$gte": cutoff_iso}},
+        {"_id": 0, "kind": 1}).to_list(500)
+    photo_count = sum(1 for e in events if e.get("kind") == "photo")
+    voice_count = sum(1 for e in events if e.get("kind") == "voice")
+
+    completed_activities = await db.workflow_activities.count_documents(
+        {"project_id": project_id, "status": "completed", "updated_at": {"$gte": cutoff_iso}})
+
+    commercial_events = await db.commercial_events.find(
+        {"project_id": project_id, "created_at": {"$gte": cutoff_iso}},
+        {"_id": 0, "kind": 1}).to_list(200)
+    payments_received = sum(1 for e in commercial_events if e.get("kind") == "payment_received")
+    variations_decided = sum(1 for e in commercial_events if e.get("kind") in
+                             ("variation_approved", "variation_rejected"))
+
     return {
         "project_id": project_id,
-        "pending": [v for v in views if v["status"] in ("submitted", "client_review")],
-        "history": [v for v in views if v["status"] in ("approved", "rejected", "implemented")],
+        "period_days": days,
+        "activities_completed": completed_activities,
+        "photos_captured": photo_count,
+        "voice_updates": voice_count,
+        "payments_received": payments_received,
+        "variations_decided": variations_decided,
+        "has_activity": any([completed_activities, photo_count, voice_count,
+                            payments_received, variations_decided]),
     }
 
 
-# ---------------------------------------------------------------------------
 # Reference Portfolio (RP-01) — cross-project comparison.
 #
 # Composes existing per-engine data for two (or more) projects side by
@@ -2355,8 +2390,11 @@ def _project_row(p: dict) -> dict:
         "critical_operational_items": len(critical_open_items),
         "overdue_client_approvals": _overdue_client_approvals(snapshot),
         "next_milestone": next_expected["name"] if next_expected else None,
-        # Future Ready — Phase 2 placeholders, deliberately null/disabled.
-        # See engines/reasoning_engine.py's module note above.
+        # Enriched with real Commercial Foundation Engine data by
+        # portfolio_control_center (the async caller) where a project
+        # has one - see that function's own docstring. Stubbed
+        # disabled/null here as the honest default for any project
+        # that doesn't.
         "financials": {
             "enabled": False,
             "budget": None,
@@ -2414,6 +2452,24 @@ async def portfolio_control_center(*, user: dict) -> dict:
     """
     portfolio = await _portfolio(user)
     rows = sorted((_project_row(p) for p in portfolio), key=_portfolio_sort_key)
+
+    from engines import commercial_engine as ce
+    commercial_summaries = await asyncio.gather(
+        *(ce.get_project_commercial_summary(r["project_id"]) for r in rows))
+    for row, summary in zip(rows, commercial_summaries):
+        if not summary or not summary.get("budget"):
+            continue
+        contract_value = summary["contract"]["current_contract_value"]
+        forecast_cost = summary["budget"]["forecast_cost"]
+        row["financials"] = {
+            "enabled": True,
+            "budget": summary["budget"]["current_budget"],
+            "forecast_cost": forecast_cost,
+            "cost_variance": summary["budget"]["variance"],
+            "profitability": round(contract_value - forecast_cost, 2),
+            "cash_flow": None,  # no numeric cash-flow figure exists — see cash_flow_signal instead
+            "cash_flow_signal": summary["cash_flow_signal"],
+        }
 
     commercial_refs = await asyncio.gather(
         *(memory_engine.get_commercial_reference(r["project_id"]) for r in rows))

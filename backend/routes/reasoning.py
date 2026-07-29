@@ -270,6 +270,17 @@ async def get_client_variation_centre(project_id: str,
         _raise_for(e)
 
 
+@router.get("/projects/{project_id}/client-recent-activity")
+async def get_client_recent_activity(project_id: str,
+                                     user: dict = Depends(get_current_user)):
+    """Beta-01 — factual 7-day activity rollup, replacing the client
+    dashboard's previous permanent "AI summaries coming soon" stub."""
+    try:
+        return await reasoning_engine.client_recent_activity(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/portfolio/compare")
 async def get_portfolio_comparison(project_ids: str,
                                    user: dict = Depends(get_current_user)):

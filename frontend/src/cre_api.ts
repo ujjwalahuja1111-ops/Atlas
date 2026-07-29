@@ -158,6 +158,7 @@ export type PortfolioFinancials = {
   cost_variance: number | null;
   profitability: number | null;
   cash_flow: number | null;
+  cash_flow_signal?: string | null;
 };
 
 export type PortfolioProjectRow = {
