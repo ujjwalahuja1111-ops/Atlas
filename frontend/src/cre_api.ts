@@ -223,6 +223,26 @@ export async function apiPortfolioControlCenter(): Promise<PortfolioControlCente
   return get(`/api/portfolio/control-center`);
 }
 
+// Beta-05 continuation — Priority Engine: "Today's Highest Priorities,"
+// one ranked, cross-project list.
+export type PriorityItem = {
+  kind: 'project_health' | 'schedule' | 'approval' | 'commercial' | 'recommended_action';
+  project_id: string; project_name: string;
+  severity: 'critical' | 'warning' | 'advisory' | 'info';
+  title: string; detail: string;
+  insight_id?: string;
+};
+
+export type PriorityEngineResult = {
+  generated_at: string;
+  projects_covered: number;
+  priorities: PriorityItem[];
+};
+
+export async function apiPriorityEngine(): Promise<PriorityEngineResult> {
+  return get(`/api/portfolio/priorities`);
+}
+
 /** Triggers a fresh CRE reasoning pass for a project (snapshot -> rules
  * -> persist insights + a reasoning_runs record). Idempotent - rerunning
  * on unchanged state refreshes existing open insights rather than

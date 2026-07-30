@@ -359,6 +359,20 @@ async def get_portfolio_control_center(user: dict = Depends(get_current_user)):
     return await reasoning_engine.portfolio_control_center(user=user)
 
 
+@router.get("/portfolio/priorities")
+async def get_priority_engine(user: dict = Depends(get_current_user)):
+    """Priority Engine (Beta-05 continuation) — "Today's Highest
+    Priorities," one ranked, cross-project attention list composed
+    from portfolio_control_center and explain_health, both unchanged.
+    Same RBAC as Portfolio Control Center itself — management only."""
+    _forbid_client(user)
+    if user["role"] != "management":
+        raise HTTPException(
+            status_code=403,
+            detail="Only management can view Priority Engine.")
+    return await reasoning_engine.priority_engine(user=user)
+
+
 @router.post("/insights/{insight_id}/status")
 async def set_insight_status(insight_id: str, req: InsightStatusRequest,
                              user: dict = Depends(get_current_user)):

@@ -96,6 +96,9 @@ export default function PortfolioControlCenterScreen() {
           <Text style={styles.h1}>PORTFOLIO CONTROL CENTER</Text>
           <Text style={styles.h2}>Schedule-based portfolio health · Management</Text>
         </View>
+        <Pressable testID="portfolio-priorities" onPress={() => router.push('/priorities')} style={styles.iconBtn}>
+          <Ionicons name="flag" size={22} color={theme.color.brand} />
+        </Pressable>
         <Pressable testID="portfolio-refresh" onPress={load} style={styles.iconBtn}>
           <Ionicons name="refresh" size={22} color={theme.color.brand} />
         </Pressable>

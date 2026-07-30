@@ -1589,6 +1589,98 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Priority Engine (Beta-05 continuation) — this sprint's own named
+# "highest remaining gap." One ranked, cross-project attention list —
+# deliberately NOT "Project A dashboard, Project B dashboard." Composed
+# entirely from portfolio_control_center (unchanged) and explain_health
+# (unchanged, called only for projects portfolio_control_center itself
+# already flagged as at-risk — not a new signal, a reuse of the exact
+# same health_status/critical_issues_count fields every other
+# management screen already reads). No new scoring model: ranking uses
+# the same SEVERITIES ordering CRE's own findings and insights already
+# carry.
+# ---------------------------------------------------------------------------
+
+async def priority_engine(*, user: dict) -> dict:
+    """"Today's Highest Priorities" — a single flat, ranked list
+    spanning every project the caller can see, not a per-project view.
+    Every entry traces to a real, existing signal: either a project-level
+    concern portfolio_control_center's own row already computed (health,
+    schedule slip, critical operational items, pending approvals), or a
+    specific recommended action explain_health's own insight-derived
+    output already computed for an at-risk project. Nothing here
+    calculates health, risk, or urgency a second time.
+    """
+    portfolio = await portfolio_control_center(user=user)
+    rows = portfolio["projects"]
+
+    priorities: list[dict] = []
+    for row in rows:
+        # Project-level entries — straight from portfolio_control_center's
+        # own row, no recalculation.
+        if row["health_status"] == "Critical":
+            priorities.append({
+                "kind": "project_health", "project_id": row["project_id"],
+                "project_name": row["project_name"], "severity": "critical",
+                "title": f"{row['project_name']}: health is Critical (score {row['health_score']})",
+                "detail": f"{row['critical_issues_count']} critical finding(s) currently open.",
+            })
+        elif row["health_status"] == "Attention":
+            priorities.append({
+                "kind": "project_health", "project_id": row["project_id"],
+                "project_name": row["project_name"], "severity": "warning",
+                "title": f"{row['project_name']}: health needs attention (score {row['health_score']})",
+                "detail": f"{row['critical_issues_count']} critical finding(s) currently open.",
+            })
+        if row["schedule_variance_days"] and row["schedule_variance_days"] > 0:
+            priorities.append({
+                "kind": "schedule", "project_id": row["project_id"],
+                "project_name": row["project_name"],
+                "severity": "critical" if row["schedule_variance_days"] > 14 else "warning",
+                "title": f"{row['project_name']}: forecast {row['schedule_variance_days']}d behind plan",
+                "detail": f"Planned completion {row['planned_completion']}, forecast {row['forecast_completion']}.",
+            })
+        if row["overdue_client_approvals"] > 0:
+            priorities.append({
+                "kind": "approval", "project_id": row["project_id"],
+                "project_name": row["project_name"], "severity": "warning",
+                "title": f"{row['project_name']}: {row['overdue_client_approvals']} client approval(s) overdue",
+                "detail": "Blocking client-facing progress until decided.",
+            })
+        if row["financials"]["enabled"] and (row["financials"]["cost_variance"] or 0) < 0:
+            priorities.append({
+                "kind": "commercial", "project_id": row["project_id"],
+                "project_name": row["project_name"], "severity": "warning",
+                "title": f"{row['project_name']}: cost variance is negative",
+                "detail": f"Forecast cost exceeds budget by the variance shown in the Commercial Workspace.",
+            })
+
+        # Insight-derived entries — only for projects already flagged
+        # at-risk above, reusing explain_health's own top recommended
+        # actions rather than a portfolio-wide recompute for every
+        # project regardless of whether it needs attention.
+        if row["health_status"] in ("Critical", "Attention"):
+            explained = await explain_health(row["project_id"], user=user)
+            for action in explained["recommended_actions"][:3]:
+                if action["severity"] not in ("critical", "warning"):
+                    continue
+                priorities.append({
+                    "kind": "recommended_action", "project_id": row["project_id"],
+                    "project_name": row["project_name"], "severity": action["severity"],
+                    "title": action["suggested_action"]["title"] if action["suggested_action"] else action["observation"],
+                    "detail": action["observation"],
+                    "insight_id": action["insight_id"],
+                })
+
+    priorities.sort(key=lambda p: SEVERITIES.index(p["severity"]), reverse=True)
+    return {
+        "generated_at": _iso(_now()),
+        "projects_covered": len(rows),
+        "priorities": priorities,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Construction memory (Sprint 01B item 11) — capture only, NO learning.
 # CRE-owned collection `construction_memory`: one record per completed
 # activity. Nothing in this sprint reads these records back; the future

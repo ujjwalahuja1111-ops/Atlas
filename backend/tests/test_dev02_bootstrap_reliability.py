@@ -821,3 +821,95 @@ async def test_explain_health_action_currency_reflects_real_insight_state(seeded
     explained = await reasoning_engine.explain_health(project["id"], user=admin)
     open_insights = await reasoning_engine.list_insights(project["id"], user=admin, status="open")
     assert explained["action_currency"]["open_insight_count"] == len(open_insights)
+
+
+# ==========================================================================
+# Beta-05 continuation — Priority Engine: this sprint's own named
+# "highest remaining gap." Composed entirely from portfolio_control_center
+# and explain_health, both unchanged. "Today's Highest Priorities" - one
+# flat, ranked, cross-project list, never a second health/risk
+# calculation.
+# ==========================================================================
+async def test_priority_engine_flags_unhealthy_project(seeded_rp001):
+    """A deliberately-constructed, isolated unhealthy project - not
+    dependent on seeded_rp001's own current state, which varies
+    depending on whether other tests sharing this module-scoped
+    fixture have already run the STAB-01 closeout (making RP-001
+    healthy) before this test executes.
+
+    Ten uncovered-inspection activities, not one: each
+    quality.completed_without_inspection finding is "warning" severity
+    (a 12-point penalty per the health formula's own
+    _HEALTH_SEVERITY_PENALTY) - a single finding only drops the quality
+    dimension to 88, not enough to cross the Healthy threshold. Ten
+    reliably drives quality to 0 and overall status to Critical,
+    calibrated directly against the real scoring formula rather than
+    assumed."""
+    _, admin = seeded_rp001
+    project = await memory_engine.insert_project(name="Priority Engine Unhealthy Test", code="PRIOUNH")
+    template = await knowledge_engine.create_item(actor=admin, type_="workflow_template", name="T", status="active")
+    activity_ids = []
+    for n in range(10):
+        act = await knowledge_engine.create_item(actor=admin, type_="activity", name=f"Snagging Check {n}", status="active")
+        await knowledge_engine.add_relationship(template["id"], actor=admin, type_="includes_activity", target_id=act["id"])
+    activities = await workflow_engine.generate_workflow(project["id"], template["id"], actor=admin)
+    for a in activities:
+        await core_db.db.workflow_activities.update_one(
+            {"id": a["id"]}, {"$set": {"requires_inspection": True, "status": "completed"}})
+
+    portfolio = await reasoning_engine.portfolio_control_center(user=admin)
+    row = next(r for r in portfolio["projects"] if r["project_id"] == project["id"])
+    assert row["health_status"] in ("Critical", "Attention"), \
+        f"test setup did not produce an unhealthy project (got {row['health_status']}) - cannot verify the engine surfaces real problems"
+
+    result = await reasoning_engine.priority_engine(user=admin)
+    project_priorities = [p for p in result["priorities"] if p["project_id"] == project["id"]]
+    assert len(project_priorities) > 0
+    assert any(p["kind"] == "project_health" for p in project_priorities)
+
+
+async def test_priority_engine_recommended_actions_trace_to_real_insights(seeded_rp001):
+    """Every recommended_action entry must reference a real, currently
+    open insight for that exact project - never fabricated."""
+    project, admin = seeded_rp001
+    result = await reasoning_engine.priority_engine(user=admin)
+    open_insights = await reasoning_engine.list_insights(project["id"], user=admin, status="open")
+    open_insight_ids = {i["id"] for i in open_insights}
+    for p in result["priorities"]:
+        if p["kind"] == "recommended_action" and p["project_id"] == project["id"]:
+            assert p["insight_id"] in open_insight_ids
+
+
+async def test_priority_engine_sorted_worst_first(seeded_rp001):
+    project, admin = seeded_rp001
+    result = await reasoning_engine.priority_engine(user=admin)
+    ranks = [reasoning_engine.SEVERITIES.index(p["severity"]) for p in result["priorities"]]
+    assert ranks == sorted(ranks, reverse=True)
+
+
+async def test_priority_engine_caps_recommended_actions_per_project(seeded_rp001):
+    """No single project should flood the portfolio-wide list - capped
+    at 3 recommended actions per project, matching a genuinely
+    cross-project "highest priorities" view rather than one project's
+    own full insight backlog."""
+    project, admin = seeded_rp001
+    result = await reasoning_engine.priority_engine(user=admin)
+    project_recommended = [p for p in result["priorities"]
+                           if p["kind"] == "recommended_action" and p["project_id"] == project["id"]]
+    assert len(project_recommended) <= 3
+
+
+async def test_priority_engine_engine_function_has_no_internal_gate(seeded_rp001):
+    """priority_engine() itself performs no role check, matching
+    portfolio_control_center's own established convention of gating
+    entirely at the route layer, not the engine. The actual RBAC
+    enforcement (403 for non-management) is verified at the HTTP layer
+    in test_rc01_commercial_visibility.py, where a real client can be
+    constructed to receive a real HTTP response. This test only
+    confirms the engine function's own output shape is stable
+    regardless of caller role - a genuinely different, narrower claim
+    than "forbidden"."""
+    project, admin = seeded_rp001
+    pm = await memory_engine.get_user_by_phone("9800000002")
+    result = await reasoning_engine.priority_engine(user=pm)
+    assert "priorities" in result

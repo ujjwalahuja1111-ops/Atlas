@@ -254,3 +254,19 @@ def test_commercial_summary_other_fields_still_visible_to_pm(project_with_budget
     assert body["contract"] is not None
     assert body["contract"]["current_contract_value"] == 5000000
     assert "cash_flow_signal" in body
+
+
+# ==========================================================================
+# Beta-05 continuation — Priority Engine RBAC (the actual HTTP-layer
+# enforcement, matching Portfolio Control Center's own established
+# management-only gate exactly).
+# ==========================================================================
+def test_priority_engine_management_only(admin, project_with_budget):
+    _, pm_h, sup_h, client_h = project_with_budget
+    r_admin = requests.get(f"{API}/portfolio/priorities", headers=admin["headers"], timeout=20)
+    assert r_admin.status_code == 200
+    assert "priorities" in r_admin.json()
+
+    for role_headers in (pm_h, sup_h, client_h):
+        r = requests.get(f"{API}/portfolio/priorities", headers=role_headers, timeout=20)
+        assert r.status_code == 403, "Priority Engine must be management-only, matching Portfolio Control Center"
