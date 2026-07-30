@@ -41,6 +41,26 @@ export async function apiProjectHealth(projectId: string): Promise<ProjectHealth
   return get(`/api/projects/${projectId}/health`);
 }
 
+// Beta-05 — Explain Health. Score/dimensions/drivers reused byte-for-byte
+// from ProjectHealth; recommended_actions is the only new composition.
+export type RecommendedAction = {
+  insight_id: string; rule_id: string; domain: string;
+  severity: 'critical' | 'warning' | 'advisory' | 'info';
+  observation: string;
+  suggested_action: { category: string; title: string; description: string } | null;
+  created_at: string;
+};
+
+export type ExplainedHealth = ProjectHealth & {
+  project_id: string;
+  recommended_actions: RecommendedAction[];
+  action_currency: { open_insight_count: number; most_recent_insight_at: string | null; note: string };
+};
+
+export async function apiExplainHealth(projectId: string): Promise<ExplainedHealth> {
+  return get(`/api/projects/${projectId}/explain-health`);
+}
+
 export type Insight = {
   id: string;
   rule_id: string;

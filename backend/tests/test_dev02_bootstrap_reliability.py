@@ -771,3 +771,53 @@ async def test_site_progress_404_for_nonexistent_project(seeded_rp001):
     project, admin = seeded_rp001
     with pytest.raises(ValueError):
         await operations_engine.site_progress("nonexistent_project_xyz", user=admin)
+
+
+# ==========================================================================
+# Beta-05 — Construction Intelligence: Explain Health.
+#
+# This sprint's own named "largest remaining gap." Composed entirely
+# from project_health and list_insights called exactly as they already
+# exist - never a second health calculation, never a second insight
+# system.
+# ==========================================================================
+async def test_explain_health_matches_project_health_exactly(seeded_rp001):
+    """Cross-validation: explain_health's score/status/dimensions/drivers
+    must be byte-identical to project_health's own output - confirming
+    genuine reuse, not a second, potentially-diverging calculation."""
+    project, admin = seeded_rp001
+    health = await reasoning_engine.project_health(project["id"], user=admin)
+    explained = await reasoning_engine.explain_health(project["id"], user=admin)
+    assert explained["score"] == health["score"]
+    assert explained["status"] == health["status"]
+    assert explained["dimensions"] == health["dimensions"]
+    assert explained["drivers"] == health["drivers"]
+
+
+async def test_explain_health_recommended_actions_are_real_insights(seeded_rp001):
+    """Every recommended action must trace back to a real, open,
+    persisted insight - never fabricated advice."""
+    project, admin = seeded_rp001
+    explained = await reasoning_engine.explain_health(project["id"], user=admin)
+    open_insights = await reasoning_engine.list_insights(project["id"], user=admin, status="open")
+    open_insight_ids = {i["id"] for i in open_insights}
+    for action in explained["recommended_actions"]:
+        assert action["insight_id"] in open_insight_ids
+        assert action["suggested_action"] is not None
+        assert "category" in action["suggested_action"]
+        assert "title" in action["suggested_action"]
+
+
+async def test_explain_health_recommended_actions_sorted_by_severity(seeded_rp001):
+    project, admin = seeded_rp001
+    explained = await reasoning_engine.explain_health(project["id"], user=admin)
+    severities = [a["severity"] for a in explained["recommended_actions"]]
+    severity_ranks = [reasoning_engine.SEVERITIES.index(s) for s in severities]
+    assert severity_ranks == sorted(severity_ranks, reverse=True)
+
+
+async def test_explain_health_action_currency_reflects_real_insight_state(seeded_rp001):
+    project, admin = seeded_rp001
+    explained = await reasoning_engine.explain_health(project["id"], user=admin)
+    open_insights = await reasoning_engine.list_insights(project["id"], user=admin, status="open")
+    assert explained["action_currency"]["open_insight_count"] == len(open_insights)

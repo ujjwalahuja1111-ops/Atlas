@@ -223,6 +223,21 @@ export default function ProjectDetail() {
             <Text style={styles.commercialEmpty}>Today's work, completed activities, current issues, and the latest site captures — in one place.</Text>
           </Pressable>
 
+          {/* Explain Health (Beta-05) — Score → Dimensions → Drivers →
+              Recommended Actions, composed from CRE's own existing
+              health computation and stored insights. Never a second
+              health calculation. */}
+          <Pressable onPress={() => router.push(`/explain-health/${id}`)} style={styles.workflowCard} testID="open-explain-health">
+            <View style={styles.commercialHeaderRow}>
+              <Text style={styles.sectionLabel}>PROJECT HEALTH</Text>
+              <View style={styles.commercialHeaderLink}>
+                <Text style={styles.commercialHeaderLinkText}>Explain</Text>
+                <Ionicons name="chevron-forward" size={16} color={theme.color.brand} />
+              </View>
+            </View>
+            <Text style={styles.commercialEmpty}>Why this project's health is what it is, and what to do about it.</Text>
+          </Pressable>
+
           {/* CF-01 continuation — Commercial section now prefers the real
               Commercial Foundation Engine summary when a project has one
               (richer: real Paid/Outstanding, Milestone Completion, Budget

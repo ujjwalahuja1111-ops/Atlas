@@ -110,6 +110,20 @@ async def get_project_health(project_id: str,
         _raise_for(e)
 
 
+@router.get("/projects/{project_id}/explain-health")
+async def get_explain_health(project_id: str,
+                             user: dict = Depends(get_current_user)):
+    """Beta-05 — "Explain Health": Score -> Dimensions -> Drivers ->
+    Recommended Actions, composed from project_health and
+    list_insights exactly as they already exist. Same RBAC as
+    /health itself."""
+    _forbid_client(user)
+    try:
+        return await reasoning_engine.explain_health(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/projects/{project_id}/commercial-reference")
 async def get_project_commercial_reference(project_id: str,
                                            user: dict = Depends(get_current_user)):

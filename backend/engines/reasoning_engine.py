@@ -1526,6 +1526,68 @@ async def project_health(project_id: str, *, user: dict) -> dict:
     return compute_project_health(snapshot, open_insight_count=len(open_now))
 
 
+async def explain_health(project_id: str, *, user: dict) -> dict:
+    """Beta-05 — "Explain Health," this sprint's own named "largest
+    remaining gap." Health Score -> Dimensions -> Drivers ->
+    Recommended Actions, composed entirely from two existing functions
+    called exactly as they already exist - never a second health
+    calculation, never a second insight system.
+
+    Score/status/dimensions/drivers come from project_health() (fresh,
+    computed from the current snapshot on every call). Recommended
+    Actions come from list_insights()'s own stored, open insights -
+    each one already carries a rule_id, a severity, and (per CRE's own
+    Sprint 01A boundary) a suggested_operational_action with no
+    fabricated advice: CRE names what a human COULD do, never creates
+    the item itself.
+
+    Honest distinction stated explicitly, not glossed over: dimensions
+    and drivers are always current (recomputed from live data on every
+    call); recommended actions reflect whatever CRE's own reasoning
+    run last persisted, which could be stale if no recent run has
+    happened for this project. If that gap matters for a given
+    project, action_currency below says so plainly rather than
+    presenting stale advice as fresh.
+    """
+    health = await project_health(project_id, user=user)
+    open_insights = await list_insights(project_id, user=user, status="open")
+
+    recommended_actions = [
+        {
+            "insight_id": i["id"],
+            "rule_id": i.get("rule_id"),
+            "domain": i.get("domain"),
+            "severity": i.get("severity"),
+            "observation": i.get("observation"),
+            "suggested_action": i.get("suggested_operational_action"),
+            "created_at": i.get("created_at"),
+        }
+        for i in sorted(open_insights, key=lambda x: SEVERITIES.index(x["severity"]), reverse=True)
+        if i.get("suggested_operational_action")
+    ]
+
+    most_recent_insight_at = max((i.get("created_at") or "" for i in open_insights), default=None)
+
+    return {
+        "project_id": project_id,
+        "score": health["score"],
+        "status": health["status"],
+        "dimensions": health["dimensions"],
+        "drivers": health["drivers"],
+        "progress": health["progress"],
+        "recommended_actions": recommended_actions,
+        "action_currency": {
+            "open_insight_count": len(open_insights),
+            "most_recent_insight_at": most_recent_insight_at,
+            "note": "Recommended actions reflect the last completed reasoning run for this "
+                   "project, not necessarily this exact moment — dimensions and drivers above "
+                   "are always freshly computed." if open_insights else
+                   "No open insights recorded for this project yet — recommended actions will "
+                   "appear once a reasoning run has been performed.",
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Construction memory (Sprint 01B item 11) — capture only, NO learning.
 # CRE-owned collection `construction_memory`: one record per completed
