@@ -1146,6 +1146,57 @@ async def _my_day_pm(user: dict, project_ids: list[str], now_iso: str) -> dict:
          "planned_finish": {"$ne": None, "$lt": now_iso}}, {"_id": 0},
     ).to_list(300)
 
+    # Blocked workflow items — the same signal supervisor's own My Day
+    # already surfaces, extended to PM (Beta-03): a PM needs to see
+    # blocked work across every project they're not personally assigned
+    # to just as much as a supervisor needs to see their own.
+    blocked_activities = await db.workflow_activities.find(
+        {"project_id": {"$in": project_ids}, "status": "blocked"}, {"_id": 0},
+    ).to_list(300)
+
+    # Upcoming inspections — activities flagged requires_inspection,
+    # already in progress or ready, not yet covered by a real
+    # inspection record. Reuses reasoning_projections.inspection_covered
+    # directly, the exact function CRE's own quality.completed_without_inspection
+    # rule already uses (STAB-01) — never a second, parallel check.
+    from engines import reasoning_projections as projections
+    candidate_activities = await db.workflow_activities.find(
+        {"project_id": {"$in": project_ids}, "requires_inspection": True,
+         "status": {"$in": ["ready", "in_progress"]}}, {"_id": 0},
+    ).to_list(300)
+    upcoming_inspections = []
+    if candidate_activities:
+        site_ids_by_project: dict[str, list[str]] = {}
+        for pid in {a["project_id"] for a in candidate_activities}:
+            sites = await memory_engine.list_sites(project_id=pid)
+            site_ids_by_project[pid] = [s["id"] for s in sites]
+        all_site_ids = [sid for ids in site_ids_by_project.values() for sid in ids]
+        items_for_coverage = await db.operational_items.find(
+            {"site_id": {"$in": all_site_ids}}, {"_id": 0}).to_list(2000)
+        upcoming_inspections = [
+            a for a in candidate_activities if not projections.inspection_covered(a, items_for_coverage)]
+
+    # Commercial Awareness (Beta-03) — Commercial Workspace integrated
+    # into My Day for the first time. Every project's own pending
+    # Variations, unpaid Payment Requests, and next-sequence upcoming
+    # Milestone, read directly from commercial_engine's own lists —
+    # nothing here recalculates a cost, a status, or a due date.
+    from engines import commercial_engine as ce
+    pending_variations: list[dict] = []
+    pending_payment_requests: list[dict] = []
+    upcoming_milestones: list[dict] = []
+    for pid in project_ids:
+        variations = await ce.list_variations(pid)
+        pending_variations.extend(v for v in variations if v["status"] in ("submitted", "client_review"))
+        prs = await ce.list_payment_requests(pid)
+        pending_payment_requests.extend(pr for pr in prs if pr["status"] not in ("paid", "cancelled"))
+        milestones = await ce.list_milestones(pid)
+        not_yet_achieved = sorted(
+            (m for m in milestones if m["status"] in ("pending", "ready")),
+            key=lambda m: m["sequence"])
+        if not_yet_achieved:
+            upcoming_milestones.append(not_yet_achieved[0])
+
     pending_approvals = [i for i in in_scope if i["category"] == "client_approval"]
     high_priority = [i for i in in_scope if i["priority"] in ("critical", "high")]
     # Escalations — the same "genuinely urgent, needs a human now" signal
@@ -1163,9 +1214,15 @@ async def _my_day_pm(user: dict, project_ids: list[str], now_iso: str) -> dict:
         "role": user["role"],
         "projects_requiring_attention": len(projects_requiring_attention_ids),
         "delayed_activities": sorted(delayed_activities, key=lambda a: a.get("planned_finish") or ""),
+        "blocked_activities": blocked_activities,
+        "open_operational_items_count": len(in_scope),
+        "upcoming_inspections": upcoming_inspections,
         "pending_approvals": sorted(pending_approvals, key=_urgency_sort_key),
         "high_priority_work": sorted(high_priority, key=_urgency_sort_key),
         "escalations": sorted(escalations, key=_urgency_sort_key),
+        "pending_variations": pending_variations,
+        "pending_payment_requests": pending_payment_requests,
+        "upcoming_milestones": upcoming_milestones,
     }
 
 

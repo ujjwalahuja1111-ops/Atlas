@@ -134,9 +134,15 @@ export type MyDayPm = {
   role: string;
   projects_requiring_attention: number;
   delayed_activities: any[];
+  blocked_activities: any[];
+  open_operational_items_count: number;
+  upcoming_inspections: any[];
   pending_approvals: MyDayItem[];
   high_priority_work: MyDayItem[];
   escalations: MyDayItem[];
+  pending_variations: any[];
+  pending_payment_requests: any[];
+  upcoming_milestones: any[];
 };
 
 export type MyDayAdmin = {

@@ -33,6 +33,7 @@ export function MyDaySection({ viewRole }: { viewRole: 'admin' | 'pm' | 'supervi
   if (!data) return null;
 
   const openItem = (x: any) => router.push(isActivity(x) ? `/workflow/${x.project_id}` : `/op/${x.id}`);
+  const openCommercial = (x: any) => router.push(`/commercial/${x.project_id}`);
 
   if (data.role === 'site_supervisor') {
     const d = data as MyDaySupervisor;
@@ -84,13 +85,60 @@ export function MyDaySection({ viewRole }: { viewRole: 'admin' | 'pm' | 'supervi
     <View testID="my-day-pm">
       <View style={styles.statsRow}>
         <StatPill label="Projects Needing Attention" value={d.projects_requiring_attention} color={theme.color.warning} />
+        <StatPill label="Open Operational Items" value={d.open_operational_items_count} />
       </View>
       <MyDayGroup icon="time" title="DELAYED ACTIVITIES" items={d.delayed_activities} onPress={openItem} />
+      <MyDayGroup icon="alert-circle" title="BLOCKED" items={d.blocked_activities} onPress={openItem} />
+      <MyDayGroup icon="search" title="UPCOMING INSPECTIONS" items={d.upcoming_inspections} onPress={openItem} />
       <MyDayGroup icon="checkmark-done" title="PENDING APPROVALS" items={d.pending_approvals} onPress={openItem} />
       <MyDayGroup icon="flag" title="HIGH PRIORITY WORK" items={d.high_priority_work} onPress={openItem} />
       <MyDayGroup icon="warning" title="ESCALATIONS" items={d.escalations} onPress={openItem} />
+      <CommercialAwarenessGroup icon="swap-horizontal" title="PENDING VARIATIONS" items={d.pending_variations} kind="variation" onPress={openCommercial} />
+      <CommercialAwarenessGroup icon="receipt" title="PENDING PAYMENT REQUESTS" items={d.pending_payment_requests} kind="payment_request" onPress={openCommercial} />
+      <CommercialAwarenessGroup icon="flag-outline" title="UPCOMING MILESTONES" items={d.upcoming_milestones} kind="milestone" onPress={openCommercial} />
     </View>
   );
+}
+
+function CommercialAwarenessGroup({ icon, title, items, kind, onPress }: {
+  icon: any; title: string; items: any[]; kind: 'variation' | 'payment_request' | 'milestone';
+  onPress: (x: any) => void;
+}) {
+  if (items.length === 0) return null;
+  const labelFor = (x: any) =>
+    kind === 'payment_request' ? `${x.number} — ${formatInrShort(x.amount)}` :
+    kind === 'variation' ? x.title : x.name;
+  const subtextFor = (x: any) =>
+    kind === 'payment_request' ? `Due ${x.due_date?.slice(0, 10) || '—'} · ${x.status}` :
+    kind === 'variation' ? `${formatInrShort(x.proposed_cost)} · ${x.status}` :
+    `${x.planned_percent}% · ${x.planned_date?.slice(0, 10) || '—'}`;
+  return (
+    <View style={styles.section}>
+      <View style={styles.headerRow}>
+        <Ionicons name={icon} size={18} color={theme.color.brand} />
+        <Text style={styles.headerText}>{title}</Text>
+        <View style={styles.countBadge}><Text style={styles.countBadgeText}>{items.length}</Text></View>
+      </View>
+      {items.slice(0, 6).map((x) => (
+        <Pressable key={x.id} testID={`my-day-commercial-${x.id}`} onPress={() => onPress(x)}
+          style={[styles.card, { borderLeftColor: theme.color.brand }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle} numberOfLines={1}>{labelFor(x)}</Text>
+            <Text style={styles.cardMeta} numberOfLines={1}>{subtextFor(x)}</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+        </Pressable>
+      ))}
+    </View>
+  );
+}
+
+function formatInrShort(n: number | null | undefined): string {
+  if (n === null || n === undefined) return '—';
+  const abs = Math.abs(n);
+  if (abs >= 10000000) return `₹${(abs / 10000000).toFixed(2)}Cr`;
+  if (abs >= 100000) return `₹${(abs / 100000).toFixed(1)}L`;
+  return `₹${abs.toLocaleString('en-IN')}`;
 }
 
 function MyDayGroup({ icon, title, items, onPress, highlight }: {

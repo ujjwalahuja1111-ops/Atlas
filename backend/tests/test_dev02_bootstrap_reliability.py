@@ -516,3 +516,58 @@ async def test_commercial_summary_upcoming_payment_reused_not_duplicated(seeded_
     summary = await commercial_engine.get_project_commercial_summary(project["id"])
     investment = await reasoning_engine.client_investment_summary(project["id"], user=client)
     assert investment["upcoming_payment"] == summary["upcoming_payment"]
+
+
+# ==========================================================================
+# Beta-03 — Project Operations Completion: My Day Commercial Awareness.
+#
+# Commercial Workspace (Beta-02) had never been integrated into My Day
+# - a PM's daily operational hub had no visibility into pending
+# variations, unpaid payment requests, or upcoming milestones at all.
+# Fixed by reusing commercial_engine's own list functions directly, no
+# recalculation. Also closes two smaller, explicitly-named gaps:
+# Blocked workflow items (supervisor's My Day already had this, PM's
+# didn't) and Open Operational Items as a visible total.
+# ==========================================================================
+async def test_pm_my_day_includes_commercial_awareness(seeded_rp001):
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+    pm = await memory_engine.get_user_by_phone("9800000002")
+
+    result = await operations_engine.my_day(user=pm)
+    for key in ("blocked_activities", "open_operational_items_count", "upcoming_inspections",
+               "pending_variations", "pending_payment_requests", "upcoming_milestones"):
+        assert key in result
+
+
+async def test_pm_my_day_pending_variations_matches_commercial_engine(seeded_rp001):
+    """Cross-validation: My Day's pending variations must be exactly the
+    submitted/client_review subset of commercial_engine's own
+    list_variations - never a second, independently-derived list."""
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+    pm = await memory_engine.get_user_by_phone("9800000002")
+
+    result = await operations_engine.my_day(user=pm)
+    all_variations = await commercial_engine.list_variations(project["id"])
+    expected_pending_ids = {v["id"] for v in all_variations if v["status"] in ("submitted", "client_review")}
+    actual_ids = {v["id"] for v in result["pending_variations"] if v["project_id"] == project["id"]}
+    assert actual_ids == expected_pending_ids
+
+
+async def test_pm_my_day_upcoming_milestone_is_earliest_unachieved(seeded_rp001):
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+    pm = await memory_engine.get_user_by_phone("9800000002")
+
+    result = await operations_engine.my_day(user=pm)
+    all_milestones = await commercial_engine.list_milestones(project["id"])
+    not_yet_achieved = sorted(
+        (m for m in all_milestones if m["status"] in ("pending", "ready")),
+        key=lambda m: m["sequence"])
+    project_milestone = next((m for m in result["upcoming_milestones"] if m["project_id"] == project["id"]), None)
+    if not_yet_achieved:
+        assert project_milestone is not None
+        assert project_milestone["id"] == not_yet_achieved[0]["id"]
+    else:
+        assert project_milestone is None
