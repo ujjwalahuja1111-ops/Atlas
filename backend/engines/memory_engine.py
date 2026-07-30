@@ -711,6 +711,20 @@ async def list_events_for_site(site_id: str, limit: int = 200) -> list[dict]:
     )
 
 
+async def list_events_for_activity(activity_id: str, limit: int = 100) -> list[dict]:
+    """Beta-04 — Completion Evidence. Reuses events.activity_id directly
+    (already populated by event capture when a capture is associated
+    with a workflow activity) — the exact same field
+    routes/events.py's own schedule-update logic already reads, just
+    never previously used to list evidence. No new data model, no
+    duplicate of Timeline or Reality Engine."""
+    return (
+        await db.events.find({"activity_id": activity_id}, {"_id": 0})
+        .sort("server_created_at", -1)
+        .to_list(limit)
+    )
+
+
 async def list_events_by_status(status: str, limit: int = 100) -> list[dict]:
     return await db.events.find({"ai_status": status}, {"_id": 0}).to_list(limit)
 

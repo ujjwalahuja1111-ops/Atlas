@@ -236,6 +236,20 @@ async def get_workflow_activity(activity_id: str) -> Optional[dict]:
     return doc
 
 
+async def get_activity_evidence(activity_id: str, *, user: dict) -> list[dict]:
+    """Beta-04 — Completion Evidence. The Site Engineer's own workflow
+    activity, its linked photos/voice notes/text captures, reused
+    directly from memory_engine.list_events_for_activity — never a
+    second Timeline or Reality Engine implementation. Project
+    visibility enforced the same way every other activity-scoped
+    function in this engine already does."""
+    activity = await get_workflow_activity(activity_id)
+    if not activity:
+        raise WorkflowNotFoundError(f"Workflow activity '{activity_id}' not found")
+    await _assert_project_visible(activity["project_id"], user)
+    return await memory_engine.list_events_for_activity(activity_id)
+
+
 async def _enrich_many(items: list[dict]) -> list[dict]:
     """Attach human-readable names for each activity's dependencies —
     mirrors knowledge_engine's enrich_many() batching convention (one

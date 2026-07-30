@@ -1108,6 +1108,19 @@ async def _my_day_supervisor(user: dict, project_ids: list[str], now_iso: str, t
         i for i in my_items
         if i.get("required_by") and str(i["required_by"])[:10] == today
     ]
+    # Overdue — Beta-04: named explicitly alongside "Due today" in this
+    # sprint's own "My Work" list but previously missing. Reuses the
+    # exact same overdue-detection pattern PM's My Day already uses for
+    # delayed_activities — an activity whose planned_finish has already
+    # passed and isn't complete, or an item whose required_by has
+    # already passed.
+    overdue = [
+        a for a in my_activities
+        if a["status"] != "completed" and a.get("planned_finish") and str(a["planned_finish"]) < now_iso
+    ] + [
+        i for i in my_items
+        if i.get("required_by") and str(i["required_by"]) < now_iso
+    ]
     # Waiting for Material — the closest existing signal to a genuine
     # "this activity's dependency isn't in yet" concept: this
     # supervisor's own open material_requirement items. Not a new
@@ -1128,6 +1141,7 @@ async def _my_day_supervisor(user: dict, project_ids: list[str], now_iso: str, t
         "ready_to_start": _sorted(ready_to_start),
         "in_progress": _sorted(in_progress),
         "due_today": _sorted(due_today),
+        "overdue": _sorted(overdue),
         "blocked": _sorted(blocked),
         "waiting_for_material": _sorted(waiting_for_material),
         "recently_assigned": _sorted(recently_assigned),
@@ -1315,6 +1329,86 @@ async def daily_review(*, user: dict) -> dict:
             "pending_payment_requests": my_day_pm["pending_payment_requests"],
         },
         "projects_requiring_attention_tomorrow": len(projects_requiring_attention_ids),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Site Progress (Beta-04) — "one operational story" for a single
+# project: today's work, completed work, current issues, latest
+# updates, inspection status. Every section reuses an existing engine
+# directly - timeline_engine.for_site for captures (never a second
+# Timeline implementation), the same inspection-coverage check My
+# Day/Daily Review already use, the same open-items and workflow
+# queries used throughout this module. Available to management,
+# project_manager, and site_supervisor - a supervisor reviewing their
+# own site's story is exactly the intended use; not available to
+# client (Client Experience has its own, separate Photos/Timeline
+# views built in CX-01).
+# ---------------------------------------------------------------------------
+
+async def site_progress(project_id: str, *, user: dict) -> dict:
+    """Composes Reality Engine captures, Workflow completions,
+    Operations issues, and inspection status into a single chronological
+    story for one project. Reuses timeline_engine.for_site directly for
+    captures - never a duplicate Timeline read."""
+    if user["role"] == "client":
+        raise ValueError("Site Progress is not available to the client role - see Client Experience instead.")
+    project = await memory_engine.get_project(project_id)
+    if not project:
+        raise ValueError(f"Project '{project_id}' not found")
+    if memory_engine._is_project_scoped(user) and project_id not in (user.get("assigned_project_ids") or []):
+        raise ValueError(f"Project '{project_id}' not found")
+
+    from engines import timeline_engine
+    sites = await memory_engine.list_sites(project_id=project_id)
+    site_ids = [s["id"] for s in sites]
+
+    latest_updates: list[dict] = []
+    for site_id in site_ids:
+        latest_updates.extend(await timeline_engine.for_site(site_id, limit=20))
+    latest_updates.sort(key=lambda i: i["event"]["server_created_at"], reverse=True)
+    latest_updates = latest_updates[:20]
+
+    now = _now()
+    today_start = _iso(now.replace(hour=0, minute=0, second=0, microsecond=0))
+    now_iso = _iso(now)
+
+    todays_work = await db.workflow_activities.find(
+        {"project_id": project_id, "status": {"$in": ["ready", "in_progress"]}}, {"_id": 0},
+    ).to_list(300)
+    completed_recently = await db.workflow_activities.find(
+        {"project_id": project_id, "status": "completed", "updated_at": {"$gte": today_start}}, {"_id": 0},
+    ).to_list(300)
+
+    all_open = await db.operational_items.find(
+        {"project_id": project_id, "status": {"$nin": list(TERMINAL_ITEM_STATUSES)}}, {"_id": 0},
+    ).to_list(500)
+    await attach_names(all_open)
+    current_issues = [i for i in all_open if i["priority"] in ("critical", "high")]
+
+    # Inspection status — the exact same coverage check My Day and
+    # Daily Review already use, scoped to this one project.
+    from engines import reasoning_projections as projections
+    candidate_activities = await db.workflow_activities.find(
+        {"project_id": project_id, "requires_inspection": True,
+         "status": {"$in": ["ready", "in_progress"]}}, {"_id": 0},
+    ).to_list(300)
+    inspections_pending = []
+    if candidate_activities:
+        items_for_coverage = await db.operational_items.find(
+            {"site_id": {"$in": site_ids}}, {"_id": 0}).to_list(2000)
+        inspections_pending = [
+            a for a in candidate_activities if not projections.inspection_covered(a, items_for_coverage)]
+
+    return {
+        "project_id": project_id,
+        "project_name": project["name"],
+        "todays_work": todays_work,
+        "completed_recently": sorted(completed_recently, key=lambda a: a.get("updated_at") or "", reverse=True),
+        "current_issues": sorted(current_issues, key=_urgency_sort_key),
+        "latest_updates": latest_updates,
+        "inspections_pending": inspections_pending,
+        "open_items_count": len(all_open),
     }
 
 

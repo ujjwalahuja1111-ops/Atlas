@@ -619,3 +619,155 @@ async def test_daily_review_finished_today_are_real_completions(seeded_rp001):
     review = await operations_engine.daily_review(user=pm)
     for a in review["finished_today"]["activities"]:
         assert a["status"] == "completed"
+
+
+# ==========================================================================
+# Beta-04 — Site Engineer Experience.
+#
+# Completion Evidence: a genuine gap named twice (first in the
+# original Beta-03 report, then again explicitly in this sprint's own
+# brief). Verified end-to-end with a real capture-to-evidence chain,
+# not just the empty-list case - RP-001's own seed data was found,
+# during this sprint's own verification, to never populate
+# events.activity_id at all (a pre-existing, deliberate property of
+# seed_demo_project.py's own _seed_event, unrelated to this fix),
+# so a manually-constructed activity+event scenario is what actually
+# proves the chain works, not a check against the Reference Portfolio.
+# ==========================================================================
+async def test_activity_evidence_returns_linked_events(seeded_rp001):
+    admin = {"id": "u_evidence_test", "name": "Evidence Test Admin"}
+    project = await memory_engine.insert_project(name="Evidence Chain Test", code="EVCHAIN")
+    template = await knowledge_engine.create_item(actor=admin, type_="workflow_template", name="T", status="active")
+    act = await knowledge_engine.create_item(actor=admin, type_="activity", name="Foundation Work", status="active")
+    await knowledge_engine.add_relationship(template["id"], actor=admin, type_="includes_activity", target_id=act["id"])
+    activities = await workflow_engine.generate_workflow(project["id"], template["id"], actor=admin)
+    activity_id = activities[0]["id"]
+
+    # A real event, linked the same way a live capture submission
+    # would link it (events.activity_id set at creation).
+    event_doc = {
+        "id": "evt_evidence_test", "site_id": "site_x", "project_id": project["id"],
+        "activity_id": activity_id, "user_id": admin["id"], "user_name": admin["name"],
+        "kind": "photo", "text_input": "Poured foundation slab",
+        "audio_asset_id": None, "photo_asset_ids": ["asset_1"], "gps": None,
+        "client_created_at": "2026-01-01T00:00:00Z", "server_created_at": "2026-01-01T00:00:00Z",
+        "app_version": "test", "ai_status": "skipped", "ai_analysis_id": None,
+        "proposals_status": "pending", "proposals_error": None, "requires_client_approval": False,
+    }
+    await core_db.db.events.insert_one(event_doc)
+
+    evidence = await workflow_engine.get_activity_evidence(activity_id, user=admin)
+    assert len(evidence) == 1
+    assert evidence[0]["text_input"] == "Poured foundation slab"
+    assert evidence[0]["kind"] == "photo"
+
+
+async def test_activity_evidence_empty_for_activity_with_no_captures(seeded_rp001):
+    """The correct, honest result for an activity nothing has been
+    captured against yet - an empty list, not an error."""
+    admin = {"id": "u_evidence_test2", "name": "Evidence Test Admin 2"}
+    project = await memory_engine.insert_project(name="Evidence Empty Test", code="EVEMPTY")
+    template = await knowledge_engine.create_item(actor=admin, type_="workflow_template", name="T", status="active")
+    act = await knowledge_engine.create_item(actor=admin, type_="activity", name="Unstarted Work", status="active")
+    await knowledge_engine.add_relationship(template["id"], actor=admin, type_="includes_activity", target_id=act["id"])
+    activities = await workflow_engine.generate_workflow(project["id"], template["id"], actor=admin)
+    evidence = await workflow_engine.get_activity_evidence(activities[0]["id"], user=admin)
+    assert evidence == []
+
+
+async def test_activity_evidence_404_for_nonexistent_activity(seeded_rp001):
+    admin = {"id": "u_evidence_test3", "name": "Evidence Test Admin 3"}
+    with pytest.raises(workflow_engine.WorkflowNotFoundError):
+        await workflow_engine.get_activity_evidence("nonexistent_activity_id", user=admin)
+
+
+# ==========================================================================
+# Beta-04 — supervisor's My Day "Overdue" section (named explicitly
+# alongside "Due today" in this sprint's "My Work" list, previously
+# missing entirely).
+# ==========================================================================
+async def test_supervisor_my_day_overdue_excludes_completed_activities(seeded_rp001):
+    """Regression guard for a real bug caught during this sprint's own
+    development: without excluding completed activities, a finished
+    activity with a planned_finish in the past would be wrongly
+    flagged as overdue."""
+    admin = {"id": "u_overdue_test", "name": "Overdue Test Admin"}
+    sup = await memory_engine.upsert_user(phone="9990000701", name="Overdue Test Sup", role="site_supervisor")
+    project = await memory_engine.insert_project(name="Overdue Test", code="OVERDUE1")
+    template = await knowledge_engine.create_item(actor=admin, type_="workflow_template", name="T", status="active")
+    act = await knowledge_engine.create_item(actor=admin, type_="activity", name="Finished Late", status="active")
+    await knowledge_engine.add_relationship(template["id"], actor=admin, type_="includes_activity", target_id=act["id"])
+    activities = await workflow_engine.generate_workflow(project["id"], template["id"], actor=admin)
+    activity_id = activities[0]["id"]
+
+    await core_db.db.workflow_activities.update_one(
+        {"id": activity_id},
+        {"$set": {"assigned_to_user_id": sup["id"], "planned_finish": "2020-01-01T00:00:00Z",
+                 "status": "completed"}})
+
+    result = await operations_engine.my_day(user=sup)
+    overdue_ids = {a["id"] for a in result["overdue"] if "id" in a}
+    assert activity_id not in overdue_ids, \
+        "a completed activity must never appear in Overdue, regardless of its planned_finish date"
+
+
+async def test_supervisor_my_day_overdue_includes_incomplete_past_due_activities(seeded_rp001):
+    admin = {"id": "u_overdue_test2", "name": "Overdue Test Admin 2"}
+    sup = await memory_engine.upsert_user(phone="9990000702", name="Overdue Test Sup 2", role="site_supervisor")
+    project = await memory_engine.insert_project(name="Overdue Test 2", code="OVERDUE2")
+    template = await knowledge_engine.create_item(actor=admin, type_="workflow_template", name="T", status="active")
+    act = await knowledge_engine.create_item(actor=admin, type_="activity", name="Still Open And Late", status="active")
+    await knowledge_engine.add_relationship(template["id"], actor=admin, type_="includes_activity", target_id=act["id"])
+    activities = await workflow_engine.generate_workflow(project["id"], template["id"], actor=admin)
+    activity_id = activities[0]["id"]
+
+    await core_db.db.workflow_activities.update_one(
+        {"id": activity_id},
+        {"$set": {"assigned_to_user_id": sup["id"], "planned_finish": "2020-01-01T00:00:00Z"}})
+
+    result = await operations_engine.my_day(user=sup)
+    overdue_ids = {a["id"] for a in result["overdue"] if "id" in a}
+    assert activity_id in overdue_ids
+
+
+# ==========================================================================
+# Beta-04 — Site Progress: "one operational story" for a single project,
+# the other gap named explicitly (after Completion Evidence) in this
+# sprint's brief. Verified against RP-001's own real data.
+# ==========================================================================
+async def test_site_progress_composes_real_data(closed_out_rp001):
+    project, admin = closed_out_rp001
+    progress = await operations_engine.site_progress(project["id"], user=admin)
+    assert progress["project_id"] == project["id"]
+    assert progress["project_name"] == project["name"]
+    assert progress["open_items_count"] >= 0
+    assert len(progress["completed_recently"]) > 0
+    for a in progress["completed_recently"]:
+        assert a["status"] == "completed"
+
+
+async def test_site_progress_latest_updates_reuses_timeline_engine(seeded_rp001):
+    """Cross-validation: latest_updates must be genuinely sourced from
+    timeline_engine.for_site - confirmed by checking the returned shape
+    matches that function's own item structure (kind/event/created_at),
+    not a second, parallel event read."""
+    project, admin = seeded_rp001
+    progress = await operations_engine.site_progress(project["id"], user=admin)
+    assert len(progress["latest_updates"]) > 0
+    for item in progress["latest_updates"]:
+        assert "event" in item
+        assert "created_at" in item
+        assert item["kind"] == "construction_event"
+
+
+async def test_site_progress_forbidden_for_client(seeded_rp001):
+    project, admin = seeded_rp001
+    client = await memory_engine.get_user_by_phone("9800000005")
+    with pytest.raises(ValueError):
+        await operations_engine.site_progress(project["id"], user=client)
+
+
+async def test_site_progress_404_for_nonexistent_project(seeded_rp001):
+    project, admin = seeded_rp001
+    with pytest.raises(ValueError):
+        await operations_engine.site_progress("nonexistent_project_xyz", user=admin)

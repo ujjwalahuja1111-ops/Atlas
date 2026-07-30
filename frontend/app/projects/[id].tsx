@@ -210,6 +210,19 @@ export default function ProjectDetail() {
             </View>
           )}
 
+          {/* Site Progress (Beta-04) — one operational story composed
+              from Reality/Workflow/Operations, not a new engine. */}
+          <Pressable onPress={() => router.push(`/site-progress/${id}`)} style={styles.workflowCard} testID="open-site-progress">
+            <View style={styles.commercialHeaderRow}>
+              <Text style={styles.sectionLabel}>SITE PROGRESS</Text>
+              <View style={styles.commercialHeaderLink}>
+                <Text style={styles.commercialHeaderLinkText}>View</Text>
+                <Ionicons name="chevron-forward" size={16} color={theme.color.brand} />
+              </View>
+            </View>
+            <Text style={styles.commercialEmpty}>Today's work, completed activities, current issues, and the latest site captures — in one place.</Text>
+          </Pressable>
+
           {/* CF-01 continuation — Commercial section now prefers the real
               Commercial Foundation Engine summary when a project has one
               (richer: real Paid/Outstanding, Milestone Completion, Budget

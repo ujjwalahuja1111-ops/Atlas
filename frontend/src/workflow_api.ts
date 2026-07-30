@@ -56,6 +56,19 @@ export async function apiGetWorkflow(projectId: string): Promise<WorkflowActivit
   return handle(r);
 }
 
+// Beta-04 — Completion Evidence: photos/voice/text captures linked to
+// a workflow activity via events' own activity_id field.
+export type ActivityEvidenceEvent = {
+  id: string; kind: string; text_input: string | null;
+  photo_asset_ids: string[]; audio_asset_id: string | null;
+  user_name: string; server_created_at: string;
+};
+
+export async function apiGetActivityEvidence(activityId: string): Promise<ActivityEvidenceEvent[]> {
+  const r = await apiFetch(`${BACKEND}/api/workflow-activities/${activityId}/evidence`, { headers: await authHeaders() });
+  return handle(r);
+}
+
 export async function apiSetWorkflowActivityStatus(activityId: string, status: WorkflowStatus): Promise<WorkflowActivity> {
   const r = await apiFetch(`${BACKEND}/api/workflow-activities/${activityId}/status`, {
     method: 'POST', headers: await jsonHeaders(), body: JSON.stringify({ status }),

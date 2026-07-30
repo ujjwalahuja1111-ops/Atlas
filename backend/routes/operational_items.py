@@ -86,6 +86,20 @@ async def get_daily_review(user: dict = Depends(get_current_user)):
     return await operations_engine.daily_review(user=user)
 
 
+@router.get("/projects/{project_id}/site-progress")
+async def get_site_progress(project_id: str, user: dict = Depends(get_current_user)):
+    """Site Progress (Beta-04) - one operational story for a single
+    project, composed from existing Reality/Workflow/Operations data.
+    Not available to client - see operations_engine.site_progress's
+    own docstring."""
+    try:
+        return await operations_engine.site_progress(project_id, user=user)
+    except ValueError as e:
+        if "not found" in str(e).lower():
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=403, detail=str(e))
+
+
 @router.get("/operational-items")
 async def list_items(site_id: Optional[str] = None,
                      project_id: Optional[str] = None,

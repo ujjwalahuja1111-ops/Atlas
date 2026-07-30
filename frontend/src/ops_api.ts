@@ -362,3 +362,21 @@ export async function apiMarkDuplicate(id: string, duplicate_of_item_id: string,
   if (!r.ok) throw new Error(await r.text());
   return r.json();
 }
+
+// Beta-04 — Site Progress: one operational story for a single project.
+export type SiteProgress = {
+  project_id: string;
+  project_name: string;
+  todays_work: any[];
+  completed_recently: any[];
+  current_issues: any[];
+  latest_updates: any[];
+  inspections_pending: any[];
+  open_items_count: number;
+};
+
+export async function apiSiteProgress(projectId: string): Promise<SiteProgress> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/site-progress`, { headers: await headers() });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}

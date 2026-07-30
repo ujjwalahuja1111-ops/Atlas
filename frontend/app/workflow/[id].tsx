@@ -7,8 +7,8 @@ import { theme } from '@/src/theme';
 import { DatePicker } from '@/src/DatePicker';
 import { apiListKnowledgeItems } from '@/src/knowledge_api';
 import {
-  apiGetWorkflow, apiSetWorkflowActivityStatus, apiSetWorkflowActivitySchedule,
-  type WorkflowActivity, type WorkflowStatus, type WorkflowScheduleInput,
+  apiGetWorkflow, apiSetWorkflowActivityStatus, apiSetWorkflowActivitySchedule, apiGetActivityEvidence,
+  type WorkflowActivity, type WorkflowStatus, type WorkflowScheduleInput, type ActivityEvidenceEvent,
 } from '@/src/workflow_api';
 
 const STATUS_ORDER: WorkflowStatus[] = ['not_started', 'ready', 'in_progress', 'blocked', 'completed'];
@@ -41,6 +41,9 @@ export default function WorkflowViewer() {
   // values are edited locally and saved as a single call.
   const [expandedSchedule, setExpandedSchedule] = useState<string | null>(null);
   const [scheduleDraft, setScheduleDraft] = useState<WorkflowScheduleInput>({});
+  const [expandedEvidence, setExpandedEvidence] = useState<string | null>(null);
+  const [evidenceByActivity, setEvidenceByActivity] = useState<Record<string, ActivityEvidenceEvent[]>>({});
+  const [evidenceLoading, setEvidenceLoading] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -84,6 +87,27 @@ export default function WorkflowViewer() {
       planned_start: activity.planned_start, planned_finish: activity.planned_finish,
       actual_start: activity.actual_start, actual_finish: activity.actual_finish,
     });
+  };
+
+  // Beta-04 — Completion Evidence. Lazily fetched on first expand, then
+  // cached per activity for the rest of this screen's session.
+  const toggleEvidence = async (activity: WorkflowActivity) => {
+    if (expandedEvidence === activity.id) {
+      setExpandedEvidence(null);
+      return;
+    }
+    setExpandedEvidence(activity.id);
+    if (!evidenceByActivity[activity.id]) {
+      setEvidenceLoading(activity.id);
+      try {
+        const events = await apiGetActivityEvidence(activity.id);
+        setEvidenceByActivity((m) => ({ ...m, [activity.id]: events }));
+      } catch {
+        setEvidenceByActivity((m) => ({ ...m, [activity.id]: [] }));
+      } finally {
+        setEvidenceLoading(null);
+      }
+    }
   };
 
   const saveSchedule = async (activity: WorkflowActivity) => {
@@ -221,6 +245,44 @@ export default function WorkflowViewer() {
                     </View>
                   )}
 
+                  {/* Beta-04 — Completion Evidence */}
+                  <Pressable testID={`workflow-evidence-toggle-${a.id}`} onPress={() => toggleEvidence(a)}
+                    style={styles.scheduleToggle}>
+                    <Ionicons name="images-outline" size={14} color={theme.color.textDim} />
+                    <Text style={styles.scheduleToggleText} numberOfLines={1}>
+                      {evidenceByActivity[a.id] ? `${evidenceByActivity[a.id].length} linked capture${evidenceByActivity[a.id].length === 1 ? '' : 's'}` : 'Evidence — tap to view linked captures'}
+                    </Text>
+                    <Ionicons name={expandedEvidence === a.id ? 'chevron-up' : 'chevron-down'} size={14} color={theme.color.textDim} />
+                  </Pressable>
+
+                  {expandedEvidence === a.id && (
+                    <View style={styles.scheduleBox}>
+                      {evidenceLoading === a.id ? (
+                        <ActivityIndicator size="small" color={theme.color.brand} />
+                      ) : (evidenceByActivity[a.id] || []).length === 0 ? (
+                        <Text style={styles.evidenceEmptyText}>
+                          No captures linked to this activity yet. Photos, voice notes, and text updates captured
+                          with this activity selected will appear here automatically.
+                        </Text>
+                      ) : (
+                        (evidenceByActivity[a.id] || []).map((ev) => (
+                          <Pressable key={ev.id} testID={`evidence-event-${ev.id}`}
+                            onPress={() => router.push(`/event/${ev.id}`)} style={styles.evidenceRow}>
+                            <Ionicons
+                              name={ev.kind === 'photo' ? 'camera' : ev.kind === 'voice' ? 'mic' : 'document-text'}
+                              size={14} color={theme.color.brand} />
+                            <View style={{ flex: 1, marginLeft: 8 }}>
+                              <Text style={styles.evidenceRowText} numberOfLines={1}>
+                                {ev.text_input || (ev.kind === 'photo' ? 'Photo capture' : ev.kind === 'voice' ? 'Voice note' : 'Update')}
+                              </Text>
+                              <Text style={styles.evidenceRowMeta}>{ev.user_name} · {ev.server_created_at.slice(0, 10)}</Text>
+                            </View>
+                          </Pressable>
+                        ))
+                      )}
+                    </View>
+                  )}
+
                   <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.statusChipsRow}>
                     {STATUS_ORDER.map((s) => {
                       const active = a.status === s;
@@ -280,6 +342,10 @@ const styles = StyleSheet.create({
                 padding: theme.spacing.sm, gap: theme.spacing.sm },
   scheduleRow: { flexDirection: 'row', gap: theme.spacing.sm },
   scheduleField: { flex: 1, gap: 4 },
+  evidenceEmptyText: { color: theme.color.textDim, fontSize: 12, lineHeight: 18 },
+  evidenceRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
+  evidenceRowText: { color: theme.color.text, fontSize: 13, fontWeight: '600' },
+  evidenceRowMeta: { color: theme.color.textDim, fontSize: 11, marginTop: 1 },
   scheduleLabel: { color: theme.color.textDim, fontSize: 9, fontWeight: '800', letterSpacing: 0.5 },
   scheduleInput: { color: theme.color.text, backgroundColor: theme.color.surface2,
                   borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.color.border,

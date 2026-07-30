@@ -177,6 +177,18 @@ async def set_workflow_activity_production_inputs(activity_id: str, req: Product
         _raise_for(e)
 
 
+@router.get("/workflow-activities/{activity_id}/evidence")
+async def get_workflow_activity_evidence(activity_id: str, user: dict = Depends(get_current_user)):
+    """Beta-04 — Completion Evidence. Every photo/voice/text capture
+    linked to this activity via events' own activity_id field, newest
+    first. Open to any authenticated role with visibility into the
+    activity's own project."""
+    try:
+        return await workflow_engine.get_activity_evidence(activity_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/workflow-meta")
 async def workflow_meta(user: dict = Depends(get_current_user)):
     """Static vocab for the frontend Workflow Viewer's status vocabulary,
