@@ -571,3 +571,51 @@ async def test_pm_my_day_upcoming_milestone_is_earliest_unachieved(seeded_rp001)
         assert project_milestone["id"] == not_yet_achieved[0]["id"]
     else:
         assert project_milestone is None
+
+
+# ==========================================================================
+# Beta-03 continuation — Daily Review.
+#
+# The end-of-day mirror of My Day, closing the largest named gap from
+# the previous Beta-03 report: no dedicated end-of-day operational
+# summary existed. Every section reuses existing queries directly -
+# inspections/approvals/commercial actions remaining are literally My
+# Day PM's own output, not a second implementation of the same
+# questions.
+# ==========================================================================
+async def test_daily_review_reuses_my_day_pm_for_remaining_sections(seeded_rp001):
+    """Cross-validation: Daily Review's inspections/approvals/commercial-
+    actions-remaining sections must be identical to My Day PM's own
+    output for the same three concepts - confirming reuse, not a
+    parallel implementation that could silently drift."""
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+    pm = await memory_engine.get_user_by_phone("9800000002")
+
+    my_day_pm = await operations_engine._my_day_pm(pm, [project["id"]], reasoning_engine._iso(reasoning_engine._now()))
+    review = await operations_engine.daily_review(user=pm)
+
+    assert review["inspections_remaining"] == my_day_pm["upcoming_inspections"]
+    assert review["approvals_remaining"] == my_day_pm["pending_approvals"]
+    assert review["commercial_actions_remaining"]["pending_variations"] == my_day_pm["pending_variations"]
+    assert review["commercial_actions_remaining"]["pending_payment_requests"] == my_day_pm["pending_payment_requests"]
+
+
+async def test_daily_review_forbidden_for_supervisor_and_client(seeded_rp001):
+    project, admin = seeded_rp001
+    sup = await memory_engine.upsert_user(phone="9990000801", name="Sup", role="site_supervisor")
+    client = await memory_engine.get_user_by_phone("9800000005")
+    with pytest.raises(ValueError):
+        await operations_engine.daily_review(user=sup)
+    with pytest.raises(ValueError):
+        await operations_engine.daily_review(user=client)
+
+
+async def test_daily_review_finished_today_are_real_completions(seeded_rp001):
+    """Every activity in finished_today must genuinely be status
+    'completed' - not a fabricated or miscategorized entry."""
+    project, admin = seeded_rp001
+    pm = await memory_engine.get_user_by_phone("9800000002")
+    review = await operations_engine.daily_review(user=pm)
+    for a in review["finished_today"]["activities"]:
+        assert a["status"] == "completed"

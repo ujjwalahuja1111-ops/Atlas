@@ -76,6 +76,16 @@ async def get_my_day(user: dict = Depends(get_current_user)):
     return await operations_engine.my_day(user=user)
 
 
+@router.get("/daily-review")
+async def get_daily_review(user: dict = Depends(get_current_user)):
+    """Daily Review (Beta-03 continuation) - the end-of-day mirror of
+    My Day. Management and project_manager only, matching the same
+    scope operations_engine.daily_review itself enforces."""
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Daily Review is available to management and project manager only.")
+    return await operations_engine.daily_review(user=user)
+
+
 @router.get("/operational-items")
 async def list_items(site_id: Optional[str] = None,
                      project_id: Optional[str] = None,

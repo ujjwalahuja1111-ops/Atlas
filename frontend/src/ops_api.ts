@@ -165,6 +165,25 @@ export async function apiMyDay(): Promise<MyDayResponse> {
   return r.json();
 }
 
+// Beta-03 continuation — Daily Review, the end-of-day mirror of My Day.
+export type DailyReview = {
+  role: string;
+  finished_today: { activities: any[]; operational_items: any[] };
+  remains_open_count: number;
+  slipped_activities: any[];
+  newly_blocked_today: any[];
+  inspections_remaining: any[];
+  approvals_remaining: any[];
+  commercial_actions_remaining: { pending_variations: any[]; pending_payment_requests: any[] };
+  projects_requiring_attention_tomorrow: number;
+};
+
+export async function apiDailyReview(): Promise<DailyReview> {
+  const r = await apiFetch(`${BACKEND}/api/daily-review`, { headers: await headers() });
+  if (!r.ok) throw new Error('daily-review');
+  return r.json();
+}
+
 export async function apiListItems(filter: {
   site_id?: string; status?: string; priority?: string; category?: string; assigned_to_me?: boolean;
   event_id?: string; exclude_terminal?: boolean;

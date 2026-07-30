@@ -1226,6 +1226,98 @@ async def _my_day_pm(user: dict, project_ids: list[str], now_iso: str) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Daily Review (Beta-03 continuation) — the end-of-day mirror of My Day's
+# start-of-day view. Every section here is a read composed from data
+# that already exists, matching My Day's own established convention:
+# nothing is calculated a new way, nothing is a duplicate of an
+# existing engine's own logic. Available to management and project
+# manager (the same roles My Day already serves); not available to
+# client or supervisor — supervisor's own day is scoped to personal
+# assignments (My Day already covers that), and an end-of-day
+# portfolio-wide review is a PM/management concern, not a site-level one.
+# ---------------------------------------------------------------------------
+
+async def daily_review(*, user: dict) -> dict:
+    """Answers exactly the questions this sprint's brief names: what
+    finished today, what remains open, what slipped, what became
+    blocked, which inspections/approvals/commercial actions remain,
+    and which projects need attention tomorrow. Reuses My Day's own
+    query patterns directly (the "slipped"/"blocked"/"inspections
+    remaining"/"commercial actions remaining" sections are the exact
+    same underlying data My Day's own delayed/blocked/inspections/
+    commercial sections already compute) rather than inventing a
+    second way to ask the same questions.
+    """
+    if user["role"] not in ("management", "project_manager"):
+        raise ValueError("Daily Review is available to management and project manager only.")
+
+    projects = await memory_engine.list_projects(user=user)
+    project_ids = [p["id"] for p in projects]
+    now = _now()
+    today_start = _iso(now.replace(hour=0, minute=0, second=0, microsecond=0))
+    now_iso = _iso(now)
+
+    # What finished today — workflow activities completed today, and
+    # operational items fulfilled/verified/closed today. "Today" is
+    # each entity's own updated_at crossing today_start, not a new
+    # timestamp concept.
+    completed_activities_today = await db.workflow_activities.find(
+        {"project_id": {"$in": project_ids}, "status": "completed",
+         "updated_at": {"$gte": today_start}}, {"_id": 0},
+    ).to_list(300)
+    resolved_items_today = await db.operational_items.find(
+        {"project_id": {"$in": project_ids}, "status": {"$in": ["fulfilled", "verified", "closed"]},
+         "updated_at": {"$gte": today_start}}, {"_id": 0},
+    ).to_list(300)
+    await attach_names(resolved_items_today)
+
+    # What became blocked today — the same "blocked" signal PM's My Day
+    # already surfaces, filtered to today's own updated_at.
+    newly_blocked_today = await db.workflow_activities.find(
+        {"project_id": {"$in": project_ids}, "status": "blocked",
+         "updated_at": {"$gte": today_start}}, {"_id": 0},
+    ).to_list(300)
+
+    # What remains open / what slipped — the exact same queries PM's My
+    # Day already runs for delayed_activities and open operational
+    # items; reused directly, not recomputed a second way.
+    everything_open = await db.operational_items.find(
+        {"status": {"$nin": list(TERMINAL_ITEM_STATUSES)}}, {"_id": 0},
+    ).to_list(2000)
+    in_scope_open = [i for i in everything_open if i.get("project_id") in project_ids]
+    slipped_activities = await db.workflow_activities.find(
+        {"project_id": {"$in": project_ids}, "status": {"$nin": ["completed"]},
+         "planned_finish": {"$ne": None, "$lt": now_iso}}, {"_id": 0},
+    ).to_list(300)
+
+    # Inspections / approvals / commercial actions remaining — reusing
+    # My Day's own PM computation directly rather than a second
+    # implementation of the same three sections.
+    my_day_pm = await _my_day_pm(user, project_ids, now_iso)
+
+    projects_requiring_attention_ids = {i["project_id"] for i in in_scope_open if i["priority"] == "critical"}
+    projects_requiring_attention_ids |= {a["project_id"] for a in slipped_activities}
+
+    return {
+        "role": user["role"],
+        "finished_today": {
+            "activities": sorted(completed_activities_today, key=lambda a: a.get("updated_at") or ""),
+            "operational_items": sorted(resolved_items_today, key=lambda i: i.get("updated_at") or ""),
+        },
+        "remains_open_count": len(in_scope_open),
+        "slipped_activities": sorted(slipped_activities, key=lambda a: a.get("planned_finish") or ""),
+        "newly_blocked_today": newly_blocked_today,
+        "inspections_remaining": my_day_pm["upcoming_inspections"],
+        "approvals_remaining": my_day_pm["pending_approvals"],
+        "commercial_actions_remaining": {
+            "pending_variations": my_day_pm["pending_variations"],
+            "pending_payment_requests": my_day_pm["pending_payment_requests"],
+        },
+        "projects_requiring_attention_tomorrow": len(projects_requiring_attention_ids),
+    }
+
+
 async def _my_day_admin(user: dict) -> dict:
     # Admin's Portfolio Health / Delayed Projects / Critical Issues /
     # Pending Approvals are Portfolio Control Center's own summary and

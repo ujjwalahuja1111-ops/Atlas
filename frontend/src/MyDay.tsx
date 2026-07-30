@@ -96,6 +96,10 @@ export function MyDaySection({ viewRole }: { viewRole: 'admin' | 'pm' | 'supervi
       <CommercialAwarenessGroup icon="swap-horizontal" title="PENDING VARIATIONS" items={d.pending_variations} kind="variation" onPress={openCommercial} />
       <CommercialAwarenessGroup icon="receipt" title="PENDING PAYMENT REQUESTS" items={d.pending_payment_requests} kind="payment_request" onPress={openCommercial} />
       <CommercialAwarenessGroup icon="flag-outline" title="UPCOMING MILESTONES" items={d.upcoming_milestones} kind="milestone" onPress={openCommercial} />
+      <Pressable testID="my-day-daily-review-link" onPress={() => router.push('/daily-review')} style={styles.linkRow}>
+        <Text style={styles.linkText}>End-of-Day Review</Text>
+        <Ionicons name="chevron-forward" size={16} color={theme.color.brand} />
+      </Pressable>
     </View>
   );
 }
