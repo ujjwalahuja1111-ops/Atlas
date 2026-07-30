@@ -69,6 +69,11 @@ async def get_event(event_id: str, user: dict = Depends(get_current_user)):
     item = await timeline_engine.single(event_id)
     if not item:
         raise HTTPException(status_code=404, detail="Event not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(item["event"]["project_id"], user)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Event not found")
     return item
 
 

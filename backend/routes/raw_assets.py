@@ -16,4 +16,11 @@ async def get_asset(asset_id: str, user: dict = Depends(get_current_user)):
     doc = await memory_engine.get_asset(asset_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Asset not found")
+    event = await memory_engine.get_event(doc["event_id"])
+    if event:
+        from engines import commercial_engine as ce
+        try:
+            await ce.assert_project_visible(event["project_id"], user)
+        except ValueError:
+            raise HTTPException(status_code=404, detail="Asset not found")
     return doc

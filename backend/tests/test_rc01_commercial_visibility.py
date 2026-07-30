@@ -257,6 +257,58 @@ def test_commercial_summary_other_fields_still_visible_to_pm(project_with_budget
 
 
 # ==========================================================================
+# Beta-06C — Authorization Boundary Validation. Three more resources
+# found with the exact same "zero visibility check" pattern already
+# fixed once for operational items in Beta-06B: events, raw assets
+# (photo/audio binary data), and site requirements. Each demonstrated
+# exploitable before fixing, each fixed by reusing
+# commercial_engine.assert_project_visible directly (already public,
+# already generic despite its module name).
+# ==========================================================================
+@pytest.fixture()
+def event_with_photo(admin):
+    outsider_user, outsider_h = _login("site_supervisor", "9990000301", "Beta06C Event Outsider")
+    proj_a = requests.post(f"{API}/projects", json={"name": "Beta06C Event Secret", "code": "B06CEVT1"},
+                           headers=admin["headers"], timeout=20).json()
+    proj_b = requests.post(f"{API}/projects", json={"name": "Beta06C Event Visible", "code": "B06CEVT2"},
+                           headers=admin["headers"], timeout=20).json()
+    site_a = requests.post(f"{API}/sites", json={"project_id": proj_a["id"], "name": "Secret Site"},
+                           headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{outsider_user['id']}/projects", json={"project_ids": [proj_b["id"]]},
+                 headers=admin["headers"], timeout=20)
+
+    files = {"photos": ("secret.jpg", b"fakejpegdata", "image/jpeg")}
+    data = {"site_id": site_a["id"], "text": "Confidential", "kind": "photo"}
+    event = requests.post(f"{API}/events", data=data, files=files, headers=admin["headers"], timeout=20).json()
+    return event, site_a, outsider_h
+
+
+def test_event_detail_blocks_outsider(event_with_photo, admin):
+    event, _, outsider_h = event_with_photo
+    r = requests.get(f"{API}/events/{event['id']}", headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+    r2 = requests.get(f"{API}/events/{event['id']}", headers=admin["headers"], timeout=20)
+    assert r2.status_code == 200
+
+
+def test_site_requirements_blocks_outsider(event_with_photo, admin):
+    _, site, outsider_h = event_with_photo
+    r = requests.get(f"{API}/sites/{site['id']}/requirements", headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+    r2 = requests.get(f"{API}/sites/{site['id']}/requirements", headers=admin["headers"], timeout=20)
+    assert r2.status_code == 200
+
+
+def test_raw_asset_blocks_outsider(event_with_photo, admin):
+    event, _, outsider_h = event_with_photo
+    asset_id = event["photo_asset_ids"][0]
+    r = requests.get(f"{API}/raw-assets/{asset_id}", headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+    r2 = requests.get(f"{API}/raw-assets/{asset_id}", headers=admin["headers"], timeout=20)
+    assert r2.status_code == 200
+
+
+# ==========================================================================
 # Beta-05 continuation — Priority Engine RBAC (the actual HTTP-layer
 # enforcement, matching Portfolio Control Center's own established
 # management-only gate exactly).

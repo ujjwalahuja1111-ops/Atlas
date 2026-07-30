@@ -36,4 +36,9 @@ async def site_requirements(site_id: str, user: dict = Depends(get_current_user)
     site = await memory_engine.get_site(site_id)
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(site["project_id"], user)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Site not found")
     return await operations_engine.site_requirements(site_id)
