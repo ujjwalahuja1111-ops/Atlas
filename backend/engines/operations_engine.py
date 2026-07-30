@@ -196,6 +196,23 @@ async def get_item(item_id: str) -> Optional[dict]:
     return await db.operational_items.find_one({"id": item_id}, {"_id": 0})
 
 
+async def assert_item_visible(item: dict, user: dict) -> None:
+    """Beta-06B security fix. Operational items already carry their own
+    project_id field directly (denormalized at creation in create_item)
+    - the exact same field my_day/daily_review/site_progress already
+    query against. Applies the same _is_project_scoped check every
+    other project-visibility boundary in Atlas already uses
+    (commercial_engine.assert_project_visible, portfolio_search's own
+    _scope()). Raises ValueError (mapped to 404 at the route, matching
+    this codebase's "don't leak existence" convention) if the caller
+    cannot see this item's project."""
+    if not memory_engine._is_project_scoped(user):
+        return
+    visible = user.get("assigned_project_ids") or []
+    if item.get("project_id") not in visible:
+        raise ValueError(f"Operational item '{item['id']}' not found")
+
+
 async def list_items(*, site_id: Optional[str] = None,
                      status: Optional[str] = None,
                      priority: Optional[str] = None,

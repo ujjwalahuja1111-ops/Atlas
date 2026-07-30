@@ -1060,3 +1060,71 @@ async def test_portfolio_search_payments_scoped_to_visibility(seeded_rp001):
     admin_result = await reasoning_engine.portfolio_search("BETA06-SECURITY-TEST-REF", user=admin)
     assert len(admin_result["payments"]) >= 1, \
         "the payment must still be findable by a user who genuinely has visibility into the project"
+
+
+# ==========================================================================
+# Beta-06B — Navigation & UX Validation: a security finding, not a
+# navigation one.
+#
+# operational_items had zero project-visibility enforcement anywhere -
+# neither the detail endpoint nor the list endpoint checked whether
+# the caller could actually see the item's own project. Fixed by
+# adding operations_engine.assert_item_visible, reusing the exact same
+# _is_project_scoped check every other project-visibility boundary in
+# Atlas already uses.
+# ==========================================================================
+async def test_item_visibility_blocks_outsider(seeded_rp001):
+    _, admin = seeded_rp001
+    proj_a = await memory_engine.insert_project(name="Item Visibility Secret", code="ITEMVIS1")
+    proj_b = await memory_engine.insert_project(name="Item Visibility Visible", code="ITEMVIS2")
+    site_a = await memory_engine.insert_site(project_id=proj_a["id"], name="Site A")
+    item = await operations_engine.create_item(
+        actor=admin, site_id=site_a["id"], category="site_issue", title="Confidential matter", priority="high")
+
+    outsider = await memory_engine.upsert_user(phone="9990000701", name="Item Outsider", role="site_supervisor")
+    outsider = await memory_engine.set_user_projects(outsider["id"], [proj_b["id"]])
+
+    with pytest.raises(ValueError):
+        await operations_engine.assert_item_visible(item, outsider)
+
+
+async def test_item_visibility_allows_assigned_user(seeded_rp001):
+    _, admin = seeded_rp001
+    project = await memory_engine.insert_project(name="Item Visibility Assigned", code="ITEMVIS3")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site A")
+    item = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="site_issue", title="Visible matter", priority="normal")
+
+    insider = await memory_engine.upsert_user(phone="9990000702", name="Item Insider", role="site_supervisor")
+    insider = await memory_engine.set_user_projects(insider["id"], [project["id"]])
+
+    await operations_engine.assert_item_visible(item, insider)
+
+
+async def test_item_visibility_allows_management_unconditionally(seeded_rp001):
+    _, admin = seeded_rp001
+    project = await memory_engine.insert_project(name="Item Visibility Mgmt", code="ITEMVIS4")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site A")
+    item = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="site_issue", title="Any matter", priority="normal")
+
+    mgmt = await memory_engine.upsert_user(phone="9990000703", name="Unrestricted Mgmt", role="management")
+    await operations_engine.assert_item_visible(item, mgmt)
+
+
+async def test_list_items_scoped_by_visibility(seeded_rp001):
+    _, admin = seeded_rp001
+    proj_a = await memory_engine.insert_project(name="List Scope Secret", code="LISTSCOPE1")
+    proj_b = await memory_engine.insert_project(name="List Scope Visible", code="LISTSCOPE2")
+    site_a = await memory_engine.insert_site(project_id=proj_a["id"], name="Site A")
+    site_b = await memory_engine.insert_site(project_id=proj_b["id"], name="Site B")
+    await operations_engine.create_item(actor=admin, site_id=site_a["id"], category="site_issue", title="Secret item", priority="normal")
+    await operations_engine.create_item(actor=admin, site_id=site_b["id"], category="site_issue", title="Visible item", priority="normal")
+
+    outsider = await memory_engine.upsert_user(phone="9990000704", name="List Scope Outsider", role="site_supervisor")
+    outsider = await memory_engine.set_user_projects(outsider["id"], [proj_b["id"]])
+
+    all_items = await operations_engine.list_items()
+    outsider_visible = [i for i in all_items if i.get("project_id") in (outsider.get("assigned_project_ids") or [])]
+    assert all(i.get("project_id") == proj_b["id"] for i in outsider_visible)
+    assert not any(i["title"] == "Secret item" for i in outsider_visible)

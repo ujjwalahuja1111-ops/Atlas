@@ -115,6 +115,14 @@ async def list_items(site_id: Optional[str] = None,
         assigned_to_user_id=user["id"] if assigned_to_me else None,
         event_id=event_id, exclude_terminal=exclude_terminal,
     )
+    # Beta-06B security fix: always scope to the caller's own visible
+    # projects first - previously this only applied when the caller
+    # explicitly passed project_id, meaning a project-scoped caller who
+    # simply omitted it (or requested a project they don't own) saw
+    # unfiltered results across the whole platform.
+    if memory_engine._is_project_scoped(user):
+        visible = set(user.get("assigned_project_ids") or [])
+        items = [i for i in items if i.get("project_id") in visible]
     if project_id:
         items = [i for i in items if i.get("project_id") == project_id]
     items = [operations_engine.enrich(i) for i in items]
@@ -127,6 +135,10 @@ async def get_item(item_id: str, user: dict = Depends(get_current_user)):
     item = await operations_engine.get_item(item_id)
     if not item:
         raise HTTPException(status_code=404, detail="Item not found")
+    try:
+        await operations_engine.assert_item_visible(item, user)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     events = await operations_engine.list_events_for_item(item_id)
     # Inherited evidence — pull originating Construction Event if any
     inherited = None
@@ -136,6 +148,7 @@ async def get_item(item_id: str, user: dict = Depends(get_current_user)):
     enriched = operations_engine.enrich(item)
     await operations_engine.attach_names_single(enriched)
     return {"item": enriched, "history": events, "evidence": inherited}
+
 
 
 class TransitionReq(BaseModel):
