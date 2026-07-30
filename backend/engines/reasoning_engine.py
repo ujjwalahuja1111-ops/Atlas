@@ -1844,7 +1844,7 @@ async def portfolio_search(query: str, *, user: dict, limit_per_category: int = 
     activities = await db.workflow_activities.find({**_scope(), "name": pattern}, {"_id": 0}).to_list(limit_per_category)
     items = await db.operational_items.find({"title": pattern}, {"_id": 0}).to_list(limit_per_category)
     variations = await db.variations.find({**_scope(), "title": pattern}, {"_id": 0}).to_list(limit_per_category)
-    payments = await db.payments.find({"reference": pattern}, {"_id": 0}).to_list(limit_per_category)
+    payments = await db.payments.find({**_scope(), "reference": pattern}, {"_id": 0}).to_list(limit_per_category)
 
     if visible_project_ids is not None and items:
         site_ids = {s["id"] for s in await db.sites.find({"project_id": {"$in": visible_project_ids}}, {"_id": 0}).to_list(500)}

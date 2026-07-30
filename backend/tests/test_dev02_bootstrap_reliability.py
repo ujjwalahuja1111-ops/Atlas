@@ -1014,3 +1014,49 @@ async def test_portfolio_search_scoped_to_visibility(seeded_rp001):
     outsider = await memory_engine.set_user_projects(outsider["id"], [])
     result = await reasoning_engine.portfolio_search("Villa", user=outsider)
     assert not any(p["id"] == project["id"] for p in result["projects"])
+
+
+# ==========================================================================
+# Beta-06 — Security Audit finding.
+#
+# portfolio_search's own payments query was completely unscoped -
+# unlike every other category in the same function (projects, sites,
+# activities, variations, operational_items all correctly filtered by
+# project visibility), payments carried no _scope() filter at all. A
+# project-scoped user (e.g. a supervisor assigned to one project) could
+# search for and find a payment reference string belonging to a
+# project they have no visibility into. Confirmed as a real,
+# demonstrable leak before fixing (not a theoretical concern), fixed
+# by applying the exact same _scope() pattern every other category in
+# this function already used. This test guards specifically against
+# this exact regression, not just "search is generally scoped."
+# ==========================================================================
+async def test_portfolio_search_payments_scoped_to_visibility(seeded_rp001):
+    _, admin = seeded_rp001
+    client = await memory_engine.upsert_user(phone="9990000603", name="Beta06 Security Test Client", role="client")
+    project = await memory_engine.insert_project(name="Beta06 Security Test Project", code="B06SEC")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=client["id"],
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="M1", sequence=1,
+        planned_percent=50, trigger="test", planned_date="2026-02-01")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    ms = await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+
+    pr = await commercial_engine.create_payment_request(
+        actor=admin, project_id=project["id"], milestone_id=ms["id"],
+        amount=1000, raised_date="2026-01-15", due_date="2026-02-15")
+    await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=1000, date="2026-01-20",
+        method="bank_transfer", reference="BETA06-SECURITY-TEST-REF")
+
+    outsider = await memory_engine.upsert_user(phone="9990000602", name="Payments Search Outsider", role="site_supervisor")
+    outsider = await memory_engine.set_user_projects(outsider["id"], [])
+    result = await reasoning_engine.portfolio_search("BETA06-SECURITY-TEST-REF", user=outsider)
+    assert result["payments"] == [], \
+        "A project-scoped user must never see a payment reference from a project they cannot access"
+
+    admin_result = await reasoning_engine.portfolio_search("BETA06-SECURITY-TEST-REF", user=admin)
+    assert len(admin_result["payments"]) >= 1, \
+        "the payment must still be findable by a user who genuinely has visibility into the project"
