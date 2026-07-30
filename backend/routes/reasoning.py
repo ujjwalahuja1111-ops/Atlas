@@ -373,6 +373,61 @@ async def get_priority_engine(user: dict = Depends(get_current_user)):
     return await reasoning_engine.priority_engine(user=user)
 
 
+@router.get("/portfolio/cross-project-intelligence")
+async def get_cross_project_intelligence(user: dict = Depends(get_current_user)):
+    """Cross-Project Intelligence (Beta-05 final) — aggregation only,
+    reusing evaluate_rules() exactly as every individual project's own
+    health check already runs it. Management only, matching Portfolio
+    Control Center."""
+    _forbid_client(user)
+    if user["role"] != "management":
+        raise HTTPException(status_code=403, detail="Only management can view Cross-Project Intelligence.")
+    return await reasoning_engine.cross_project_intelligence(user=user)
+
+
+@router.get("/portfolio/commercial-intelligence")
+async def get_commercial_intelligence(user: dict = Depends(get_current_user)):
+    """Unified Commercial Intelligence (Beta-05 final) — composes
+    existing, unmodified Commercial Foundation data across every
+    project. Management only — this is explicitly the Budget-adjacent
+    view (variance, over-budget), never exposed to non-management
+    roles anywhere else in Atlas."""
+    _forbid_client(user)
+    if user["role"] != "management":
+        raise HTTPException(status_code=403, detail="Only management can view Commercial Intelligence.")
+    return await reasoning_engine.commercial_intelligence(user=user)
+
+
+@router.get("/portfolio/executive-timeline")
+async def get_executive_timeline(project_id: Optional[str] = None, category: Optional[str] = None,
+                                 user: dict = Depends(get_current_user)):
+    """Executive Timeline (Beta-05 final) — merges timeline_engine's own
+    existing reads across every visible project. Management only,
+    matching every other portfolio-wide executive view."""
+    _forbid_client(user)
+    if user["role"] != "management":
+        raise HTTPException(status_code=403, detail="Only management can view the Executive Timeline.")
+    try:
+        return await reasoning_engine.executive_timeline(user=user, project_id=project_id, category=category)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.get("/portfolio/search")
+async def get_portfolio_search(q: str, user: dict = Depends(get_current_user)):
+    """Portfolio Search (Beta-05 final) — a thin, federated search over
+    existing collections, scoped to the caller's own project
+    visibility exactly like every other read in this file. Open to any
+    non-client role (a lookup tool a PM or supervisor needs day to day,
+    not an executive-only insight) — client keeps its own, separate
+    Client Experience surface."""
+    _forbid_client(user)
+    try:
+        return await reasoning_engine.portfolio_search(q, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.post("/insights/{insight_id}/status")
 async def set_insight_status(insight_id: str, req: InsightStatusRequest,
                              user: dict = Depends(get_current_user)):

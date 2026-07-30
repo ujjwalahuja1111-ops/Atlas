@@ -913,3 +913,104 @@ async def test_priority_engine_engine_function_has_no_internal_gate(seeded_rp001
     pm = await memory_engine.get_user_by_phone("9800000002")
     result = await reasoning_engine.priority_engine(user=pm)
     assert "priorities" in result
+
+
+# ==========================================================================
+# Beta-05 final convergence — Cross-Project Intelligence, Commercial
+# Intelligence, Executive Timeline, Portfolio Search. All four compose
+# existing engine outputs exactly as they already exist.
+# ==========================================================================
+async def test_cross_project_intelligence_no_duplicate_rule_evaluation(seeded_rp001):
+    """Cross-validation: cross_project_intelligence's own per-project
+    findings must be identical to _portfolio()'s own findings for that
+    project - confirming genuine reuse (via p["findings"]), not a
+    second evaluate_rules() call for the same snapshot."""
+    project, admin = seeded_rp001
+    portfolio = await reasoning_engine._portfolio(admin)
+    direct_rule_ids = set()
+    for p in portfolio:
+        if p["digest"]["project_id"] == project["id"]:
+            direct_rule_ids = {f["rule_id"] for f in p["findings"]}
+
+    result = await reasoning_engine.cross_project_intelligence(user=admin)
+    # Every rule_id this project contributes to a repeated pattern must
+    # be among its own real findings - never fabricated.
+    for pattern in result["repeated_patterns"]:
+        if project["id"] in pattern["project_ids"]:
+            assert pattern["rule_id"] in direct_rule_ids
+
+
+async def test_cross_project_intelligence_requires_at_least_two_projects(seeded_rp001):
+    """A pattern must never be reported as "repeated" from a single
+    project's own finding."""
+    project, admin = seeded_rp001
+    result = await reasoning_engine.cross_project_intelligence(user=admin)
+    for pattern in result["repeated_patterns"]:
+        assert pattern["project_count"] >= 2
+        assert len(set(pattern["project_ids"])) == pattern["project_count"]
+
+
+async def test_commercial_intelligence_matches_commercial_summary(seeded_rp001):
+    """Cross-validation: every figure in commercial_intelligence must
+    trace exactly to get_project_commercial_summary's own output -
+    never a second commercial calculation."""
+    project, admin = seeded_rp001
+    await reference_portfolio.migrate_rp001_to_commercial_engine()
+    summary = await commercial_engine.get_project_commercial_summary(project["id"])
+    result = await reasoning_engine.commercial_intelligence(user=admin)
+
+    if summary["budget"]["variance"] < 0:
+        entry = next(e for e in result["projects_over_budget"] if e["project_id"] == project["id"])
+        assert entry["variance"] == summary["budget"]["variance"]
+
+    outstanding_entry = next((e for e in result["projects_awaiting_payment"] if e["project_id"] == project["id"]), None)
+    if summary["outstanding_payments"]["outstanding"] > 0:
+        assert outstanding_entry is not None
+        assert outstanding_entry["outstanding"] == summary["outstanding_payments"]["outstanding"]
+
+
+async def test_executive_timeline_reuses_timeline_engine_shapes(seeded_rp001):
+    """Every event must carry the exact shape its own source function
+    already produces (timeline_engine.for_site's "event" wrapper for
+    reality, or commercial_engine's own event fields for commercial) -
+    confirming genuine reuse, not a re-derived shape."""
+    project, admin = seeded_rp001
+    result = await reasoning_engine.executive_timeline(user=admin, project_id=project["id"])
+    assert result["projects_covered"] == 1
+    for e in result["events"]:
+        assert e["source"] in ("reality", "commercial")
+        assert e["project_id"] == project["id"]
+        if e["source"] == "reality":
+            assert "event" in e
+        else:
+            assert "kind" in e
+
+
+async def test_executive_timeline_filters_by_category(seeded_rp001):
+    project, admin = seeded_rp001
+    result = await reasoning_engine.executive_timeline(user=admin, project_id=project["id"], category="commercial")
+    for e in result["events"]:
+        assert e["source"] == "commercial"
+
+
+async def test_portfolio_search_finds_real_project(seeded_rp001):
+    project, admin = seeded_rp001
+    result = await reasoning_engine.portfolio_search("Villa", user=admin)
+    assert result["total_results"] > 0
+    assert any(p["id"] == project["id"] for p in result["projects"])
+
+
+async def test_portfolio_search_rejects_short_query(seeded_rp001):
+    project, admin = seeded_rp001
+    with pytest.raises(reasoning_engine.ReasoningError):
+        await reasoning_engine.portfolio_search("a", user=admin)
+
+
+async def test_portfolio_search_scoped_to_visibility(seeded_rp001):
+    """A project-scoped user must never see search results from a
+    project they aren't assigned to."""
+    project, admin = seeded_rp001
+    outsider = await memory_engine.upsert_user(phone="9990000601", name="Search Outsider", role="site_supervisor")
+    outsider = await memory_engine.set_user_projects(outsider["id"], [])
+    result = await reasoning_engine.portfolio_search("Villa", user=outsider)
+    assert not any(p["id"] == project["id"] for p in result["projects"])

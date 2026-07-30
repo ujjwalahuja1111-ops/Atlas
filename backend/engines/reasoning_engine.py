@@ -1681,6 +1681,188 @@ async def priority_engine(*, user: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Cross-Project Intelligence (Beta-05 final) — aggregation only, no new
+# reasoning. Groups CRE's own existing findings by rule_id across every
+# project a caller can see, surfacing which concerns are repeating
+# portfolio-wide rather than isolated to one project. Reuses
+# evaluate_rules() exactly as it already runs for every individual
+# project's own health computation — never a second rule engine.
+# ---------------------------------------------------------------------------
+
+async def cross_project_intelligence(*, user: dict) -> dict:
+    """Aggregation only: for every visible project, run the exact same
+    evaluate_rules() every individual health check already runs, then
+    group findings by rule_id across the whole portfolio. A pattern
+    "repeats" when at least 2 projects share the same rule_id — a
+    plain count, not a statistical model."""
+    portfolio = await _portfolio(user)
+    by_rule: dict[str, dict] = {}
+    for p in portfolio:
+        findings = p["findings"]  # _portfolio() already computed this via evaluate_rules() — reused, not recalculated
+        seen_this_project: set[str] = set()
+        for f in findings:
+            rid = f["rule_id"]
+            if rid in seen_this_project:
+                continue  # count each project once per rule, not once per finding
+            seen_this_project.add(rid)
+            entry = by_rule.setdefault(rid, {
+                "rule_id": rid, "domain": f["domain"], "description": f["observation"],
+                "severity": f["severity"], "project_ids": [], "project_names": [],
+            })
+            entry["project_ids"].append(p["digest"]["project_id"])
+            entry["project_names"].append(p["digest"]["project_name"])
+            if SEVERITIES.index(f["severity"]) > SEVERITIES.index(entry["severity"]):
+                entry["severity"] = f["severity"]
+
+    repeated = [e for e in by_rule.values() if len(e["project_ids"]) >= 2]
+    repeated.sort(key=lambda e: (len(e["project_ids"]), SEVERITIES.index(e["severity"])), reverse=True)
+    return {
+        "generated_at": _iso(_now()),
+        "projects_covered": len(portfolio),
+        "repeated_patterns": [
+            {**e, "project_count": len(e["project_ids"])} for e in repeated
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Unified Commercial Intelligence (Beta-05 final) — composes existing,
+# unmodified Commercial Foundation Engine data across every project
+# into one management narrative. Every figure is read directly from
+# commercial_engine.get_project_commercial_summary; nothing here
+# recalculates budget, forecast, or variance.
+# ---------------------------------------------------------------------------
+
+async def commercial_intelligence(*, user: dict) -> dict:
+    from engines import commercial_engine as ce
+    portfolio = await _portfolio(user)
+    over_budget, approaching_budget, awaiting_payment, large_variations, cash_flow_risk = [], [], [], [], []
+    total_outstanding = 0.0
+    for p in portfolio:
+        pid, pname = p["digest"]["project_id"], p["digest"]["project_name"]
+        summary = await ce.get_project_commercial_summary(pid)
+        if not summary or not summary.get("budget"):
+            continue
+        budget = summary["budget"]
+        entry = {"project_id": pid, "project_name": pname}
+        if budget["variance"] < 0:
+            over_budget.append({**entry, "variance": budget["variance"]})
+        elif budget["current_budget"] > 0 and (budget["forecast_cost"] / budget["current_budget"]) >= 0.9:
+            approaching_budget.append({**entry, "forecast_cost": budget["forecast_cost"], "budget": budget["current_budget"]})
+
+        outstanding = summary["outstanding_payments"]["outstanding"]
+        total_outstanding += outstanding
+        if outstanding > 0:
+            awaiting_payment.append({**entry, "outstanding": outstanding,
+                                    "upcoming_payment": summary["upcoming_payment"]})
+
+        pending_variation_total = summary["pending_variations_total"]
+        if pending_variation_total > 0:
+            large_variations.append({**entry, "pending_variations_total": pending_variation_total})
+
+        if summary["cash_flow_signal"] in ("attention", "critical"):
+            cash_flow_risk.append({**entry, "cash_flow_signal": summary["cash_flow_signal"]})
+
+    large_variations.sort(key=lambda e: e["pending_variations_total"], reverse=True)
+    awaiting_payment.sort(key=lambda e: e["outstanding"], reverse=True)
+
+    return {
+        "generated_at": _iso(_now()),
+        "projects_with_commercial_data": len(over_budget) + len(approaching_budget) + len(awaiting_payment) +
+                                         len(large_variations) + len(cash_flow_risk),
+        "projects_over_budget": over_budget,
+        "projects_approaching_budget": approaching_budget,
+        "projects_awaiting_payment": awaiting_payment,
+        "large_pending_variations": large_variations,
+        "cash_flow_risk": cash_flow_risk,
+        "total_outstanding_portfolio_wide": round(total_outstanding, 2),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Executive Timeline (Beta-05 final) — merges timeline_engine's own
+# existing, unmodified reads (for_site + for_project_commercial) across
+# every project into one chronological history. No second Timeline
+# implementation: every event is read from the same functions the
+# Project Dashboard's own Timeline and Site Progress already call.
+# ---------------------------------------------------------------------------
+
+async def executive_timeline(*, user: dict, project_id: Optional[str] = None,
+                             category: Optional[str] = None, limit: int = 100) -> dict:
+    from engines import timeline_engine
+    portfolio = await _portfolio(user)
+    if project_id:
+        portfolio = [p for p in portfolio if p["digest"]["project_id"] == project_id]
+
+    events: list[dict] = []
+    for p in portfolio:
+        pid, pname = p["digest"]["project_id"], p["digest"]["project_name"]
+        sites = await memory_engine.list_sites(project_id=pid)
+        for site in sites:
+            for item in await timeline_engine.for_site(site["id"], limit=50):
+                events.append({**item, "project_id": pid, "project_name": pname, "source": "reality"})
+        for item in await timeline_engine.for_project_commercial(pid, limit=50):
+            events.append({**item, "project_id": pid, "project_name": pname, "source": "commercial"})
+
+    if category:
+        events = [e for e in events if e.get("source") == category]
+
+    def _sort_key(e: dict) -> str:
+        return e.get("created_at") or e.get("event", {}).get("server_created_at") or ""
+
+    events.sort(key=_sort_key, reverse=True)
+    return {
+        "generated_at": _iso(_now()),
+        "projects_covered": len(portfolio),
+        "events": events[:limit],
+    }
+
+
+# ---------------------------------------------------------------------------
+# Portfolio Search (Beta-05 final) — a thin, federated search over
+# existing collections. No new indexing system: each category is a
+# simple, case-insensitive substring match against the same
+# collections every other read in this file already queries.
+# ---------------------------------------------------------------------------
+
+async def portfolio_search(query: str, *, user: dict, limit_per_category: int = 10) -> dict:
+    if not query or len(query.strip()) < 2:
+        raise ReasoningError("Search query must be at least 2 characters.")
+    q = query.strip()
+    import re
+    pattern = {"$regex": re.escape(q), "$options": "i"}
+
+    visible_project_ids = None
+    if memory_engine._is_project_scoped(user):
+        visible_project_ids = user.get("assigned_project_ids") or []
+
+    def _scope(field: str = "project_id") -> dict:
+        return {field: {"$in": visible_project_ids}} if visible_project_ids is not None else {}
+
+    projects = await db.projects.find({**_scope("id"), "name": pattern}, {"_id": 0}).to_list(limit_per_category)
+    sites = await db.sites.find({**_scope(), "name": pattern}, {"_id": 0}).to_list(limit_per_category)
+    activities = await db.workflow_activities.find({**_scope(), "name": pattern}, {"_id": 0}).to_list(limit_per_category)
+    items = await db.operational_items.find({"title": pattern}, {"_id": 0}).to_list(limit_per_category)
+    variations = await db.variations.find({**_scope(), "title": pattern}, {"_id": 0}).to_list(limit_per_category)
+    payments = await db.payments.find({"reference": pattern}, {"_id": 0}).to_list(limit_per_category)
+
+    if visible_project_ids is not None and items:
+        site_ids = {s["id"] for s in await db.sites.find({"project_id": {"$in": visible_project_ids}}, {"_id": 0}).to_list(500)}
+        items = [i for i in items if i.get("site_id") in site_ids]
+
+    return {
+        "query": q,
+        "projects": projects,
+        "sites": sites,
+        "activities": activities,
+        "operational_items": items,
+        "variations": variations,
+        "payments": payments,
+        "total_results": len(projects) + len(sites) + len(activities) + len(items) + len(variations) + len(payments),
+    }
+
+
+# ---------------------------------------------------------------------------
 # Construction memory (Sprint 01B item 11) — capture only, NO learning.
 # CRE-owned collection `construction_memory`: one record per completed
 # activity. Nothing in this sprint reads these records back; the future

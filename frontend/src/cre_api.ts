@@ -243,6 +243,62 @@ export async function apiPriorityEngine(): Promise<PriorityEngineResult> {
   return get(`/api/portfolio/priorities`);
 }
 
+// Beta-05 final convergence — Cross-Project Intelligence, Commercial
+// Intelligence, Executive Timeline, Portfolio Search.
+export type RepeatedPattern = {
+  rule_id: string; domain: string; description: string; severity: string;
+  project_ids: string[]; project_names: string[]; project_count: number;
+};
+
+export type CrossProjectIntelligence = {
+  generated_at: string; projects_covered: number; repeated_patterns: RepeatedPattern[];
+};
+
+export async function apiCrossProjectIntelligence(): Promise<CrossProjectIntelligence> {
+  return get(`/api/portfolio/cross-project-intelligence`);
+}
+
+export type CommercialIntelligence = {
+  generated_at: string;
+  projects_with_commercial_data: number;
+  projects_over_budget: { project_id: string; project_name: string; variance: number }[];
+  projects_approaching_budget: { project_id: string; project_name: string; forecast_cost: number; budget: number }[];
+  projects_awaiting_payment: { project_id: string; project_name: string; outstanding: number; upcoming_payment: any }[];
+  large_pending_variations: { project_id: string; project_name: string; pending_variations_total: number }[];
+  cash_flow_risk: { project_id: string; project_name: string; cash_flow_signal: string }[];
+  total_outstanding_portfolio_wide: number;
+};
+
+export async function apiCommercialIntelligence(): Promise<CommercialIntelligence> {
+  return get(`/api/portfolio/commercial-intelligence`);
+}
+
+export type ExecutiveTimelineEvent = {
+  project_id: string; project_name: string; source: 'reality' | 'commercial';
+  [key: string]: any;
+};
+
+export type ExecutiveTimeline = {
+  generated_at: string; projects_covered: number; events: ExecutiveTimelineEvent[];
+};
+
+export async function apiExecutiveTimeline(params?: { project_id?: string; category?: string }): Promise<ExecutiveTimeline> {
+  const qs = new URLSearchParams();
+  if (params?.project_id) qs.set('project_id', params.project_id);
+  if (params?.category) qs.set('category', params.category);
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return get(`/api/portfolio/executive-timeline${suffix}`);
+}
+
+export type PortfolioSearchResult = {
+  query: string; total_results: number;
+  projects: any[]; sites: any[]; activities: any[]; operational_items: any[]; variations: any[]; payments: any[];
+};
+
+export async function apiPortfolioSearch(q: string): Promise<PortfolioSearchResult> {
+  return get(`/api/portfolio/search?q=${encodeURIComponent(q)}`);
+}
+
 /** Triggers a fresh CRE reasoning pass for a project (snapshot -> rules
  * -> persist insights + a reasoning_runs record). Idempotent - rerunning
  * on unchanged state refreshes existing open insights rather than
