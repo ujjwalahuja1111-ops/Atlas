@@ -322,3 +322,129 @@ def test_priority_engine_management_only(admin, project_with_budget):
     for role_headers in (pm_h, sup_h, client_h):
         r = requests.get(f"{API}/portfolio/priorities", headers=role_headers, timeout=20)
         assert r.status_code == 403, "Priority Engine must be management-only, matching Portfolio Control Center"
+
+
+# ==========================================================================
+# Beta-06D — State Mutation & Authorization Validation.
+#
+# Beta-06B/C proved read endpoints must independently enforce
+# visibility. This pass proved the same must hold for every mutation:
+# systematically found that essentially every write endpoint on
+# operational items (transition, assign, comment, request-clarification,
+# blocker set/clear, edit, voice-update, duplicate) and six commercial
+# mutation functions (milestone status, payment request status, variation
+# decide/submit/send-for-client-review, record_payment) had zero
+# visibility enforcement - demonstrated as exploitable (an outsider
+# transitioned an item's real status; an unrelated client approved a
+# real Rs 5L variation) before fixing.
+# ==========================================================================
+@pytest.fixture()
+def cross_project_item_and_variation(admin):
+    outsider_user, outsider_h = _login("site_supervisor", "9990000401", "Beta06D Item Outsider")
+    client_user, client_h = _login("client", "9990000402", "Beta06D Client A")
+    outsider_client_user, outsider_client_h = _login("client", "9990000403", "Beta06D Outsider Client")
+
+    proj_a = requests.post(f"{API}/projects", json={"name": "Beta06D Secret", "code": "B06DSEC1"},
+                           headers=admin["headers"], timeout=20).json()
+    proj_b = requests.post(f"{API}/projects", json={"name": "Beta06D Visible", "code": "B06DVIS1"},
+                           headers=admin["headers"], timeout=20).json()
+    site_a = requests.post(f"{API}/sites", json={"project_id": proj_a["id"], "name": "Secret Site"},
+                           headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{outsider_user['id']}/projects", json={"project_ids": [proj_b["id"]]},
+                 headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/admin/users/{outsider_client_user['id']}/projects", json={"project_ids": [proj_b["id"]]},
+                 headers=admin["headers"], timeout=20)
+
+    item = requests.post(f"{API}/operational-items", json={
+        "site_id": site_a["id"], "category": "site_issue", "title": "Beta06D secret item", "priority": "high",
+    }, headers=admin["headers"], timeout=20).json()
+
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj_a["id"], "client_id": client_user["id"],
+        "original_contract_value": 1000000, "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=admin["headers"], timeout=20)
+    variation = requests.post(f"{API}/commercial/variations", json={
+        "project_id": proj_a["id"], "title": "Beta06D secret variation", "description": "d",
+        "original_cost": 0, "proposed_cost": 500000,
+    }, headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/commercial/variations/{variation['id']}/submit", headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/commercial/variations/{variation['id']}/send-for-client-review",
+                 headers=admin["headers"], timeout=20)
+
+    return item, variation, proj_a, outsider_h, outsider_client_h
+
+
+def test_item_transition_blocks_outsider(cross_project_item_and_variation, admin):
+    item, _, _, outsider_h, _ = cross_project_item_and_variation
+    r = requests.post(f"{API}/operational-items/{item['id']}/transition", json={"to_status": "in_progress"},
+                      headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+    r2 = requests.get(f"{API}/operational-items/{item['id']}", headers=admin["headers"], timeout=20)
+    assert r2.json()["item"]["status"] != "in_progress", "the outsider's blocked attempt must not have mutated state"
+
+
+def test_item_comment_blocks_outsider(cross_project_item_and_variation):
+    item, _, _, outsider_h, _ = cross_project_item_and_variation
+    r = requests.post(f"{API}/operational-items/{item['id']}/comments", json={"text": "unauthorized"},
+                      headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_item_edit_blocks_outsider(cross_project_item_and_variation, admin):
+    item, _, _, outsider_h, _ = cross_project_item_and_variation
+    r = requests.patch(f"{API}/operational-items/{item['id']}", json={"title": "hacked"},
+                       headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+    r2 = requests.get(f"{API}/operational-items/{item['id']}", headers=admin["headers"], timeout=20)
+    assert r2.json()["item"]["title"] == "Beta06D secret item", "the outsider's blocked edit must not have mutated state"
+
+
+def test_item_blocker_set_and_clear_block_outsider(cross_project_item_and_variation):
+    item, _, _, outsider_h, _ = cross_project_item_and_variation
+    r1 = requests.post(f"{API}/operational-items/{item['id']}/blocker", json={"category": "material"},
+                       headers=outsider_h, timeout=20)
+    assert r1.status_code == 404
+    r2 = requests.delete(f"{API}/operational-items/{item['id']}/blocker", headers=outsider_h, timeout=20)
+    assert r2.status_code == 404
+
+
+def test_item_voice_update_blocks_outsider(cross_project_item_and_variation):
+    item, _, _, outsider_h, _ = cross_project_item_and_variation
+    r = requests.post(f"{API}/operational-items/{item['id']}/voice-update", data={"text": "unauthorized"},
+                      headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_variation_decide_blocks_outsider_client(cross_project_item_and_variation, admin):
+    _, variation, proj_a, _, outsider_client_h = cross_project_item_and_variation
+    r = requests.post(f"{API}/commercial/variations/{variation['id']}/decide", json={"decision": "approved"},
+                      headers=outsider_client_h, timeout=20)
+    assert r.status_code == 404
+    r2 = requests.get(f"{API}/projects/{proj_a['id']}/commercial/variations",
+                      headers=admin["headers"], timeout=20)
+    decided = [v for v in r2.json() if v["id"] == variation["id"] and v["status"] == "approved"]
+    assert not decided, "the outsider client's blocked approval must not have mutated the variation's real state"
+
+
+def test_variation_submit_blocks_wrong_project_pm(cross_project_item_and_variation, admin):
+    """A fresh variation, not yet submitted, so submit is still a legal
+    transition for someone with the right role - confirming the block
+    is genuinely about project visibility, not merely an already-illegal
+    state transition or a role restriction. Uses a project_manager (the
+    role /submit actually permits) scoped to a different project, not
+    site_supervisor (who /submit's own _require_write_access would
+    already reject regardless of visibility, and so would not actually
+    exercise this fix)."""
+    _, _, proj_a, _, _ = cross_project_item_and_variation
+    pm_user, pm_h = _login("project_manager", "9990000404", "Beta06D Wrong-Project PM")
+    proj_b_2 = requests.post(f"{API}/projects", json={"name": "Beta06D Visible 2", "code": "B06DVIS2"},
+                             headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{pm_user['id']}/projects", json={"project_ids": [proj_b_2["id"]]},
+                 headers=admin["headers"], timeout=20)
+
+    fresh_var = requests.post(f"{API}/commercial/variations", json={
+        "project_id": proj_a["id"], "title": "Beta06D fresh variation", "description": "d",
+        "original_cost": 0, "proposed_cost": 100000,
+    }, headers=admin["headers"], timeout=20).json()
+    r = requests.post(f"{API}/commercial/variations/{fresh_var['id']}/submit", headers=pm_h, timeout=20)
+    assert r.status_code == 404

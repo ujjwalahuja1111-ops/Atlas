@@ -22,6 +22,24 @@ def _forbid_client(user: dict, action: str = "perform this action") -> None:
         raise HTTPException(status_code=403, detail=f"Clients cannot {action}.")
 
 
+async def _get_visible_item_or_404(item_id: str, user: dict) -> dict:
+    """Beta-06D — every mutation route on this file must call this
+    before acting, not just the two read routes fixed in Beta-06B.
+    Fetches the item and enforces the same project-visibility check
+    every read route already uses, in one call — routes that need the
+    item for another reason (assignment eligibility, etc.) get it back
+    to reuse rather than fetching twice."""
+    item = await operations_engine.get_item(item_id)
+    if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    try:
+        await operations_engine.assert_item_visible(item, user)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Item not found")
+    return item
+
+
+
 class CreateItem(BaseModel):
     site_id: str
     category: str
@@ -158,14 +176,12 @@ class TransitionReq(BaseModel):
 
 @router.post("/operational-items/{item_id}/transition")
 async def transition(item_id: str, req: TransitionReq, user: dict = Depends(get_current_user)):
+    item = await _get_visible_item_or_404(item_id, user)
     # FAC-04: a client may approve (-> fulfilled) or reject (-> cancelled)
     # a client_approval item — nothing else. Every other transition
     # (assignment lifecycle, closing, reopening, etc.) on any category is
     # an operational action, not a client one.
     if user.get("role") == "client":
-        item = await operations_engine.get_item(item_id)
-        if not item:
-            raise HTTPException(status_code=404, detail="Item not found")
         if item["category"] != "client_approval" or req.to_status not in ("fulfilled", "cancelled"):
             raise HTTPException(status_code=403, detail="Clients can only approve or reject client approval items.")
     try:
@@ -201,9 +217,7 @@ async def assign(item_id: str, req: AssignReq, user: dict = Depends(get_current_
     # routes/ai_proposals.py).
     if user["role"] not in ("management", "project_manager"):
         raise HTTPException(status_code=403, detail="Only Project Managers/management can assign or reassign work.")
-    item_for_scope = await operations_engine.get_item(item_id)
-    if not item_for_scope:
-        raise HTTPException(status_code=404, detail="Item not found")
+    item_for_scope = await _get_visible_item_or_404(item_id, user)
     from core.db import db
     assignee = await db.users.find_one({"id": req.assigned_to_user_id}, {"_id": 0})
     if not assignee:
@@ -236,6 +250,7 @@ class CommentReq(BaseModel):
 
 @router.post("/operational-items/{item_id}/comments", status_code=201)
 async def comment(item_id: str, req: CommentReq, user: dict = Depends(get_current_user)):
+    await _get_visible_item_or_404(item_id, user)
     try:
         item = await operations_engine.add_comment(item_id=item_id, actor=user, text=req.text)
         return operations_engine.enrich(item)
@@ -259,6 +274,7 @@ async def request_clarification(item_id: str, req: ClarificationReq, user: dict 
     internal action."""
     if user.get("role") != "client":
         raise HTTPException(status_code=403, detail="Only the client can request clarification.")
+    await _get_visible_item_or_404(item_id, user)
     if not req.note or not req.note.strip():
         raise HTTPException(status_code=400, detail="A note is required to request clarification.")
     try:
@@ -277,6 +293,7 @@ class BlockerReq(BaseModel):
 @router.post("/operational-items/{item_id}/blocker")
 async def set_blocker(item_id: str, req: BlockerReq, user: dict = Depends(get_current_user)):
     _forbid_client(user, "set blockers")
+    await _get_visible_item_or_404(item_id, user)
     try:
         item = await operations_engine.set_blocker(
             item_id=item_id, actor=user, category=req.category, note=req.note,
@@ -289,6 +306,7 @@ async def set_blocker(item_id: str, req: BlockerReq, user: dict = Depends(get_cu
 @router.delete("/operational-items/{item_id}/blocker")
 async def clear_blocker(item_id: str, user: dict = Depends(get_current_user)):
     _forbid_client(user, "clear blockers")
+    await _get_visible_item_or_404(item_id, user)
     try:
         item = await operations_engine.clear_blocker(item_id=item_id, actor=user)
         return operations_engine.enrich(item)
@@ -332,6 +350,7 @@ class EditItemReq(BaseModel):
 async def edit_item(item_id: str, req: EditItemReq,
                     user: dict = Depends(get_current_user)):
     _forbid_client(user, "edit operational items")
+    await _get_visible_item_or_404(item_id, user)
     from core.db import db
     edits = {k: v for k, v in req.model_dump().items() if v is not None}
     assignee = None
@@ -370,6 +389,10 @@ async def voice_update(item_id: str,
     """
     item = await operations_engine.get_item(item_id)
     if not item:
+        raise HTTPException(status_code=404, detail="Item not found")
+    try:
+        await operations_engine.assert_item_visible(item, user)
+    except ValueError:
         raise HTTPException(status_code=404, detail="Item not found")
 
     # Client Approval Workflow: a client may leave voice/text feedback on
@@ -452,6 +475,7 @@ class MarkDuplicateReq(BaseModel):
 async def mark_duplicate(item_id: str, req: MarkDuplicateReq,
                          user: dict = Depends(get_current_user)):
     _forbid_client(user, "mark items as duplicates")
+    await _get_visible_item_or_404(item_id, user)
     try:
         item = await operations_engine.mark_duplicate(
             item_id=item_id, actor=user,

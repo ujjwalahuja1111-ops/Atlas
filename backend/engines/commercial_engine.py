@@ -272,6 +272,7 @@ async def transition_milestone_status(milestone_id: str, to_status: str, *, acto
     ms = await get_milestone(milestone_id)
     if not ms:
         raise CommercialNotFoundError(f"Milestone '{milestone_id}' not found.")
+    await assert_project_visible(ms["project_id"], actor)
     cur = ms["status"]
     if to_status not in MILESTONE_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Milestone transition: '{cur}' -> '{to_status}'.")
@@ -363,6 +364,7 @@ async def transition_payment_request_status(payment_request_id: str, to_status: 
     pr = await get_payment_request(payment_request_id)
     if not pr:
         raise CommercialNotFoundError(f"Payment Request '{payment_request_id}' not found.")
+    await assert_project_visible(pr["project_id"], actor)
     cur = pr["status"]
     if to_status not in PAYMENT_REQUEST_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Payment Request transition: '{cur}' -> '{to_status}'.")
@@ -386,6 +388,7 @@ async def record_payment(*, actor: dict, payment_request_id: str, amount: float,
     pr = await get_payment_request(payment_request_id)
     if not pr:
         raise CommercialNotFoundError(f"Payment Request '{payment_request_id}' not found.")
+    await assert_project_visible(pr["project_id"], actor)
     if pr["status"] == "cancelled":
         raise CommercialError("Cannot record a payment against a cancelled Payment Request.")
     now = _iso(_now())
@@ -534,6 +537,7 @@ async def decide_variation(variation_id: str, decision: str, *, actor: dict,
     variation = await get_variation(variation_id)
     if not variation:
         raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
+    await assert_project_visible(variation["project_id"], actor)
     cur = variation["status"]
     if decision not in VARIATION_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Variation transition: '{cur}' -> '{decision}'.")
@@ -561,6 +565,7 @@ async def submit_variation(variation_id: str, *, actor: dict) -> dict:
     variation = await get_variation(variation_id)
     if not variation:
         raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
+    await assert_project_visible(variation["project_id"], actor)
     cur = variation["status"]
     if "submitted" not in VARIATION_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Variation transition: '{cur}' -> 'submitted'.")
@@ -574,6 +579,7 @@ async def send_variation_to_client_review(variation_id: str, *, actor: dict) -> 
     variation = await get_variation(variation_id)
     if not variation:
         raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
+    await assert_project_visible(variation["project_id"], actor)
     cur = variation["status"]
     if "client_review" not in VARIATION_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Variation transition: '{cur}' -> 'client_review'.")
