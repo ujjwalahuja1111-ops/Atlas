@@ -1128,3 +1128,36 @@ async def test_list_items_scoped_by_visibility(seeded_rp001):
     outsider_visible = [i for i in all_items if i.get("project_id") in (outsider.get("assigned_project_ids") or [])]
     assert all(i.get("project_id") == proj_b["id"] for i in outsider_visible)
     assert not any(i["title"] == "Secret item" for i in outsider_visible)
+
+
+# ==========================================================================
+# Beta-06E — Reference Portfolio & Multi-Role Operational Validation.
+#
+# Found while simulating a complete real day (create -> assign ->
+# acknowledge -> in_progress -> fulfilled -> verified -> closed) through
+# the actual API, not by reading code: an item that had genuinely just
+# completed its full lifecycle did not appear in Daily Review's own
+# finished_today section. Root cause: operational_items documents never
+# carry an updated_at field at all - only created_at (set once) and
+# last_updated_at (set on every transition_status call) - so
+# daily_review's own query, which filtered on updated_at, had never
+# matched a single operational item since Daily Review was built. No
+# existing test caught this because none asserted on this specific
+# field. Fixed by querying the field that is actually written.
+# ==========================================================================
+async def test_daily_review_finds_items_resolved_today_via_real_transition(seeded_rp001):
+    """Not a synthetic document insert - genuinely walks the same
+    transition_status() path the real API uses, the same way the bug
+    was originally found."""
+    _, admin = seeded_rp001
+    project = await memory_engine.insert_project(name="Beta06E Daily Review Fix Test", code="B06EDR1")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site A")
+    item = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="material_requirement",
+        title="Beta06E lifecycle test item", priority="high")
+    await operations_engine.transition_status(item_id=item["id"], to_status="fulfilled", actor=admin)
+
+    review = await operations_engine.daily_review(user=admin)
+    resolved_ids = {i["id"] for i in review["finished_today"]["operational_items"]}
+    assert item["id"] in resolved_ids, \
+        "an item resolved today via the real transition path must appear in Daily Review's finished_today"

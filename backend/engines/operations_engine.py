@@ -1299,7 +1299,7 @@ async def daily_review(*, user: dict) -> dict:
     ).to_list(300)
     resolved_items_today = await db.operational_items.find(
         {"project_id": {"$in": project_ids}, "status": {"$in": ["fulfilled", "verified", "closed"]},
-         "updated_at": {"$gte": today_start}}, {"_id": 0},
+         "last_updated_at": {"$gte": today_start}}, {"_id": 0},
     ).to_list(300)
     await attach_names(resolved_items_today)
 
@@ -1334,7 +1334,7 @@ async def daily_review(*, user: dict) -> dict:
         "role": user["role"],
         "finished_today": {
             "activities": sorted(completed_activities_today, key=lambda a: a.get("updated_at") or ""),
-            "operational_items": sorted(resolved_items_today, key=lambda i: i.get("updated_at") or ""),
+            "operational_items": sorted(resolved_items_today, key=lambda i: i.get("last_updated_at") or ""),
         },
         "remains_open_count": len(in_scope_open),
         "slipped_activities": sorted(slipped_activities, key=lambda a: a.get("planned_finish") or ""),
