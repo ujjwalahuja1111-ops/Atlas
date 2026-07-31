@@ -1799,8 +1799,15 @@ async def executive_timeline(*, user: dict, project_id: Optional[str] = None,
         pid, pname = p["digest"]["project_id"], p["digest"]["project_name"]
         sites = await memory_engine.list_sites(project_id=pid)
         for site in sites:
-            for item in await timeline_engine.for_site(site["id"], limit=50):
-                events.append({**item, "project_id": pid, "project_name": pname, "source": "reality"})
+            # include_ops=True — Beta-06F fix. Without this, operational
+            # item history (creation, assignment, transitions, comments)
+            # never appeared in Executive Timeline at all, despite
+            # for_site's own include_ops mechanism already existing.
+            # Each item's own "kind" field (construction_event vs
+            # operational_event) distinguishes the two sources.
+            for item in await timeline_engine.for_site(site["id"], limit=50, include_ops=True):
+                source = "reality" if item.get("kind") == "construction_event" else "operations"
+                events.append({**item, "project_id": pid, "project_name": pname, "source": source})
         for item in await timeline_engine.for_project_commercial(pid, limit=50):
             events.append({**item, "project_id": pid, "project_name": pname, "source": "commercial"})
 

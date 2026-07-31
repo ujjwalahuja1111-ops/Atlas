@@ -274,7 +274,7 @@ export async function apiCommercialIntelligence(): Promise<CommercialIntelligenc
 }
 
 export type ExecutiveTimelineEvent = {
-  project_id: string; project_name: string; source: 'reality' | 'commercial';
+  project_id: string; project_name: string; source: 'reality' | 'operations' | 'commercial';
   [key: string]: any;
 };
 

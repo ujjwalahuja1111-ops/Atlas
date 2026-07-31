@@ -972,16 +972,19 @@ async def test_commercial_intelligence_matches_commercial_summary(seeded_rp001):
 async def test_executive_timeline_reuses_timeline_engine_shapes(seeded_rp001):
     """Every event must carry the exact shape its own source function
     already produces (timeline_engine.for_site's "event" wrapper for
-    reality, or commercial_engine's own event fields for commercial) -
+    reality, its "operational_event"/"operational_item" wrapper for
+    operations, or commercial_engine's own event fields for commercial) -
     confirming genuine reuse, not a re-derived shape."""
     project, admin = seeded_rp001
     result = await reasoning_engine.executive_timeline(user=admin, project_id=project["id"])
     assert result["projects_covered"] == 1
     for e in result["events"]:
-        assert e["source"] in ("reality", "commercial")
+        assert e["source"] in ("reality", "operations", "commercial")
         assert e["project_id"] == project["id"]
         if e["source"] == "reality":
             assert "event" in e
+        elif e["source"] == "operations":
+            assert "operational_event" in e
         else:
             assert "kind" in e
 
@@ -1161,3 +1164,52 @@ async def test_daily_review_finds_items_resolved_today_via_real_transition(seede
     resolved_ids = {i["id"] for i in review["finished_today"]["operational_items"]}
     assert item["id"] in resolved_ids, \
         "an item resolved today via the real transition path must appear in Daily Review's finished_today"
+
+
+# ==========================================================================
+# Beta-06F — Timeline & Construction History Integrity Validation.
+#
+# Found by directly testing this sprint's own question: "if this
+# actually happened, could someone reconstruct it using only Atlas?"
+# For operational item history specifically, the answer was no -
+# Executive Timeline called timeline_engine.for_site() without
+# include_ops=True, so every operational item creation, transition,
+# and comment was invisible to it, despite for_site's own include_ops
+# mechanism already existing and working correctly when called
+# directly. Confirmed via a real create -> transition -> comment
+# sequence producing zero Executive Timeline events before the fix.
+# ==========================================================================
+async def test_executive_timeline_includes_operational_item_history(seeded_rp001):
+    """Reproduces the exact sequence that found the bug: a real item,
+    a real transition, a real comment, through the actual engine
+    functions the API calls - not a synthetic timeline entry."""
+    _, admin = seeded_rp001
+    project = await memory_engine.insert_project(name="Beta06F Timeline Test", code="B06FTL3")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site A")
+    item = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="site_issue",
+        title="Beta06F timeline test item", priority="high")
+    await operations_engine.transition_status(item_id=item["id"], to_status="in_progress", actor=admin)
+    await operations_engine.add_comment(item_id=item["id"], actor=admin, text="Progress comment")
+
+    timeline = await reasoning_engine.executive_timeline(user=admin, project_id=project["id"])
+    operations_events = [e for e in timeline["events"] if e["source"] == "operations"]
+    assert len(operations_events) >= 3, \
+        f"expected at least 3 operational events (create/transition/comment), found {len(operations_events)}"
+
+
+async def test_executive_timeline_operations_events_reference_real_item(seeded_rp001):
+    """Every operations-source event must trace to a real operational
+    item that actually exists - never a fabricated or orphaned entry."""
+    _, admin = seeded_rp001
+    project = await memory_engine.insert_project(name="Beta06F Timeline Test 2", code="B06FTL4")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site A")
+    item = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="site_issue",
+        title="Beta06F timeline reference test", priority="normal")
+
+    timeline = await reasoning_engine.executive_timeline(user=admin, project_id=project["id"])
+    for e in timeline["events"]:
+        if e["source"] == "operations":
+            assert e["operational_item"] is not None
+            assert e["operational_item"]["id"] == item["id"]
