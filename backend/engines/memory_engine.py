@@ -229,13 +229,36 @@ async def register_user(phone: str, name: str, requested_workspace: Optional[str
     if requested_workspace and requested_workspace not in WORKSPACES:
         raise ValueError(f"Invalid requested_workspace '{requested_workspace}'. Must be one of {sorted(WORKSPACES)}")
 
-    # RC-03 — Production Configuration fix. A brand-new, empty
-    # database has no admin to approve anyone, so the very first
-    # account ever registered is automatically approved as management
-    # and unrestricted — the one, deliberate exception to "no role
-    # until approved." Every subsequent registration (once any user
-    # exists) follows the normal pending-approval flow unchanged.
-    is_founding_admin = await db.users.count_documents({}) == 0
+    # RC-03 — Production Configuration fix, hardened for concurrency
+    # during Pilot Certification. A brand-new, empty database has no
+    # admin to approve anyone, so the very first account ever
+    # registered is automatically approved as management — the one,
+    # deliberate exception to "no role until approved." Every
+    # subsequent registration follows the normal pending-approval flow
+    # unchanged.
+    #
+    # Two checks, not one. The count check first: a database already
+    # populated via any other path (db_seed.py's own upsert_user,
+    # which never touches the claim document below, or a prior
+    # register_user call) must never reach the claim at all — this
+    # prevents the claim document itself from becoming a false signal
+    # of "empty" on a database that already has real users. The atomic
+    # claim second: closes the genuine race window a plain count check
+    # alone can't — in a real multi-worker deployment, two
+    # registrations arriving within microseconds of each other could
+    # both observe an empty database before either has inserted.
+    # find_one_and_update with upsert=True on a single, well-known
+    # document is Mongo's own standard atomic claim pattern —
+    # single-document writes are atomic even across concurrent
+    # requests from different processes.
+    is_founding_admin = False
+    if await db.users.count_documents({}) == 0:
+        claim = await db.system_state.find_one_and_update(
+            {"_id": "founding_admin_claimed"},
+            {"$setOnInsert": {"_id": "founding_admin_claimed", "claimed_by_phone": phone, "claimed_at": _now()}},
+            upsert=True,
+        )
+        is_founding_admin = claim is None  # None means this call just created it — no prior claim existed
     if is_founding_admin:
         doc = {
             "id": _new_id(),

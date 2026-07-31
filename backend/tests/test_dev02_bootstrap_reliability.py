@@ -19,6 +19,7 @@ automatically in any environment that has it installed, including CI.
 Run from backend/:  python -m pytest tests/test_dev02_bootstrap_reliability.py -q
 """
 import os
+import asyncio
 import pytest
 
 mongomock_motor = pytest.importorskip("mongomock_motor")
@@ -1320,6 +1321,7 @@ async def test_executive_timeline_workflow_filter(seeded_rp001):
 # ==========================================================================
 async def test_first_ever_registration_becomes_approved_management():
     await core_db.db.users.delete_many({})
+    await core_db.db.system_state.delete_many({})
     user = await memory_engine.register_user(phone="9990000901", name="RC03 Founding Admin")
     assert user["role"] == "management"
     assert user["approval_status"] == "approved"
@@ -1328,6 +1330,7 @@ async def test_first_ever_registration_becomes_approved_management():
 
 async def test_second_registration_after_founding_admin_is_normal_pending():
     await core_db.db.users.delete_many({})
+    await core_db.db.system_state.delete_many({})
     await memory_engine.register_user(phone="9990000902", name="RC03 Founding Admin 2")
     second = await memory_engine.register_user(phone="9990000903", name="RC03 Second Person")
     assert second["role"] == "site_supervisor"
@@ -1345,7 +1348,76 @@ async def test_founding_admin_can_immediately_act_as_management():
     would corrupt its own admin account for every test that runs after
     this one in the same session."""
     await core_db.db.users.delete_many({})
+    await core_db.db.system_state.delete_many({})
     founder = await memory_engine.register_user(phone="9990000904", name="RC03 Acting Admin")
     project = await memory_engine.insert_project(name="RC03 Founder's First Project", code="RC03FOUND")
     portfolio = await reasoning_engine.portfolio_control_center(user=founder)
     assert any(r["project_id"] == project["id"] for r in portfolio["projects"])
+
+
+# ==========================================================================
+# Pilot Certification — Phase 1, Operational Recovery. Found by
+# testing this sprint's own named scenario ("client clarification
+# after approval"): request_clarification had no check for whether an
+# item's decision was already final. A client could request
+# clarification on an item already fulfilled/cancelled/closed, which
+# is semantically nonsensical and would cascade into Beta-06G's own
+# "awaiting your response" PM flag incorrectly firing on an
+# already-resolved item.
+# ==========================================================================
+async def test_clarification_blocked_after_item_already_decided(seeded_rp001):
+    _, admin = seeded_rp001
+    client = {"id": "cert_client_1", "name": "Cert Client", "role": "client"}
+    project = await memory_engine.insert_project(name="Cert Clarification Fix Test", code="CERTCLAR1")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="client_approval", title="Tile", priority="normal")
+    await operations_engine.transition_status(item_id=item["id"], to_status="fulfilled", actor=client)
+
+    with pytest.raises(ValueError, match="already final"):
+        await operations_engine.request_clarification(item_id=item["id"], actor=client, note="wait what?")
+
+
+async def test_clarification_still_works_while_item_open(seeded_rp001):
+    """Confirms the fix is scoped to terminal states only - the normal,
+    legitimate case (item still awaiting the client's real decision)
+    must remain completely unaffected."""
+    _, admin = seeded_rp001
+    client = {"id": "cert_client_2", "name": "Cert Client 2", "role": "client"}
+    project = await memory_engine.insert_project(name="Cert Clarification Fix Test 2", code="CERTCLAR2")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="client_approval", title="Paint", priority="normal")
+
+    result = await operations_engine.request_clarification(item_id=item["id"], actor=client, note="what color?")
+    assert result["status"] == "open"
+
+
+# ==========================================================================
+# Pilot Certification — Phase 3, Founding Administrator Robustness.
+# Hardened the RC-03 count-then-insert check (a genuine race) with
+# Mongo's own atomic find_one_and_update claim pattern. A regression
+# was caught and fixed during this pass's own development: the
+# claim-only version would incorrectly grant founding-admin to a
+# register_user() call on a database already populated via a
+# different path (db_seed.py's upsert_user never touches the claim
+# document) - fixed by checking the user count first.
+# ==========================================================================
+async def test_concurrent_registrations_produce_exactly_one_founding_admin():
+    await core_db.db.users.delete_many({})
+    await core_db.db.system_state.delete_many({})
+    results = await asyncio.gather(
+        memory_engine.register_user(phone="9990001001", name="Cert Race A"),
+        memory_engine.register_user(phone="9990001002", name="Cert Race B"),
+    )
+    founders = [r for r in results if r["role"] == "management" and r["approval_status"] == "approved"]
+    assert len(founders) == 1, f"exactly one must become founding admin, found {len(founders)}"
+
+
+async def test_seeded_database_does_not_grant_founding_admin_to_later_registration():
+    await core_db.db.users.delete_many({})
+    await core_db.db.system_state.delete_many({})
+    await memory_engine.upsert_user(phone="9990001003", name="Cert Seeded Admin", role="management")
+    late = await memory_engine.register_user(phone="9990001004", name="Cert Late Registrant")
+    assert late["role"] == "site_supervisor"
+    assert late["approval_status"] == "pending"

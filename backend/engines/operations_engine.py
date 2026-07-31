@@ -767,6 +767,9 @@ async def request_clarification(*, item_id: str, actor: dict, note: str) -> dict
         raise ValueError("item not found")
     if item["category"] != "client_approval":
         raise ValueError("clarification can only be requested on a client approval item")
+    if item["status"] in TERMINAL_ITEM_STATUSES:
+        raise ValueError(
+            f"cannot request clarification — this item's decision is already final ('{item['status']}')")
     ev = await append_event(item_id=item_id, kind="clarification_requested", actor=actor,
                             prev_status=item["status"], new_status=item["status"],
                             payload={"note": note})
