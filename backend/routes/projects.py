@@ -130,6 +130,11 @@ async def update_site(site_id: str, req: SiteUpdate,
     existing = await memory_engine.get_site(site_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Site not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(existing["project_id"], user)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Site not found")
     return await memory_engine.update_site(
         site_id, name=req.name, location=req.location, image_url=req.image_url,
     )
@@ -142,6 +147,11 @@ async def archive_site(site_id: str, user: dict = Depends(get_current_user)):
     existing = await memory_engine.get_site(site_id)
     if not existing:
         raise HTTPException(status_code=404, detail="Site not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(existing["project_id"], user)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Site not found")
     return await memory_engine.archive_site(site_id)
 
 
@@ -151,6 +161,11 @@ async def unarchive_site(site_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Only Project Managers/management can unarchive sites")
     existing = await memory_engine.get_site(site_id)
     if not existing:
+        raise HTTPException(status_code=404, detail="Site not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(existing["project_id"], user)
+    except ValueError:
         raise HTTPException(status_code=404, detail="Site not found")
     return await memory_engine.unarchive_site(site_id)
 
@@ -166,6 +181,11 @@ async def delete_site(site_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Only Project Managers/management can delete sites")
     existing = await memory_engine.get_site(site_id)
     if not existing:
+        raise HTTPException(status_code=404, detail="Site not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(existing["project_id"], user)
+    except ValueError:
         raise HTTPException(status_code=404, detail="Site not found")
     refs = await memory_engine.site_reference_counts(site_id)
     if any(refs.values()):

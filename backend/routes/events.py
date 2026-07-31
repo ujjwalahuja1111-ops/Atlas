@@ -105,6 +105,11 @@ async def update_event_timeline(event_id: str, req: EventTimelineReq,
     event = await memory_engine.get_event(event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(event["project_id"], user)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Event not found")
 
     updates = req.model_dump(exclude_unset=True)
     if not updates:
@@ -159,6 +164,11 @@ async def request_client_approval(event_id: str, req: RequestApprovalReq,
     event = await memory_engine.get_event(event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(event["project_id"], user)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Event not found")
 
     existing = await operations_engine.find_open_item_for_event(event_id, category="client_approval")
     if existing:
@@ -192,6 +202,11 @@ async def add_correction(
     event = await memory_engine.get_event(event_id)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(event["project_id"], user)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Event not found")
     return await memory_engine.insert_correction(
         original_event_id=event_id,
         corrected_by=user,
@@ -210,6 +225,11 @@ async def regenerate_proposals(event_id: str, force: bool = False,
         raise HTTPException(status_code=403, detail="Only Project Managers/management can regenerate proposals")
     event = await memory_engine.get_event(event_id)
     if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+    from engines import commercial_engine as ce
+    try:
+        await ce.assert_project_visible(event["project_id"], user)
+    except ValueError:
         raise HTTPException(status_code=404, detail="Event not found")
     from engines import intelligence_engine
     return await intelligence_engine.generate_proposals_for_event(event_id, force=force)

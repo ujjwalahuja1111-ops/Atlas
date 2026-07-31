@@ -1811,6 +1811,22 @@ async def executive_timeline(*, user: dict, project_id: Optional[str] = None,
         for item in await timeline_engine.for_project_commercial(pid, limit=50):
             events.append({**item, "project_id": pid, "project_name": pname, "source": "commercial"})
 
+        # RC-02 — workflow activity progression. Workflow activities
+        # carry no separate event ledger (unlike operational items'
+        # operational_events collection), so this is honestly each
+        # activity's own most recent status change only, using the
+        # status_updated_at/status_updated_by_user_id fields every
+        # set_status call already writes — not a fabricated full
+        # transition history, which the data does not contain.
+        recent_activities = await db.workflow_activities.find(
+            {"project_id": pid, "status_updated_at": {"$ne": None}}, {"_id": 0},
+        ).sort("status_updated_at", -1).to_list(50)
+        for a in recent_activities:
+            events.append({
+                "activity": a, "created_at": a["status_updated_at"],
+                "project_id": pid, "project_name": pname, "source": "workflow",
+            })
+
     if category:
         events = [e for e in events if e.get("source") == category]
 

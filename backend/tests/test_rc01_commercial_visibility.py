@@ -448,3 +448,81 @@ def test_variation_submit_blocks_wrong_project_pm(cross_project_item_and_variati
     }, headers=admin["headers"], timeout=20).json()
     r = requests.post(f"{API}/commercial/variations/{fresh_var['id']}/submit", headers=pm_h, timeout=20)
     assert r.status_code == 404
+
+
+# ==========================================================================
+# RC-02 — Production Hardening & Pilot Readiness. Closes the explicit
+# Beta-06D documented risk: Events' and Sites' own mutation routes had
+# never been checked for the same visibility gap found and fixed on
+# Operational Items and Commercial. All eight endpoints (four Events,
+# four Sites) had zero project-visibility enforcement - confirmed
+# exploitable across all eight before fixing.
+# ==========================================================================
+@pytest.fixture()
+def cross_project_event_and_site(admin):
+    outsider_user, outsider_h = _login("project_manager", "9990000801", "RC02 Events Outsider PM")
+    proj_a = requests.post(f"{API}/projects", json={"name": "RC02 Events Secret", "code": "RC02EVT1"},
+                           headers=admin["headers"], timeout=20).json()
+    proj_b = requests.post(f"{API}/projects", json={"name": "RC02 Events Visible", "code": "RC02EVT2"},
+                           headers=admin["headers"], timeout=20).json()
+    site_a = requests.post(f"{API}/sites", json={"project_id": proj_a["id"], "name": "RC02 Secret Site"},
+                           headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{outsider_user['id']}/projects", json={"project_ids": [proj_b["id"]]},
+                 headers=admin["headers"], timeout=20)
+
+    files = {"photos": ("secret.jpg", b"fakejpegdata", "image/jpeg")}
+    data = {"site_id": site_a["id"], "text": "RC02 confidential", "kind": "photo"}
+    event = requests.post(f"{API}/events", data=data, files=files, headers=admin["headers"], timeout=20).json()
+    return event, site_a, outsider_h
+
+
+def test_event_timeline_patch_blocks_outsider(cross_project_event_and_site):
+    event, _, outsider_h = cross_project_event_and_site
+    r = requests.patch(f"{API}/events/{event['id']}/timeline", json={"planned_start": "2026-01-01"},
+                       headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_event_request_approval_blocks_outsider(cross_project_event_and_site):
+    event, _, outsider_h = cross_project_event_and_site
+    r = requests.post(f"{API}/events/{event['id']}/request-approval", json={}, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_event_add_correction_blocks_outsider(cross_project_event_and_site):
+    event, _, outsider_h = cross_project_event_and_site
+    r = requests.post(f"{API}/events/{event['id']}/corrections", json={"note": "unauthorized"},
+                      headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_event_regenerate_proposals_blocks_outsider(cross_project_event_and_site):
+    event, _, outsider_h = cross_project_event_and_site
+    r = requests.post(f"{API}/events/{event['id']}/regenerate-proposals", headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_site_update_blocks_outsider(cross_project_event_and_site, admin):
+    _, site, outsider_h = cross_project_event_and_site
+    r = requests.patch(f"{API}/sites/{site['id']}", json={"name": "HACKED"}, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_site_archive_and_unarchive_block_outsider(cross_project_event_and_site):
+    _, site, outsider_h = cross_project_event_and_site
+    r1 = requests.post(f"{API}/sites/{site['id']}/archive", headers=outsider_h, timeout=20)
+    assert r1.status_code == 404
+    r2 = requests.post(f"{API}/sites/{site['id']}/unarchive", headers=outsider_h, timeout=20)
+    assert r2.status_code == 404
+
+
+def test_site_delete_blocks_outsider(cross_project_event_and_site, admin):
+    """The most consequential of these eight - a hard delete. Confirmed
+    blocked, then confirmed the site genuinely still exists afterward,
+    not merely that the request returned an error."""
+    _, site, outsider_h = cross_project_event_and_site
+    r = requests.delete(f"{API}/sites/{site['id']}", headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+    r2 = requests.patch(f"{API}/sites/{site['id']}", json={"name": "still exists"},
+                        headers=admin["headers"], timeout=20)
+    assert r2.status_code == 200, "the site must still exist after the outsider's blocked delete attempt"

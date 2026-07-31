@@ -1255,3 +1255,46 @@ async def test_my_day_flags_items_awaiting_clarification_response(seeded_rp001):
     assert flags["Awaiting response"] is True
     assert flags["Already answered"] is False
     assert flags["Never questioned"] is False
+
+
+# ==========================================================================
+# RC-02 — closes the explicit Beta-06F documented risk: workflow
+# activity progression's own presence in Executive Timeline. Workflow
+# activities carry no separate event ledger (unlike operational items'
+# operational_events), so this is honestly each activity's own most
+# recent status change, not a fabricated full transition history the
+# data does not contain.
+# ==========================================================================
+async def test_executive_timeline_includes_workflow_activity_progress(seeded_rp001):
+    """Reproduces the exact sequence that found the gap: real
+    set_status() calls through the actual engine function, not a
+    synthetic document with status_updated_at pre-set."""
+    _, admin = seeded_rp001
+    project = await memory_engine.insert_project(name="RC02 Workflow Timeline Test", code="RC02WFT3")
+    template = await knowledge_engine.create_item(actor=admin, type_="workflow_template", name="T", status="active")
+    act = await knowledge_engine.create_item(actor=admin, type_="activity", name="RC02 Foundation Work", status="active")
+    await knowledge_engine.add_relationship(template["id"], actor=admin, type_="includes_activity", target_id=act["id"])
+    activities = await workflow_engine.generate_workflow(project["id"], template["id"], actor=admin)
+    a_id = activities[0]["id"]
+    await workflow_engine.set_status(a_id, "in_progress", actor=admin)
+    await workflow_engine.set_status(a_id, "completed", actor=admin)
+
+    timeline = await reasoning_engine.executive_timeline(user=admin, project_id=project["id"])
+    workflow_events = [e for e in timeline["events"] if e["source"] == "workflow"]
+    assert len(workflow_events) >= 1
+    assert any(e["activity"]["id"] == a_id and e["activity"]["status"] == "completed" for e in workflow_events)
+
+
+async def test_executive_timeline_workflow_filter(seeded_rp001):
+    _, admin = seeded_rp001
+    project = await memory_engine.insert_project(name="RC02 Workflow Timeline Filter Test", code="RC02WFT4")
+    template = await knowledge_engine.create_item(actor=admin, type_="workflow_template", name="T", status="active")
+    act = await knowledge_engine.create_item(actor=admin, type_="activity", name="RC02 Filter Activity", status="active")
+    await knowledge_engine.add_relationship(template["id"], actor=admin, type_="includes_activity", target_id=act["id"])
+    activities = await workflow_engine.generate_workflow(project["id"], template["id"], actor=admin)
+    await workflow_engine.set_status(activities[0]["id"], "in_progress", actor=admin)
+
+    timeline = await reasoning_engine.executive_timeline(user=admin, project_id=project["id"], category="workflow")
+    for e in timeline["events"]:
+        assert e["source"] == "workflow"
+    assert len(timeline["events"]) >= 1

@@ -6,12 +6,17 @@ import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { apiExecutiveTimeline, type ExecutiveTimeline, type ExecutiveTimelineEvent } from '@/src/cre_api';
 
-const SOURCE_ICON: Record<string, any> = { reality: 'camera', operations: 'construct', commercial: 'wallet' };
+const SOURCE_ICON: Record<string, any> = { reality: 'camera', operations: 'construct', workflow: 'hammer', commercial: 'wallet' };
 
 const OPERATIONS_KIND_LABEL: Record<string, string> = {
   created: 'Item created', assigned: 'Item assigned', acknowledged: 'Item acknowledged',
   started: 'Work started', fulfilled: 'Item fulfilled', verified: 'Item verified',
   closed: 'Item closed', reopened: 'Item reopened', commented: 'Comment added',
+};
+
+const WORKFLOW_STATUS_LABEL: Record<string, string> = {
+  not_started: 'Not started', ready: 'Ready to start', in_progress: 'In progress',
+  blocked: 'Blocked', completed: 'Completed',
 };
 
 function labelFor(e: ExecutiveTimelineEvent): string {
@@ -24,6 +29,14 @@ function labelFor(e: ExecutiveTimelineEvent): string {
     const itemTitle = e.operational_item?.title;
     const label = OPERATIONS_KIND_LABEL[oe.kind] || oe.kind || 'Item update';
     return itemTitle ? `${label} — ${itemTitle}` : label;
+  }
+  if (e.source === 'workflow') {
+    const activity = e.activity || {};
+    const statusLabel = WORKFLOW_STATUS_LABEL[activity.status] || activity.status || 'Updated';
+    // Deliberately honest: this is the activity's own most recent
+    // status only, not a full transition history (workflow activities
+    // carry no separate event ledger the way operational items do).
+    return `${activity.name || 'Activity'} — ${statusLabel}`;
   }
   const labels: Record<string, string> = {
     contract_created: 'Contract created', contract_revised: 'Contract revised',
@@ -43,7 +56,7 @@ function dateFor(e: ExecutiveTimelineEvent): string {
 export default function ExecutiveTimelineScreen() {
   const router = useRouter();
   const [data, setData] = useState<ExecutiveTimeline | null>(null);
-  const [filter, setFilter] = useState<'all' | 'reality' | 'operations' | 'commercial'>('all');
+  const [filter, setFilter] = useState<'all' | 'reality' | 'operations' | 'workflow' | 'commercial'>('all');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -60,7 +73,7 @@ export default function ExecutiveTimelineScreen() {
   useEffect(() => { (async () => { setLoading(true); await load(); setLoading(false); })(); }, [load]);
   const onRefresh = async () => { setRefreshing(true); await load(filter === 'all' ? undefined : filter); setRefreshing(false); };
 
-  const onFilterChange = async (f: 'all' | 'reality' | 'operations' | 'commercial') => {
+  const onFilterChange = async (f: 'all' | 'reality' | 'operations' | 'workflow' | 'commercial') => {
     setFilter(f);
     setLoading(true);
     await load(f === 'all' ? undefined : f);
@@ -78,11 +91,11 @@ export default function ExecutiveTimelineScreen() {
       </View>
 
       <View style={styles.filterRow}>
-        {(['all', 'reality', 'operations', 'commercial'] as const).map((f) => (
+        {(['all', 'reality', 'operations', 'workflow', 'commercial'] as const).map((f) => (
           <Pressable key={f} testID={`exec-timeline-filter-${f}`} onPress={() => onFilterChange(f)}
             style={[styles.filterChip, filter === f && styles.filterChipActive]}>
             <Text style={[styles.filterChipText, filter === f && styles.filterChipTextActive]}>
-              {f === 'all' ? 'All' : f === 'reality' ? 'Reality' : f === 'operations' ? 'Operations' : 'Commercial'}
+              {f === 'all' ? 'All' : f === 'reality' ? 'Reality' : f === 'operations' ? 'Operations' : f === 'workflow' ? 'Workflow' : 'Commercial'}
             </Text>
           </Pressable>
         ))}
