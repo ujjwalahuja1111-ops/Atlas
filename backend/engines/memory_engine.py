@@ -228,6 +228,30 @@ async def register_user(phone: str, name: str, requested_workspace: Optional[str
         raise ValueError("An account with this phone number already exists. Please log in instead.")
     if requested_workspace and requested_workspace not in WORKSPACES:
         raise ValueError(f"Invalid requested_workspace '{requested_workspace}'. Must be one of {sorted(WORKSPACES)}")
+
+    # RC-03 — Production Configuration fix. A brand-new, empty
+    # database has no admin to approve anyone, so the very first
+    # account ever registered is automatically approved as management
+    # and unrestricted — the one, deliberate exception to "no role
+    # until approved." Every subsequent registration (once any user
+    # exists) follows the normal pending-approval flow unchanged.
+    is_founding_admin = await db.users.count_documents({}) == 0
+    if is_founding_admin:
+        doc = {
+            "id": _new_id(),
+            "phone": phone,
+            "name": name,
+            "role": "management",
+            "workspace": WORKSPACE_FOR_ROLE["management"],
+            "approval_status": "approved",
+            "is_active": True,
+            "assigned_project_ids": [],
+            "requested_workspace": requested_workspace,
+            "scope_projects": False,
+            "created_at": _now(),
+        }
+        return await _insert(db.users, doc)
+
     placeholder_role = "site_supervisor"  # irrelevant until approved; admin assigns the real role
     doc = {
         "id": _new_id(),

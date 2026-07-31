@@ -1298,3 +1298,54 @@ async def test_executive_timeline_workflow_filter(seeded_rp001):
     for e in timeline["events"]:
         assert e["source"] == "workflow"
     assert len(timeline["events"]) >= 1
+
+
+# ==========================================================================
+# RC-03 — Production Configuration Validation.
+#
+# A genuine, confirmed production blocker: register_user() always
+# created a pending account requiring an existing admin's approval,
+# with no exception for a brand-new, empty database's very first user.
+# db_seed.py's own docstring explicitly states it has "zero effect on
+# production runtime behaviour" - confirming it was never the intended
+# path for a real customer's first admin account. Fixed: the very
+# first account ever registered on an empty database is automatically
+# approved as management.
+#
+# Explicitly clears db.users first in each test, since this file's own
+# seeded_rp001 fixture is module-scoped and other tests in this same
+# file may have already populated users - this is the one behavior in
+# this whole file that genuinely requires an empty database to test
+# correctly, not just a fresh project/site.
+# ==========================================================================
+async def test_first_ever_registration_becomes_approved_management():
+    await core_db.db.users.delete_many({})
+    user = await memory_engine.register_user(phone="9990000901", name="RC03 Founding Admin")
+    assert user["role"] == "management"
+    assert user["approval_status"] == "approved"
+    assert user["scope_projects"] is False
+
+
+async def test_second_registration_after_founding_admin_is_normal_pending():
+    await core_db.db.users.delete_many({})
+    await memory_engine.register_user(phone="9990000902", name="RC03 Founding Admin 2")
+    second = await memory_engine.register_user(phone="9990000903", name="RC03 Second Person")
+    assert second["role"] == "site_supervisor"
+    assert second["approval_status"] == "pending"
+    assert second["scope_projects"] is True
+
+
+async def test_founding_admin_can_immediately_act_as_management():
+    """The founding admin isn't just labeled management - confirms they
+    can actually use a real management-only capability immediately,
+    with no approval step from anyone. Deliberately does not depend on
+    seeded_rp001 (module-scoped, shared across this whole file) since
+    this test must delete all users to guarantee a genuinely empty
+    database - doing that while also depending on that shared fixture
+    would corrupt its own admin account for every test that runs after
+    this one in the same session."""
+    await core_db.db.users.delete_many({})
+    founder = await memory_engine.register_user(phone="9990000904", name="RC03 Acting Admin")
+    project = await memory_engine.insert_project(name="RC03 Founder's First Project", code="RC03FOUND")
+    portfolio = await reasoning_engine.portfolio_control_center(user=founder)
+    assert any(r["project_id"] == project["id"] for r in portfolio["projects"])
