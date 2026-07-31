@@ -181,6 +181,11 @@ function MyDayCard({ item, onPress, highlight }: { item: any; onPress: () => voi
               <Text style={styles.assignedBadgeText}>ASSIGNED TO YOU</Text>
             </View>
           )}
+          {item.awaiting_clarification_response && (
+            <View style={styles.clarificationBadge} testID={`my-day-clarification-badge-${item.id}`}>
+              <Text style={styles.clarificationBadgeText}>AWAITING YOUR RESPONSE</Text>
+            </View>
+          )}
         </View>
         <Text style={styles.cardMeta} numberOfLines={1}>
           {(item.category || item.trade || '').replace(/_/g, ' ')}
@@ -224,5 +229,7 @@ const styles = StyleSheet.create({
   cardMeta: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
   assignedBadge: { backgroundColor: theme.color.brand, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
   assignedBadgeText: { color: theme.color.onBrand, fontSize: 9, fontWeight: '800' },
+  clarificationBadge: { backgroundColor: theme.color.warning, borderRadius: 6, paddingHorizontal: 6, paddingVertical: 2 },
+  clarificationBadgeText: { color: '#fff', fontSize: 9, fontWeight: '800' },
   urgencyDot: { width: 10, height: 10, borderRadius: 5 },
 });

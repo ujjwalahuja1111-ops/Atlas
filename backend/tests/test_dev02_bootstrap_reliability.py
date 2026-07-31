@@ -1213,3 +1213,45 @@ async def test_executive_timeline_operations_events_reference_real_item(seeded_r
         if e["source"] == "operations":
             assert e["operational_item"] is not None
             assert e["operational_item"]["id"] == item["id"]
+
+
+# ==========================================================================
+# Beta-06G — Multi-Role Experience & Production Readiness Validation.
+#
+# request_clarification's own docstring states its purpose is "making
+# it clearly visible to the PM that the client has questions" - but
+# no screen anywhere actually surfaced this distinctly from an
+# ordinary pending approval. A PM checking My Day had no way to tell
+# which client_approval items were awaiting their own response versus
+# simply pending the client's decision, without opening every item
+# individually. Found by walking a real client approval lifecycle
+# (create -> client requests clarification -> PM responds -> client
+# approves) end to end, then asking whether the PM's own daily view
+# reflected the mid-lifecycle state correctly.
+# ==========================================================================
+async def test_my_day_flags_items_awaiting_clarification_response(seeded_rp001):
+    _, admin = seeded_rp001
+    pm = await memory_engine.upsert_user(phone="9990000501", name="Beta06G PM", role="project_manager")
+    client = await memory_engine.upsert_user(phone="9990000502", name="Beta06G Client", role="client")
+    project = await memory_engine.insert_project(name="Beta06G Clarification Test", code="B06GCLR1")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site A")
+    pm = await memory_engine.set_user_projects(pm["id"], [project["id"]])
+    client = await memory_engine.set_user_projects(client["id"], [project["id"]])
+
+    awaiting = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="client_approval", title="Awaiting response", priority="normal")
+    await operations_engine.request_clarification(item_id=awaiting["id"], actor=client, note="What color?")
+
+    answered = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="client_approval", title="Already answered", priority="normal")
+    await operations_engine.request_clarification(item_id=answered["id"], actor=client, note="What material?")
+    await operations_engine.add_comment(item_id=answered["id"], actor=pm, text="It's granite.")
+
+    never_asked = await operations_engine.create_item(
+        actor=admin, site_id=site["id"], category="client_approval", title="Never questioned", priority="normal")
+
+    result = await operations_engine.my_day(user=pm)
+    flags = {a["title"]: a["awaiting_clarification_response"] for a in result["pending_approvals"]}
+    assert flags["Awaiting response"] is True
+    assert flags["Already answered"] is False
+    assert flags["Never questioned"] is False

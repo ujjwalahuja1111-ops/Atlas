@@ -1165,6 +1165,31 @@ async def _my_day_supervisor(user: dict, project_ids: list[str], now_iso: str, t
     }
 
 
+async def _flag_awaiting_clarification_response(items: list[dict]) -> None:
+    """Beta-06G — mutates each item in place, adding
+    awaiting_clarification_response: bool. A client_approval item is
+    "awaiting response" when its own most recent event
+    (last_derived_from_op_event_id, already set by every mutation
+    including request_clarification and add_comment) is itself a
+    clarification_requested — meaning nothing (no PM comment, no
+    status change) has happened since the client asked. Reuses the
+    item's own existing field and the existing operational_events
+    ledger; adds no new event kind or data model. Batched into one
+    query regardless of item count, not one query per item.
+    """
+    event_ids = [i["last_derived_from_op_event_id"] for i in items if i.get("last_derived_from_op_event_id")]
+    if not event_ids:
+        for i in items:
+            i["awaiting_clarification_response"] = False
+        return
+    last_events = await db.operational_events.find(
+        {"id": {"$in": event_ids}}, {"_id": 0, "id": 1, "kind": 1}).to_list(len(event_ids))
+    kind_by_event_id = {e["id"]: e["kind"] for e in last_events}
+    for i in items:
+        last_id = i.get("last_derived_from_op_event_id")
+        i["awaiting_clarification_response"] = kind_by_event_id.get(last_id) == "clarification_requested"
+
+
 async def _my_day_pm(user: dict, project_ids: list[str], now_iso: str) -> dict:
     everything_open = await db.operational_items.find(
         {"status": {"$nin": list(TERMINAL_ITEM_STATUSES)}}, {"_id": 0},
@@ -1229,6 +1254,7 @@ async def _my_day_pm(user: dict, project_ids: list[str], now_iso: str) -> dict:
             upcoming_milestones.append(not_yet_achieved[0])
 
     pending_approvals = [i for i in in_scope if i["category"] == "client_approval"]
+    await _flag_awaiting_clarification_response(pending_approvals)
     high_priority = [i for i in in_scope if i["priority"] in ("critical", "high")]
     # Escalations — the same "genuinely urgent, needs a human now" signal
     # as High Priority Work, surfaced as its own named section per the
