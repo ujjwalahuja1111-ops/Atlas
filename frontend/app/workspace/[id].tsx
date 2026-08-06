@@ -19,7 +19,7 @@ import { getViewRole, type ViewRole } from '@/src/roles';
 import { apiMyDay, type MyDayResponse, type MyDayPm, type MyDaySupervisor } from '@/src/ops_api';
 import { apiExplainHealth, apiListInsights, type ExplainedHealth, type Insight } from '@/src/cre_api';
 import { apiGetCommercialSummary, apiListCommercialEvents, type CommercialSummary, type CommercialEvent } from '@/src/commercial_api';
-import { apiListProjects, type Project } from '@/src/api';
+import { apiListProjects, apiSetLifecycleStage, type Project } from '@/src/api';
 
 function formatInr(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
@@ -34,6 +34,12 @@ const HEALTH_COLOR: Record<string, string> = {
   green: theme.color.success, amber: theme.color.warning, red: theme.color.error,
   healthy: theme.color.success, attention: theme.color.warning, critical: theme.color.error,
 };
+
+// PL-01 — matches backend LIFECYCLE_STAGES exactly (memory_engine.py).
+const LIFECYCLE_STAGE_LABELS: [string, string][] = [
+  ['planning', 'Planning'], ['mobilization', 'Mobilization'], ['execution', 'Execution'],
+  ['commercial_focus', 'Commercial'], ['closeout', 'Closeout'],
+];
 
 // A single, unified action item shape every source (operational items,
 // workflow activities, pending variations/payment requests) is mapped
@@ -60,6 +66,7 @@ export default function UnifiedWorkspace() {
   const [insights, setInsights] = useState<Insight[]>([]);
   const [commercial, setCommercial] = useState<CommercialSummary>(null);
   const [events, setEvents] = useState<CommercialEvent[]>([]);
+  const [stageChanging, setStageChanging] = useState(false);
 
   const currentProject = projects.find((p) => p.id === id);
 
@@ -118,6 +125,19 @@ export default function UnifiedWorkspace() {
   const openItem = (x: any) => router.push(x?.title !== undefined ? `/op/${x.id}` : `/workflow/${id}`);
   const openCommercial = () => router.push(`/commercial/${id}`);
 
+  const setStage = async (stage: string) => {
+    if (!id || stageChanging) return;
+    setStageChanging(true);
+    try {
+      const updated = await apiSetLifecycleStage(id, stage);
+      setProjects((ps) => ps.map((p) => (p.id === id ? updated : p)));
+    } catch {
+      // stage change failure is non-fatal to the rest of the workspace
+    } finally {
+      setStageChanging(false);
+    }
+  };
+
   // Today's Mission — everything genuinely actionable today, one
   // list, no duplicates: each source contributes items once, mapped
   // into the same UnifiedAction shape.
@@ -163,6 +183,33 @@ export default function UnifiedWorkspace() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.color.brand} />}
       >
         {loadError && <Text style={styles.errorText} testID="workspace-load-error">{loadError}</Text>}
+
+        {/* LIFECYCLE STAGE SELECTOR — a deliberate, PM-set signal
+            (Product Decision, PL-01): the workspace adapts to where
+            the PM says the project is, not a computed guess. */}
+        <View style={styles.stageRow} testID="lifecycle-stage-selector">
+          {LIFECYCLE_STAGE_LABELS.map(([stage, label]) => {
+            const active = (currentProject?.lifecycle_stage || 'planning') === stage;
+            return (
+              <Pressable
+                key={stage}
+                testID={`stage-${stage}`}
+                disabled={!(viewRole === 'pm' || viewRole === 'admin') || stageChanging}
+                onPress={() => setStage(stage)}
+                style={[styles.stageChip, active && styles.stageChipActive]}>
+                <Text style={[styles.stageChipText, active && styles.stageChipTextActive]}>{label}</Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {/* STAGE FOCUS — the same widget in name, different content by
+            stage; every field here is reused from data already loaded
+            above, no new API call per stage. */}
+        <StageFocus stage={currentProject?.lifecycle_stage || 'planning'} health={health} commercial={commercial}
+          plannedCount={commercial?.milestones?.length ?? 0}
+          readyCount={projectItems.highPriority.length}
+          lastMilestone={commercial?.milestones?.slice().sort((a, b) => b.sequence - a.sequence)[0] || null} />
 
         {/* HEALTH STRIP — always visible, reuses ExplainedHealth's own
             dimensions plus Commercial's own cash_flow_signal. Two
@@ -293,6 +340,50 @@ export default function UnifiedWorkspace() {
   );
 }
 
+function StageFocus({ stage, health, commercial, plannedCount, readyCount, lastMilestone }: {
+  stage: string; health: ExplainedHealth | null; commercial: CommercialSummary;
+  plannedCount: number; readyCount: number; lastMilestone: any;
+}) {
+  let icon: any = 'compass';
+  let title = 'Focus';
+  let body = '';
+
+  if (stage === 'planning') {
+    icon = 'construct-outline'; title = 'Planning Focus';
+    const hasContract = !!commercial?.contract;
+    const hasBudget = !!commercial?.budget;
+    body = hasContract && hasBudget && plannedCount > 0
+      ? `Setup complete — Contract, Budget, and ${plannedCount} milestone(s) in place.`
+      : `Setup in progress — ${hasContract ? 'Contract set' : 'Contract needed'}, ${hasBudget ? 'Budget set' : 'Budget needed'}, ${plannedCount} milestone(s) defined.`;
+  } else if (stage === 'mobilization') {
+    icon = 'people-outline'; title = 'Mobilization Focus';
+    body = `${readyCount} item(s) flagged high priority to get moving on before full execution.`;
+  } else if (stage === 'execution') {
+    icon = 'hammer-outline'; title = 'Execution Focus';
+    body = 'Today\'s Mission below is your execution focus — nothing duplicated here.';
+  } else if (stage === 'commercial_focus') {
+    icon = 'cash-outline'; title = 'Commercial Focus';
+    body = commercial
+      ? `Cash flow: ${commercial.cash_flow_signal.toUpperCase()} — outstanding ${formatInr(commercial.outstanding_payments.outstanding)}.`
+      : 'No commercial data yet for this project.';
+  } else if (stage === 'closeout') {
+    icon = 'checkmark-done-outline'; title = 'Closeout Focus';
+    body = lastMilestone
+      ? `Final milestone "${lastMilestone.name}" is ${lastMilestone.status.replace(/_/g, ' ')}. Atlas has no snagging/defect tracking today — this is the closest real signal available.`
+      : 'No milestones defined yet to track closeout against.';
+  }
+
+  return (
+    <View style={styles.stageFocusCard} testID="stage-focus">
+      <Ionicons name={icon} size={18} color={theme.color.brand} />
+      <View style={{ flex: 1, marginLeft: 10 }}>
+        <Text style={styles.stageFocusTitle}>{title}</Text>
+        <Text style={styles.stageFocusBody}>{body}</Text>
+      </View>
+    </View>
+  );
+}
+
 function SectionHeader({ title, icon, count }: { title: string; icon: any; count: number }) {
   return (
     <View style={styles.sectionHeader}>
@@ -332,6 +423,21 @@ const styles = StyleSheet.create({
   },
   content: { padding: theme.spacing.md, paddingBottom: 40 },
   errorText: { color: theme.color.error, marginBottom: theme.spacing.sm },
+  stageRow: { flexDirection: 'row', gap: 6, marginBottom: theme.spacing.sm },
+  stageChip: {
+    flex: 1, paddingVertical: 8, borderRadius: theme.radius.sm, alignItems: 'center',
+    backgroundColor: theme.color.surface2, borderWidth: 1, borderColor: theme.color.border,
+  },
+  stageChipActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  stageChipText: { color: theme.color.textDim, fontSize: 10, fontWeight: '700' },
+  stageChipTextActive: { color: theme.color.onBrand },
+  stageFocusCard: {
+    flexDirection: 'row', alignItems: 'center', backgroundColor: theme.color.surface2,
+    borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border,
+    padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
+  stageFocusTitle: { color: theme.color.text, fontSize: 13, fontWeight: '800' },
+  stageFocusBody: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
   healthStrip: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: theme.spacing.md },
   healthChip: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   healthDot: { width: 8, height: 8, borderRadius: 4 },

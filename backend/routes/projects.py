@@ -8,6 +8,24 @@ from engines import memory_engine
 router = APIRouter(prefix="/api", tags=["projects"])
 
 
+async def _assert_project_visible_or_404(project_id: str, user: dict) -> dict:
+    """Matches the exact convention commercial_engine.assert_project_visible
+    (and its documented siblings in workflow_engine/reasoning_engine)
+    already establish: out-of-scope projects behave as if they do not
+    exist. Kept local rather than importing commercial_engine's version
+    to avoid pulling a commercial-specific exception type into a
+    non-commercial route file - the visibility logic itself
+    (memory_engine._is_project_scoped + assigned_project_ids) is the
+    same primitive either way."""
+    project = await memory_engine.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if memory_engine._is_project_scoped(user):
+        if project_id not in (user.get("assigned_project_ids") or []):
+            raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
 class ProjectCreate(BaseModel):
     name: str
     code: str = ""
@@ -55,9 +73,7 @@ async def update_project(project_id: str, req: ProjectUpdate,
                          user: dict = Depends(get_current_user)):
     if user["role"] not in ("management", "project_manager"):
         raise HTTPException(status_code=403, detail="Only Project Managers/management can edit projects")
-    existing = await memory_engine.get_project(project_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Project not found")
+    await _assert_project_visible_or_404(project_id, user)
     return await memory_engine.update_project(
         project_id,
         name=req.name, code=req.code,
@@ -69,9 +85,7 @@ async def update_project(project_id: str, req: ProjectUpdate,
 async def archive_project(project_id: str, user: dict = Depends(get_current_user)):
     if user["role"] not in ("management", "project_manager"):
         raise HTTPException(status_code=403, detail="Only Project Managers/management can archive projects")
-    existing = await memory_engine.get_project(project_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Project not found")
+    await _assert_project_visible_or_404(project_id, user)
     return await memory_engine.archive_project(project_id)
 
 
@@ -79,10 +93,23 @@ async def archive_project(project_id: str, user: dict = Depends(get_current_user
 async def unarchive_project(project_id: str, user: dict = Depends(get_current_user)):
     if user["role"] not in ("management", "project_manager"):
         raise HTTPException(status_code=403, detail="Only Project Managers/management can unarchive projects")
-    existing = await memory_engine.get_project(project_id)
-    if not existing:
-        raise HTTPException(status_code=404, detail="Project not found")
+    await _assert_project_visible_or_404(project_id, user)
     return await memory_engine.unarchive_project(project_id)
+
+
+class LifecycleStageUpdate(BaseModel):
+    stage: str
+
+
+@router.post("/projects/{project_id}/lifecycle-stage")
+async def set_lifecycle_stage(project_id: str, req: LifecycleStageUpdate, user: dict = Depends(get_current_user)):
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can change a project's lifecycle stage")
+    await _assert_project_visible_or_404(project_id, user)
+    try:
+        return await memory_engine.set_project_lifecycle_stage(project_id, req.stage)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.delete("/projects/{project_id}")

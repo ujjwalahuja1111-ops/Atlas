@@ -68,6 +68,7 @@ export type Project = {
   code: string;
   location: string;
   image_url: string;
+  lifecycle_stage?: 'planning' | 'mobilization' | 'execution' | 'commercial_focus' | 'closeout';
   created_at: string;
 };
 
@@ -328,6 +329,16 @@ export async function apiArchiveProject(id: string): Promise<Project> {
 export async function apiUnarchiveProject(id: string): Promise<Project> {
   const r = await apiFetch(`${BACKEND}/api/projects/${id}/unarchive`, {
     method: 'POST', headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiSetLifecycleStage(id: string, stage: string): Promise<Project> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${id}/lifecycle-stage`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ stage }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();

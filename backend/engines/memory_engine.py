@@ -475,11 +475,17 @@ async def list_projects(include_archived: bool = False, *, user: Optional[dict] 
     q: dict = {} if include_archived else {"archived_at": None}
     if user and _is_project_scoped(user):
         q["id"] = {"$in": user.get("assigned_project_ids", [])}
-    return await db.projects.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    docs = await db.projects.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    for d in docs:
+        d.setdefault("lifecycle_stage", "planning")
+    return docs
 
 
 async def get_project(project_id: str) -> Optional[dict]:
-    return await db.projects.find_one({"id": project_id}, {"_id": 0})
+    doc = await db.projects.find_one({"id": project_id}, {"_id": 0})
+    if doc is not None:
+        doc.setdefault("lifecycle_stage", "planning")
+    return doc
 
 
 async def update_project(project_id: str, *, name: Optional[str] = None,
@@ -559,6 +565,9 @@ async def get_site(site_id: str) -> Optional[dict]:
     return await db.sites.find_one({"id": site_id}, {"_id": 0})
 
 
+LIFECYCLE_STAGES = ("planning", "mobilization", "execution", "commercial_focus", "closeout")
+
+
 async def insert_project(name: str, code: str, location: str = "", image_url: str = "") -> dict:
     doc = {
         "id": _new_id("prj_"),
@@ -566,9 +575,29 @@ async def insert_project(name: str, code: str, location: str = "", image_url: st
         "code": code,
         "location": location,
         "image_url": image_url,
+        "lifecycle_stage": "planning",
         "created_at": _now(),
     }
     return await _insert(db.projects, doc)
+
+
+async def set_project_lifecycle_stage(project_id: str, stage: str) -> Optional[dict]:
+    """PL-01 — a project's own lifecycle stage is a deliberate, PM-set
+    signal (not auto-derived from other data), matching this task's
+    own framing: the workspace adapts to where the PM says the
+    project actually is, not a computed guess. Any forward or backward
+    move is allowed — a real project can slip back into mobilization
+    after a scope change, and forcing a strict linear-only state
+    machine here would fight how construction projects actually run,
+    unlike the deliberately strict machines Contract/Milestone/
+    Variation already use for financial correctness."""
+    if stage not in LIFECYCLE_STAGES:
+        raise ValueError(f"Invalid lifecycle stage '{stage}'. Must be one of {LIFECYCLE_STAGES}")
+    await db.projects.update_one(
+        {"id": project_id},
+        {"$set": {"lifecycle_stage": stage, "lifecycle_stage_updated_at": _now()}},
+    )
+    return await get_project(project_id)
 
 
 # ---------------------------------------------------------------------------

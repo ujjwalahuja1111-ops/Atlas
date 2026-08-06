@@ -801,3 +801,71 @@ def test_client_still_never_sees_budget_in_commercial_summary(admin):
     r = requests.get(f"{API}/projects/{proj['id']}/commercial/summary", headers=client_h, timeout=20)
     assert r.status_code == 200
     assert r.json()["budget"] is None
+
+
+# ==========================================================================
+# PL-01 — Project Lifecycle Orchestrator. Found and fixed during this
+# package's own mandatory audit, before adding the new lifecycle-stage
+# route to this same file: update_project, archive_project, and
+# unarchive_project had zero project-visibility enforcement - only
+# existence was checked, not whether the calling user's own scope
+# includes this project. Also covers the new lifecycle-stage route
+# itself, built on the same, now-fixed foundation.
+# ==========================================================================
+@pytest.fixture()
+def cross_project_lifecycle(admin):
+    outsider_user, outsider_h = _login("project_manager", "9990000701", "PL01 Outsider PM")
+    proj_a = requests.post(f"{API}/projects", json={"name": "PL01 Secret", "code": "PL01SEC1"},
+                           headers=admin["headers"], timeout=20).json()
+    proj_b = requests.post(f"{API}/projects", json={"name": "PL01 Visible", "code": "PL01VIS1"},
+                           headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{outsider_user['id']}/projects", json={"project_ids": [proj_b["id"]]},
+                 headers=admin["headers"], timeout=20)
+    return proj_a, proj_b, outsider_h
+
+
+def test_update_project_blocks_outsider(cross_project_lifecycle):
+    proj_a, _, outsider_h = cross_project_lifecycle
+    r = requests.patch(f"{API}/projects/{proj_a['id']}", json={"name": "HACKED"}, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_archive_and_unarchive_project_block_outsider(cross_project_lifecycle):
+    proj_a, _, outsider_h = cross_project_lifecycle
+    r1 = requests.post(f"{API}/projects/{proj_a['id']}/archive", headers=outsider_h, timeout=20)
+    assert r1.status_code == 404
+    r2 = requests.post(f"{API}/projects/{proj_a['id']}/unarchive", headers=outsider_h, timeout=20)
+    assert r2.status_code == 404
+
+
+def test_set_lifecycle_stage_blocks_outsider(cross_project_lifecycle):
+    proj_a, _, outsider_h = cross_project_lifecycle
+    r = requests.post(f"{API}/projects/{proj_a['id']}/lifecycle-stage", json={"stage": "execution"},
+                      headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_legitimate_pm_can_still_edit_and_set_stage_on_own_project(cross_project_lifecycle):
+    _, proj_b, outsider_h = cross_project_lifecycle  # outsider IS legitimately scoped to proj_b
+    r1 = requests.patch(f"{API}/projects/{proj_b['id']}", json={"name": "Legit Edit"},
+                        headers=outsider_h, timeout=20)
+    assert r1.status_code == 200
+
+    r2 = requests.post(f"{API}/projects/{proj_b['id']}/lifecycle-stage", json={"stage": "execution"},
+                       headers=outsider_h, timeout=20)
+    assert r2.status_code == 200
+    assert r2.json()["lifecycle_stage"] == "execution"
+
+
+def test_new_project_defaults_to_planning_stage(admin):
+    proj = requests.post(f"{API}/projects", json={"name": "PL01 Default Stage", "code": "PL01DEF1"},
+                         headers=admin["headers"], timeout=20).json()
+    assert proj["lifecycle_stage"] == "planning"
+
+
+def test_invalid_lifecycle_stage_rejected(admin):
+    proj = requests.post(f"{API}/projects", json={"name": "PL01 Invalid Stage", "code": "PL01INV1"},
+                         headers=admin["headers"], timeout=20).json()
+    r = requests.post(f"{API}/projects/{proj['id']}/lifecycle-stage", json={"stage": "not_a_real_stage"},
+                      headers=admin["headers"], timeout=20)
+    assert r.status_code == 400
