@@ -150,7 +150,7 @@ export default function OpsScreen() {
       <View style={styles.header}>
         <View>
           <Text style={styles.h1}>OPS</Text>
-          <Text style={styles.h2}>{viewRole === 'supervisor' ? 'My Tasks' : 'Operational Center'}</Text>
+          <Text style={styles.h2}>{viewRole === 'supervisor' ? 'My Tasks' : 'Manage all work — Home is for today'}</Text>
         </View>
         {viewRole !== 'client' && (
           <Pressable testID="ops-create-item" onPress={() => router.push('/op/create')} style={styles.createButton}>

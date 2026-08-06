@@ -232,11 +232,6 @@ export function PmCreCards({ projectId }: { projectId: string | null }) {
           ))}
       </Card>
 
-      <Card title="BLOCKERS" icon="hand-left" testID="cre-pm-blockers">
-        {!briefing || briefing.blocked_activities.length === 0 ? <Empty text="Nothing blocked right now." /> :
-          briefing.blocked_activities.map((b) => <Text key={b.activity_id} style={s.rowText}>• {b.name}</Text>)}
-      </Card>
-
       <Card title="DELAYS" icon="time" testID="cre-pm-delays">
         {insights.filter((i) => i.domain === 'schedule').length === 0 ? <Empty text="No schedule delays reasoned currently." /> :
           insights.filter((i) => i.domain === 'schedule').slice(0, 4).map((i) => <InsightRow key={i.id} insight={i} />)}

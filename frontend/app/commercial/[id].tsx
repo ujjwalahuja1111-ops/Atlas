@@ -52,7 +52,7 @@ const EVENT_KIND_ICON: Record<string, any> = {
   payment_received: 'cash', milestone_achieved: 'flag', budget_updated: 'wallet',
 };
 
-type SectionKey = 'contract' | 'budget' | 'milestones' | 'payment_requests' | 'payments' | 'variations' | 'timeline';
+type SectionKey = 'contract' | 'budget' | 'milestones' | 'billing' | 'variations';
 
 export default function CommercialWorkspaceScreen() {
   const router = useRouter();
@@ -64,9 +64,10 @@ export default function CommercialWorkspaceScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<SectionKey, boolean>>({
-    contract: true, budget: true, milestones: true, payment_requests: false,
-    payments: false, variations: true, timeline: false,
+    contract: true, budget: true, milestones: true, billing: false, variations: true,
   });
+  const [billingView, setBillingView] = useState<'requests' | 'payments'>('requests');
+  const [showHistory, setShowHistory] = useState(false);
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [variationFilter, setVariationFilter] = useState<'all' | 'pending' | 'approved' | 'rejected' | 'implemented'>('all');
   const [prFilter, setPrFilter] = useState<'all' | 'unpaid' | 'paid' | 'overdue'>('all');
@@ -258,7 +259,35 @@ export default function CommercialWorkspaceScreen() {
           </View>
         ) : (
           <>
-            {/* CONTRACT */}
+            {/* CASH FLOW — the anchor, per UX-01's own recommendation:
+                the single most time-sensitive answer to "is this
+                project financially healthy right now" leads the
+                screen instead of sitting third. */}
+            <Section title="CASH FLOW" icon="trending-up" expanded testID="section-cashflow" onToggle={() => {}} noCollapse>
+              <View style={styles.cashFlowRow}>
+                <View style={[styles.cashFlowBadge, { backgroundColor: CASH_FLOW_COLOR[summary.cash_flow_signal] || theme.color.textDim }]}>
+                  <Text style={styles.cashFlowBadgeText}>{summary.cash_flow_signal.toUpperCase()}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.metaText}>Raised: {formatInr(summary.outstanding_payments.raised)}</Text>
+                  <Text style={styles.metaText}>Received: {formatInr(summary.outstanding_payments.received)}</Text>
+                  <Text style={styles.metaText}>Outstanding: {formatInr(summary.outstanding_payments.outstanding)}</Text>
+                </View>
+              </View>
+              {summary.upcoming_payment ? (
+                <View style={styles.upcomingBox}>
+                  <Ionicons name="calendar" size={16} color={theme.color.brand} />
+                  <Text style={styles.upcomingText}>
+                    {formatInr(summary.upcoming_payment.amount)} due {formatDate(summary.upcoming_payment.due_date)}
+                    {summary.upcoming_payment.due_after ? ` — after ${summary.upcoming_payment.due_after}` : ''}
+                  </Text>
+                </View>
+              ) : (
+                <Text style={styles.mutedText}>No upcoming payment due.</Text>
+              )}
+            </Section>
+
+            {/* CONTRACT — stays highly visible, immediately after Cash Flow */}
             <Section title="CONTRACT" icon="document-text" expanded={expanded.contract} onToggle={() => toggle('contract')} testID="section-contract"
               headerAction={canDecide && summary.contract.status === 'draft' ? (
                 <Pressable testID="edit-contract-btn" onPress={openEditContract} hitSlop={10}>
@@ -308,31 +337,6 @@ export default function CommercialWorkspaceScreen() {
               </Section>
             )}
 
-            {/* CASH FLOW */}
-            <Section title="CASH FLOW" icon="trending-up" expanded testID="section-cashflow" onToggle={() => {}} noCollapse>
-              <View style={styles.cashFlowRow}>
-                <View style={[styles.cashFlowBadge, { backgroundColor: CASH_FLOW_COLOR[summary.cash_flow_signal] || theme.color.textDim }]}>
-                  <Text style={styles.cashFlowBadgeText}>{summary.cash_flow_signal.toUpperCase()}</Text>
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.metaText}>Raised: {formatInr(summary.outstanding_payments.raised)}</Text>
-                  <Text style={styles.metaText}>Received: {formatInr(summary.outstanding_payments.received)}</Text>
-                  <Text style={styles.metaText}>Outstanding: {formatInr(summary.outstanding_payments.outstanding)}</Text>
-                </View>
-              </View>
-              {summary.upcoming_payment ? (
-                <View style={styles.upcomingBox}>
-                  <Ionicons name="calendar" size={16} color={theme.color.brand} />
-                  <Text style={styles.upcomingText}>
-                    {formatInr(summary.upcoming_payment.amount)} due {formatDate(summary.upcoming_payment.due_date)}
-                    {summary.upcoming_payment.due_after ? ` — after ${summary.upcoming_payment.due_after}` : ''}
-                  </Text>
-                </View>
-              ) : (
-                <Text style={styles.mutedText}>No upcoming payment due.</Text>
-              )}
-            </Section>
-
             {/* MILESTONES */}
             <Section title="MILESTONES" icon="flag" expanded={expanded.milestones} onToggle={() => toggle('milestones')} testID="section-milestones"
               headerAction={canDecide ? (
@@ -356,33 +360,6 @@ export default function CommercialWorkspaceScreen() {
               )}
             </Section>
 
-            {/* PAYMENT REQUESTS */}
-            <Section title="PAYMENT REQUESTS" icon="receipt" expanded={expanded.payment_requests} onToggle={() => toggle('payment_requests')} testID="section-payment-requests">
-              <FilterRow
-                options={[['all', 'All'], ['unpaid', 'Unpaid'], ['paid', 'Paid'], ['overdue', 'Overdue']]}
-                value={prFilter} onChange={(v) => setPrFilter(v as any)} testIDPrefix="pr-filter" />
-              {filterPaymentRequests(summary.payment_requests, prFilter).length === 0 ? (
-                <Text style={styles.mutedText}>No payment requests match this filter.</Text>
-              ) : (
-                filterPaymentRequests(summary.payment_requests, prFilter).map((pr) => (
-                  <PaymentRequestRow key={pr.id} pr={pr} payments={summary.payments}
-                    milestone={summary.milestones.find((m) => m.id === pr.milestone_id) || null} />
-                ))
-              )}
-            </Section>
-
-            {/* PAYMENTS */}
-            <Section title="PAYMENTS" icon="cash" expanded={expanded.payments} onToggle={() => toggle('payments')} testID="section-payments">
-              {summary.payments.length === 0 ? (
-                <Text style={styles.mutedText}>No payments recorded yet.</Text>
-              ) : (
-                summary.payments
-                  .slice()
-                  .sort((a, b) => (a.date < b.date ? 1 : -1))
-                  .map((p) => <PaymentRow key={p.id} payment={p} />)
-              )}
-            </Section>
-
             {/* VARIATIONS */}
             <Section title="VARIATIONS" icon="swap-horizontal" expanded={expanded.variations} onToggle={() => toggle('variations')} testID="section-variations">
               <FilterRow
@@ -398,17 +375,82 @@ export default function CommercialWorkspaceScreen() {
               )}
             </Section>
 
-            {/* COMMERCIAL TIMELINE */}
-            <Section title="COMMERCIAL TIMELINE" icon="time" expanded={expanded.timeline} onToggle={() => toggle('timeline')} testID="section-timeline">
+            {/* BILLING — Payment Requests and Payments merged into one
+                section with two views, per UX-01's own recommendation:
+                these are the same underlying financial relationship
+                (money owed, money received) seen from two angles, not
+                two separate things. Both original filters and both
+                original row types are fully preserved, only the
+                container changed. */}
+            <Section title="BILLING" icon="cash" expanded={expanded.billing} onToggle={() => toggle('billing')} testID="section-billing">
+              <View style={styles.billingToggleRow}>
+                <Pressable testID="billing-view-requests" onPress={() => setBillingView('requests')}
+                  style={[styles.billingToggleBtn, billingView === 'requests' && styles.billingToggleBtnActive]}>
+                  <Text style={[styles.billingToggleText, billingView === 'requests' && styles.billingToggleTextActive]}>Payment Requests</Text>
+                </Pressable>
+                <Pressable testID="billing-view-payments" onPress={() => setBillingView('payments')}
+                  style={[styles.billingToggleBtn, billingView === 'payments' && styles.billingToggleBtnActive]}>
+                  <Text style={[styles.billingToggleText, billingView === 'payments' && styles.billingToggleTextActive]}>Payments</Text>
+                </Pressable>
+              </View>
+              {billingView === 'requests' ? (
+                <>
+                  <FilterRow
+                    options={[['all', 'All'], ['unpaid', 'Unpaid'], ['paid', 'Paid'], ['overdue', 'Overdue']]}
+                    value={prFilter} onChange={(v) => setPrFilter(v as any)} testIDPrefix="pr-filter" />
+                  {filterPaymentRequests(summary.payment_requests, prFilter).length === 0 ? (
+                    <Text style={styles.mutedText}>No payment requests match this filter.</Text>
+                  ) : (
+                    filterPaymentRequests(summary.payment_requests, prFilter).map((pr) => (
+                      <PaymentRequestRow key={pr.id} pr={pr} payments={summary.payments}
+                        milestone={summary.milestones.find((m) => m.id === pr.milestone_id) || null} />
+                    ))
+                  )}
+                </>
+              ) : (
+                summary.payments.length === 0 ? (
+                  <Text style={styles.mutedText}>No payments recorded yet.</Text>
+                ) : (
+                  summary.payments
+                    .slice()
+                    .sort((a, b) => (a.date < b.date ? 1 : -1))
+                    .map((p) => <PaymentRow key={p.id} payment={p} />)
+                )
+              )}
+            </Section>
+
+            {/* Commercial Timeline moved behind an explicit action per
+                UX-01's own recommendation - the least time-sensitive
+                information on this screen, no longer stacked at the
+                bottom of every visit. */}
+            <Pressable testID="view-history-btn" onPress={() => setShowHistory(true)} style={styles.viewHistoryRow}>
+              <Ionicons name="time-outline" size={18} color={theme.color.brand} />
+              <Text style={styles.viewHistoryText}>View Commercial History</Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
+            </Pressable>
+          </>
+        )}
+      </ScrollView>
+
+      <Modal visible={showHistory} animationType="slide" transparent onRequestClose={() => setShowHistory(false)} testID="history-modal">
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalCard, { maxHeight: '85%' }]}>
+            <View style={styles.historyModalHeader}>
+              <Text style={styles.modalTitle}>Commercial History</Text>
+              <Pressable testID="history-modal-close" onPress={() => setShowHistory(false)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={theme.color.text} />
+              </Pressable>
+            </View>
+            <ScrollView>
               {events.length === 0 ? (
                 <Text style={styles.mutedText}>No commercial events recorded yet.</Text>
               ) : (
                 events.map((e) => <TimelineRow key={e.id} event={e} />)
               )}
-            </Section>
-          </>
-        )}
-      </ScrollView>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       <FormModal
         visible={activeForm?.kind === 'create-contract'}
@@ -729,6 +771,23 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.sm, backgroundColor: theme.color.brand,
   },
   primaryBtnText: { color: theme.color.onBrand, fontWeight: '700' },
+  billingToggleRow: { flexDirection: 'row', gap: theme.spacing.sm, marginBottom: theme.spacing.sm },
+  billingToggleBtn: {
+    flex: 1, paddingVertical: 8, borderRadius: theme.radius.sm, alignItems: 'center',
+    borderWidth: 1, borderColor: theme.color.border,
+  },
+  billingToggleBtnActive: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  billingToggleText: { color: theme.color.textDim, fontSize: 13, fontWeight: '700' },
+  billingToggleTextActive: { color: theme.color.onBrand },
+  viewHistoryRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, paddingVertical: 14,
+    paddingHorizontal: theme.spacing.md, justifyContent: 'center',
+  },
+  viewHistoryText: { color: theme.color.brand, fontWeight: '700', fontSize: 14 },
+  historyModalHeader: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginBottom: theme.spacing.md,
+  },
   container: { flex: 1, backgroundColor: theme.color.surface },
   center: { flex: 1, backgroundColor: theme.color.surface, alignItems: 'center', justifyContent: 'center' },
   header: {

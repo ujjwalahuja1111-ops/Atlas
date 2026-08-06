@@ -21,6 +21,7 @@ export function MyDaySection({ viewRole }: { viewRole: 'admin' | 'pm' | 'supervi
   const router = useRouter();
   const [data, setData] = useState<MyDayResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [pmShowMore, setPmShowMore] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,15 +88,27 @@ export function MyDaySection({ viewRole }: { viewRole: 'admin' | 'pm' | 'supervi
         <StatPill label="Projects Needing Attention" value={d.projects_requiring_attention} color={theme.color.warning} />
         <StatPill label="Open Operational Items" value={d.open_operational_items_count} />
       </View>
-      <MyDayGroup icon="time" title="DELAYED ACTIVITIES" items={d.delayed_activities} onPress={openItem} />
+      {/* Primary: directly answers "what requires my attention today" - always visible */}
       <MyDayGroup icon="alert-circle" title="BLOCKED" items={d.blocked_activities} onPress={openItem} />
-      <MyDayGroup icon="search" title="UPCOMING INSPECTIONS" items={d.upcoming_inspections} onPress={openItem} />
       <MyDayGroup icon="checkmark-done" title="PENDING APPROVALS" items={d.pending_approvals} onPress={openItem} />
       <MyDayGroup icon="flag" title="HIGH PRIORITY WORK" items={d.high_priority_work} onPress={openItem} />
       <MyDayGroup icon="warning" title="ESCALATIONS" items={d.escalations} onPress={openItem} />
-      <CommercialAwarenessGroup icon="swap-horizontal" title="PENDING VARIATIONS" items={d.pending_variations} kind="variation" onPress={openCommercial} />
-      <CommercialAwarenessGroup icon="receipt" title="PENDING PAYMENT REQUESTS" items={d.pending_payment_requests} kind="payment_request" onPress={openCommercial} />
-      <CommercialAwarenessGroup icon="flag-outline" title="UPCOMING MILESTONES" items={d.upcoming_milestones} kind="milestone" onPress={openCommercial} />
+
+      {/* Secondary: informational / forward-looking, not today's immediate
+          action - behind progressive disclosure, nothing removed. */}
+      <Pressable testID="my-day-pm-show-more" onPress={() => setPmShowMore((v) => !v)} style={styles.showMoreRow}>
+        <Text style={styles.showMoreText}>{pmShowMore ? 'Show less' : 'Show more'}</Text>
+        <Ionicons name={pmShowMore ? 'chevron-up' : 'chevron-down'} size={16} color={theme.color.brand} />
+      </Pressable>
+      {pmShowMore && (
+        <>
+          <MyDayGroup icon="time" title="DELAYED ACTIVITIES" items={d.delayed_activities} onPress={openItem} />
+          <MyDayGroup icon="search" title="UPCOMING INSPECTIONS" items={d.upcoming_inspections} onPress={openItem} />
+          <CommercialAwarenessGroup icon="swap-horizontal" title="PENDING VARIATIONS" items={d.pending_variations} kind="variation" onPress={openCommercial} />
+          <CommercialAwarenessGroup icon="receipt" title="PENDING PAYMENT REQUESTS" items={d.pending_payment_requests} kind="payment_request" onPress={openCommercial} />
+          <CommercialAwarenessGroup icon="flag-outline" title="UPCOMING MILESTONES" items={d.upcoming_milestones} kind="milestone" onPress={openCommercial} />
+        </>
+      )}
       <Pressable testID="my-day-daily-review-link" onPress={() => router.push('/daily-review')} style={styles.linkRow}>
         <Text style={styles.linkText}>End-of-Day Review</Text>
         <Ionicons name="chevron-forward" size={16} color={theme.color.brand} />
@@ -219,6 +232,11 @@ const styles = StyleSheet.create({
   pillLabel: { color: theme.color.textDim, fontSize: 10, fontWeight: '700', textAlign: 'center' },
   linkRow: { flexDirection: 'row', alignItems: 'center', gap: 6, paddingVertical: 6 },
   linkText: { color: theme.color.brand, fontSize: 13, fontWeight: '700' },
+  showMoreRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 4,
+    paddingVertical: 10, marginVertical: 4,
+  },
+  showMoreText: { color: theme.color.brand, fontSize: 13, fontWeight: '700' },
   card: {
     flexDirection: 'row', alignItems: 'center', backgroundColor: theme.color.surface2,
     borderRadius: theme.radius.md, borderLeftWidth: 4, padding: theme.spacing.sm, marginBottom: 8, gap: 8,

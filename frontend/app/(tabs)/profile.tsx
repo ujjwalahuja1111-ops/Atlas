@@ -93,30 +93,37 @@ export default function ProfileScreen() {
 
         {viewRole === 'admin' && (
           <>
-            <Pressable testID="open-executive-hub" onPress={() => router.push('/executive-hub')} style={styles.knowledgeBtn}>
-              <Ionicons name="business-outline" size={22} color={theme.color.brand} />
-              <Text style={styles.knowledgeText}>EXECUTIVE HUB</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            <Pressable testID="open-executive-hub" onPress={() => router.push('/executive-hub')} style={styles.primaryDestBtn}>
+              <View style={styles.primaryDestIconWrap}>
+                <Ionicons name="business-outline" size={26} color={theme.color.onBrand} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.primaryDestTitle}>EXECUTIVE HUB</Text>
+                <Text style={styles.primaryDestSubtitle}>Start here — decisions and business health</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={20} color={theme.color.onBrand} />
             </Pressable>
-            <Pressable testID="open-portfolio-control-center" onPress={() => router.push('/portfolio')} style={styles.knowledgeBtn}>
-              <Ionicons name="grid-outline" size={22} color={theme.color.brand} />
-              <Text style={styles.knowledgeText}>PORTFOLIO CONTROL CENTER</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+
+            <Text style={styles.moreToolsLabel}>MORE TOOLS</Text>
+            <Pressable testID="open-portfolio-control-center" onPress={() => router.push('/portfolio')} style={styles.secondaryDestBtn}>
+              <Ionicons name="grid-outline" size={18} color={theme.color.brand} />
+              <Text style={styles.secondaryDestText}>Portfolio Control Center</Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
             </Pressable>
-            <Pressable testID="open-knowledge" onPress={() => router.push('/knowledge')} style={styles.knowledgeBtn}>
-              <Ionicons name="library-outline" size={22} color={theme.color.brand} />
-              <Text style={styles.knowledgeText}>CONSTRUCTION KNOWLEDGE</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            <Pressable testID="open-knowledge" onPress={() => router.push('/knowledge')} style={styles.secondaryDestBtn}>
+              <Ionicons name="library-outline" size={18} color={theme.color.brand} />
+              <Text style={styles.secondaryDestText}>Construction Knowledge</Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
             </Pressable>
-            <Pressable testID="open-user-management" onPress={() => router.push('/users')} style={styles.knowledgeBtn}>
-              <Ionicons name="people-outline" size={22} color={theme.color.brand} />
-              <Text style={styles.knowledgeText}>USER MANAGEMENT</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            <Pressable testID="open-user-management" onPress={() => router.push('/users')} style={styles.secondaryDestBtn}>
+              <Ionicons name="people-outline" size={18} color={theme.color.brand} />
+              <Text style={styles.secondaryDestText}>User Management</Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
             </Pressable>
-            <Pressable testID="open-system-info" onPress={() => router.push('/system')} style={styles.knowledgeBtn}>
-              <Ionicons name="hardware-chip-outline" size={22} color={theme.color.brand} />
-              <Text style={styles.knowledgeText}>SYSTEM INFORMATION</Text>
-              <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+            <Pressable testID="open-system-info" onPress={() => router.push('/system')} style={styles.secondaryDestBtn}>
+              <Ionicons name="hardware-chip-outline" size={18} color={theme.color.brand} />
+              <Text style={styles.secondaryDestText}>System Information</Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
             </Pressable>
           </>
         )}
@@ -205,6 +212,29 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.md, borderWidth: 1, borderColor: theme.color.border,
   },
   knowledgeText: { flex: 1, color: theme.color.text, fontSize: 13, fontWeight: '800', letterSpacing: 0.5 },
+  primaryDestBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.md,
+    marginHorizontal: theme.spacing.md, marginTop: theme.spacing.lg,
+    minHeight: 72, paddingHorizontal: theme.spacing.md, backgroundColor: theme.color.brand,
+    borderRadius: theme.radius.md,
+  },
+  primaryDestIconWrap: {
+    width: 44, height: 44, borderRadius: 22, backgroundColor: 'rgba(255,255,255,0.15)',
+    alignItems: 'center', justifyContent: 'center',
+  },
+  primaryDestTitle: { color: theme.color.onBrand, fontSize: 15, fontWeight: '800', letterSpacing: 0.5 },
+  primaryDestSubtitle: { color: theme.color.onBrand, fontSize: 12, marginTop: 2, opacity: 0.85 },
+  moreToolsLabel: {
+    color: theme.color.textDim, fontSize: 11, fontWeight: '800', letterSpacing: 1,
+    marginHorizontal: theme.spacing.md, marginTop: theme.spacing.lg, marginBottom: theme.spacing.xs,
+  },
+  secondaryDestBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    marginHorizontal: theme.spacing.md, marginTop: theme.spacing.xs,
+    minHeight: 44, paddingHorizontal: theme.spacing.md, backgroundColor: theme.color.surface2,
+    borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.color.border,
+  },
+  secondaryDestText: { flex: 1, color: theme.color.text, fontSize: 13, fontWeight: '600' },
   logoutBtn: {
     marginTop: theme.spacing.lg, marginHorizontal: theme.spacing.md, marginBottom: theme.spacing.lg,
     height: 72, borderRadius: theme.radius.md, borderWidth: 2, borderColor: theme.color.error,
