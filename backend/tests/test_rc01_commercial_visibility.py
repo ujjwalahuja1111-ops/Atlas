@@ -526,3 +526,125 @@ def test_site_delete_blocks_outsider(cross_project_event_and_site, admin):
     r2 = requests.patch(f"{API}/sites/{site['id']}", json={"name": "still exists"},
                         headers=admin["headers"], timeout=20)
     assert r2.status_code == 200, "the site must still exist after the outsider's blocked delete attempt"
+
+
+# ==========================================================================
+# CP-01 — Commercial Operations Phase I. Found and fixed during this
+# package's own mandatory pre-implementation verification, before any
+# UI was built on top of these routes: every commercial mutation route
+# (create_contract, create_budget, create_milestone, revise_budget,
+# set_contract_status, set_milestone_status) had a role check but no
+# project-visibility check at all - a PM scoped to one project could
+# create or edit commercial records for a project they cannot see,
+# just by putting a different project_id in the request. Also covers
+# the two new edit endpoints (update_contract, update_milestone) built
+# for this package.
+# ==========================================================================
+@pytest.fixture()
+def cross_project_commercial(admin):
+    outsider_user, outsider_h = _login("project_manager", "9990000501", "CP01 Commercial Outsider PM")
+    proj_a = requests.post(f"{API}/projects", json={"name": "CP01 Commercial Secret", "code": "CP01SEC1"},
+                           headers=admin["headers"], timeout=20).json()
+    proj_b = requests.post(f"{API}/projects", json={"name": "CP01 Commercial Visible", "code": "CP01VIS1"},
+                           headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{outsider_user['id']}/projects", json={"project_ids": [proj_b["id"]]},
+                 headers=admin["headers"], timeout=20)
+    return proj_a, proj_b, outsider_h
+
+
+def test_create_contract_blocks_outsider(cross_project_commercial):
+    proj_a, _, outsider_h = cross_project_commercial
+    r = requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj_a["id"], "original_contract_value": 1000000,
+        "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_create_budget_blocks_outsider(cross_project_commercial):
+    proj_a, _, outsider_h = cross_project_commercial
+    r = requests.post(f"{API}/commercial/budgets", json={
+        "project_id": proj_a["id"], "original_budget": 500000,
+    }, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_create_milestone_blocks_outsider(cross_project_commercial):
+    proj_a, _, outsider_h = cross_project_commercial
+    r = requests.post(f"{API}/commercial/milestones", json={
+        "project_id": proj_a["id"], "name": "M1", "sequence": 1,
+        "planned_percent": 50, "trigger": "t",
+    }, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_contract_status_and_budget_revise_and_milestone_status_block_outsider(cross_project_commercial, admin):
+    """The three routes that take project_id/milestone_id but not a
+    full create body - checked together since they share the same
+    fixture setup (a real contract/budget/milestone must exist first)."""
+    proj_a, _, outsider_h = cross_project_commercial
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj_a["id"], "original_contract_value": 1000000,
+        "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/commercial/budgets", json={
+        "project_id": proj_a["id"], "original_budget": 500000,
+    }, headers=admin["headers"], timeout=20)
+    ms = requests.post(f"{API}/commercial/milestones", json={
+        "project_id": proj_a["id"], "name": "M1", "sequence": 1,
+        "planned_percent": 50, "trigger": "t",
+    }, headers=admin["headers"], timeout=20).json()
+
+    r1 = requests.post(f"{API}/projects/{proj_a['id']}/commercial/contract/status",
+                       json={"status": "review"}, headers=outsider_h, timeout=20)
+    assert r1.status_code == 404
+
+    r2 = requests.post(f"{API}/projects/{proj_a['id']}/commercial/budget/revise",
+                       json={"new_current_budget": 999999, "reason": "unauthorized"}, headers=outsider_h, timeout=20)
+    assert r2.status_code == 404
+
+    r3 = requests.post(f"{API}/commercial/milestones/{ms['id']}/status",
+                       json={"status": "ready"}, headers=outsider_h, timeout=20)
+    assert r3.status_code == 404
+
+
+def test_update_contract_blocks_outsider(cross_project_commercial, admin):
+    proj_a, _, outsider_h = cross_project_commercial
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj_a["id"], "original_contract_value": 1000000,
+        "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=admin["headers"], timeout=20)
+    r = requests.patch(f"{API}/projects/{proj_a['id']}/commercial/contract",
+                       json={"duration_days": 999}, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_update_milestone_blocks_outsider(cross_project_commercial, admin):
+    proj_a, _, outsider_h = cross_project_commercial
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj_a["id"], "original_contract_value": 1000000,
+        "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=admin["headers"], timeout=20)
+    ms = requests.post(f"{API}/commercial/milestones", json={
+        "project_id": proj_a["id"], "name": "M1", "sequence": 1,
+        "planned_percent": 50, "trigger": "t",
+    }, headers=admin["headers"], timeout=20).json()
+    r = requests.patch(f"{API}/commercial/milestones/{ms['id']}",
+                       json={"name": "hacked"}, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_legitimate_pm_can_still_create_and_edit_own_project_commercial_data(cross_project_commercial, admin):
+    """Confirms none of the six fixes broke legitimate access for a PM
+    genuinely scoped to the project they're working in."""
+    _, proj_b, outsider_h = cross_project_commercial  # outsider IS legitimately scoped to proj_b
+    r1 = requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj_b["id"], "original_contract_value": 2000000,
+        "contract_date": "2026-01-01", "duration_days": 150,
+    }, headers=outsider_h, timeout=20)
+    assert r1.status_code == 201
+
+    r2 = requests.patch(f"{API}/projects/{proj_b['id']}/commercial/contract",
+                        json={"duration_days": 180}, headers=outsider_h, timeout=20)
+    assert r2.status_code == 200
+    assert r2.json()["duration_days"] == 180

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
-  RefreshControl, Alert,
+  RefreshControl, Alert, Modal, TextInput, KeyboardAvoidingView, Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Ionicons } from '@expo/vector-icons';
@@ -10,6 +10,8 @@ import { theme } from '@/src/theme';
 import { getViewRole, type ViewRole } from '@/src/roles';
 import {
   apiGetCommercialSummary, apiListCommercialEvents, apiDecideVariation,
+  apiCreateContract, apiUpdateContract, apiCreateBudget, apiReviseBudget,
+  apiCreateMilestone, apiUpdateMilestone,
   type CommercialSummary, type CommercialEvent, type Milestone, type PaymentRequest,
   type Payment, type Variation,
 } from '@/src/commercial_api';
@@ -35,10 +37,12 @@ const CASH_FLOW_COLOR: Record<string, string> = {
 
 const EVENT_KIND_LABEL: Record<string, string> = {
   contract_created: 'Contract created', contract_revised: 'Contract revised',
+  contract_updated: 'Contract terms updated', contract_status_changed: 'Contract status changed',
   variation_submitted: 'Variation submitted', variation_approved: 'Variation approved',
   variation_rejected: 'Variation rejected', payment_requested: 'Payment requested',
   payment_received: 'Payment received', milestone_achieved: 'Milestone completed',
-  budget_updated: 'Budget updated', budget_created: 'Budget created',
+  milestone_created: 'Milestone created', milestone_updated: 'Milestone updated',
+  budget_revised: 'Budget revised', budget_created: 'Budget created',
 };
 
 const EVENT_KIND_ICON: Record<string, any> = {
@@ -66,6 +70,20 @@ export default function CommercialWorkspaceScreen() {
   const [decidingId, setDecidingId] = useState<string | null>(null);
   const [variationFilter, setVariationFilter] = useState<'all' | 'pending' | 'approved' | 'rejected' | 'implemented'>('all');
   const [prFilter, setPrFilter] = useState<'all' | 'unpaid' | 'paid' | 'overdue'>('all');
+
+  // CP-01 — Commercial Operations Phase I. One generic form driver
+  // shared across Contract/Budget/Milestone create and edit, rather
+  // than six separate state trees for what is structurally the same
+  // "open a modal, edit some fields, save" flow throughout.
+  type ActiveForm =
+    | { kind: 'create-contract' } | { kind: 'edit-contract' }
+    | { kind: 'create-budget' } | { kind: 'edit-budget' }
+    | { kind: 'create-milestone' } | { kind: 'edit-milestone'; milestoneId: string };
+  const [activeForm, setActiveForm] = useState<ActiveForm | null>(null);
+  const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const [formSaving, setFormSaving] = useState(false);
+  const setField = (key: string, value: string) => setFormValues((v) => ({ ...v, [key]: value }));
+  const closeForm = () => { setActiveForm(null); setFormValues({}); };
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -95,7 +113,6 @@ export default function CommercialWorkspaceScreen() {
 
   const toggle = (key: SectionKey) => setExpanded((e) => ({ ...e, [key]: !e[key] }));
 
-  const isManagement = viewRole === 'admin';
   const canDecide = viewRole === 'admin' || viewRole === 'pm';
 
   const onDecide = async (variationId: string, decision: 'approved' | 'rejected') => {
@@ -109,6 +126,94 @@ export default function CommercialWorkspaceScreen() {
     } finally {
       setDecidingId(null);
     }
+  };
+
+  const onSaveForm = async () => {
+    if (!activeForm || !id) return;
+    setFormSaving(true);
+    try {
+      const num = (key: string) => {
+        const v = formValues[key];
+        return v && v.trim() !== '' ? Number(v) : undefined;
+      };
+      switch (activeForm.kind) {
+        case 'create-contract':
+          await apiCreateContract({
+            project_id: id,
+            original_contract_value: num('original_contract_value') ?? 0,
+            contract_date: formValues.contract_date || new Date().toISOString().slice(0, 10),
+            duration_days: num('duration_days') ?? 0,
+            retention_percent: num('retention_percent'),
+            advance_percent: num('advance_percent'),
+            gst_percent: num('gst_percent'),
+          });
+          break;
+        case 'edit-contract':
+          await apiUpdateContract(id, {
+            duration_days: num('duration_days'),
+            retention_percent: num('retention_percent'),
+            advance_percent: num('advance_percent'),
+            gst_percent: num('gst_percent'),
+          });
+          break;
+        case 'create-budget':
+          await apiCreateBudget(id, num('original_budget') ?? 0);
+          break;
+        case 'edit-budget':
+          await apiReviseBudget(id, num('new_current_budget') ?? 0, formValues.reason || '');
+          break;
+        case 'create-milestone':
+          await apiCreateMilestone({
+            project_id: id,
+            name: formValues.name || '',
+            sequence: num('sequence') ?? 1,
+            planned_percent: num('planned_percent') ?? 0,
+            trigger: formValues.trigger || '',
+            planned_date: formValues.planned_date || null,
+          });
+          break;
+        case 'edit-milestone':
+          await apiUpdateMilestone(activeForm.milestoneId, {
+            name: formValues.name || undefined,
+            sequence: num('sequence'),
+            planned_percent: num('planned_percent'),
+            trigger: formValues.trigger || undefined,
+            planned_date: formValues.planned_date || undefined,
+          });
+          break;
+      }
+      closeForm();
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not save', e?.message || 'Please check the values and try again.');
+    } finally {
+      setFormSaving(false);
+    }
+  };
+
+  const openEditContract = () => {
+    if (!summary?.contract) return;
+    setFormValues({
+      duration_days: String(summary.contract.duration_days),
+      retention_percent: String(summary.contract.retention_percent),
+      advance_percent: String(summary.contract.advance_percent),
+      gst_percent: String(summary.contract.gst_percent),
+    });
+    setActiveForm({ kind: 'edit-contract' });
+  };
+
+  const openEditBudget = () => {
+    if (!summary?.budget) return;
+    setFormValues({ new_current_budget: String(summary.budget.current_budget), reason: '' });
+    setActiveForm({ kind: 'edit-budget' });
+  };
+
+  const openEditMilestone = (m: Milestone) => {
+    setFormValues({
+      name: m.name, sequence: String(m.sequence), planned_percent: String(m.planned_percent),
+      trigger: m.trigger, planned_date: m.planned_date || '',
+    });
+    setActiveForm({ kind: 'edit-milestone', milestoneId: m.id });
   };
 
   if (loading) {
@@ -144,11 +249,22 @@ export default function CommercialWorkspaceScreen() {
           <View style={styles.emptyState} testID="workspace-empty">
             <Ionicons name="wallet-outline" size={32} color={theme.color.textDim} />
             <Text style={styles.emptyStateText}>No commercial data for this project yet.</Text>
+            {canDecide && (
+              <Pressable testID="create-contract-btn" style={styles.primaryBtn}
+                onPress={() => { setFormValues({}); setActiveForm({ kind: 'create-contract' }); }}>
+                <Text style={styles.primaryBtnText}>Create Contract</Text>
+              </Pressable>
+            )}
           </View>
         ) : (
           <>
             {/* CONTRACT */}
-            <Section title="CONTRACT" icon="document-text" expanded={expanded.contract} onToggle={() => toggle('contract')} testID="section-contract">
+            <Section title="CONTRACT" icon="document-text" expanded={expanded.contract} onToggle={() => toggle('contract')} testID="section-contract"
+              headerAction={canDecide && summary.contract.status === 'draft' ? (
+                <Pressable testID="edit-contract-btn" onPress={openEditContract} hitSlop={10}>
+                  <Ionicons name="create-outline" size={18} color={theme.color.brand} />
+                </Pressable>
+              ) : undefined}>
               <View style={styles.tileGrid}>
                 <Tile label="Original Contract Value" value={formatInr(summary.contract.original_contract_value)} />
                 <Tile label="Current Contract Value" value={formatInr(summary.contract.current_contract_value)} />
@@ -162,9 +278,20 @@ export default function CommercialWorkspaceScreen() {
               </View>
             </Section>
 
-            {/* BUDGET — management only */}
-            {isManagement && (
-              <Section title="BUDGET" icon="wallet" expanded={expanded.budget} onToggle={() => toggle('budget')} testID="section-budget">
+            {/* BUDGET — internal only, never client-visible; management or PM, matching the backend's own _require_write_access rule exactly */}
+            {canDecide && (
+              <Section title="BUDGET" icon="wallet" expanded={expanded.budget} onToggle={() => toggle('budget')} testID="section-budget"
+                headerAction={
+                  summary.budget ? (
+                    <Pressable testID="edit-budget-btn" onPress={openEditBudget} hitSlop={10}>
+                      <Ionicons name="create-outline" size={18} color={theme.color.brand} />
+                    </Pressable>
+                  ) : (
+                    <Pressable testID="create-budget-btn" onPress={() => { setFormValues({}); setActiveForm({ kind: 'create-budget' }); }} hitSlop={10}>
+                      <Ionicons name="add-circle-outline" size={20} color={theme.color.brand} />
+                    </Pressable>
+                  )
+                }>
                 {summary.budget ? (
                   <View style={styles.tileGrid}>
                     <Tile label="Budget" value={formatInr(summary.budget.current_budget)} />
@@ -207,7 +334,14 @@ export default function CommercialWorkspaceScreen() {
             </Section>
 
             {/* MILESTONES */}
-            <Section title="MILESTONES" icon="flag" expanded={expanded.milestones} onToggle={() => toggle('milestones')} testID="section-milestones">
+            <Section title="MILESTONES" icon="flag" expanded={expanded.milestones} onToggle={() => toggle('milestones')} testID="section-milestones"
+              headerAction={canDecide ? (
+                <Pressable testID="create-milestone-btn"
+                  onPress={() => { setFormValues({ sequence: String(summary.milestones.length + 1) }); setActiveForm({ kind: 'create-milestone' }); }}
+                  hitSlop={10}>
+                  <Ionicons name="add-circle-outline" size={20} color={theme.color.brand} />
+                </Pressable>
+              ) : undefined}>
               {summary.milestones.length === 0 ? (
                 <Text style={styles.mutedText}>No milestones yet.</Text>
               ) : (
@@ -216,7 +350,8 @@ export default function CommercialWorkspaceScreen() {
                   .sort((a, b) => a.sequence - b.sequence)
                   .map((m) => (
                     <MilestoneRow key={m.id} milestone={m}
-                      linkedPr={summary.payment_requests.find((pr) => pr.milestone_id === m.id) || null} />
+                      linkedPr={summary.payment_requests.find((pr) => pr.milestone_id === m.id) || null}
+                      canEdit={canDecide && m.status === 'pending'} onEdit={() => openEditMilestone(m)} />
                   ))
               )}
             </Section>
@@ -274,6 +409,75 @@ export default function CommercialWorkspaceScreen() {
           </>
         )}
       </ScrollView>
+
+      <FormModal
+        visible={activeForm?.kind === 'create-contract'}
+        title="Create Contract" testID="form-create-contract"
+        fields={[
+          { key: 'original_contract_value', label: 'Contract Value (₹)', keyboardType: 'numeric', placeholder: 'e.g. 3000000' },
+          { key: 'contract_date', label: 'Contract Date (YYYY-MM-DD)', placeholder: new Date().toISOString().slice(0, 10) },
+          { key: 'duration_days', label: 'Duration (days)', keyboardType: 'numeric', placeholder: 'e.g. 180' },
+          { key: 'retention_percent', label: 'Retention % (default 5)', keyboardType: 'numeric' },
+          { key: 'advance_percent', label: 'Advance % (default 10)', keyboardType: 'numeric' },
+          { key: 'gst_percent', label: 'GST % (default 18)', keyboardType: 'numeric' },
+        ]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
+
+      <FormModal
+        visible={activeForm?.kind === 'edit-contract'}
+        title="Edit Contract" testID="form-edit-contract"
+        fields={[
+          { key: 'duration_days', label: 'Duration (days)', keyboardType: 'numeric' },
+          { key: 'retention_percent', label: 'Retention %', keyboardType: 'numeric' },
+          { key: 'advance_percent', label: 'Advance %', keyboardType: 'numeric' },
+          { key: 'gst_percent', label: 'GST %', keyboardType: 'numeric' },
+        ]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
+
+      <FormModal
+        visible={activeForm?.kind === 'create-budget'}
+        title="Create Budget" testID="form-create-budget"
+        fields={[{ key: 'original_budget', label: 'Original Budget (₹)', keyboardType: 'numeric', placeholder: 'e.g. 2500000' }]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
+
+      <FormModal
+        visible={activeForm?.kind === 'edit-budget'}
+        title="Revise Budget" testID="form-edit-budget"
+        fields={[
+          { key: 'new_current_budget', label: 'New Budget Amount (₹)', keyboardType: 'numeric' },
+          { key: 'reason', label: 'Reason for revision', placeholder: 'e.g. material cost increase' },
+        ]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
+
+      <FormModal
+        visible={activeForm?.kind === 'create-milestone'}
+        title="Create Milestone" testID="form-create-milestone"
+        fields={[
+          { key: 'name', label: 'Milestone Name', placeholder: 'e.g. Foundation Complete' },
+          { key: 'sequence', label: 'Sequence', keyboardType: 'numeric' },
+          { key: 'planned_percent', label: 'Planned % of Contract Value', keyboardType: 'numeric' },
+          { key: 'trigger', label: 'Completion Trigger', placeholder: 'e.g. foundation inspection passed' },
+          { key: 'planned_date', label: 'Planned Date (YYYY-MM-DD)' },
+        ]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
+
+      <FormModal
+        visible={activeForm?.kind === 'edit-milestone'}
+        title="Edit Milestone" testID="form-edit-milestone"
+        fields={[
+          { key: 'name', label: 'Milestone Name' },
+          { key: 'sequence', label: 'Sequence', keyboardType: 'numeric' },
+          { key: 'planned_percent', label: 'Planned % of Contract Value', keyboardType: 'numeric' },
+          { key: 'trigger', label: 'Completion Trigger' },
+          { key: 'planned_date', label: 'Planned Date (YYYY-MM-DD)' },
+        ]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
     </SafeAreaView>
   );
 }
@@ -292,9 +496,53 @@ function filterVariations(vs: Variation[], filter: string): Variation[] {
   return vs.filter((v) => v.status === filter);
 }
 
-function Section({ title, icon, expanded, onToggle, children, testID, noCollapse }: {
+type FormFieldSpec = {
+  key: string; label: string; keyboardType?: 'default' | 'numeric'; placeholder?: string;
+};
+
+function FormModal({ visible, title, fields, values, onChange, onSave, onCancel, saving, testID }: {
+  visible: boolean; title: string; fields: FormFieldSpec[]; values: Record<string, string>;
+  onChange: (key: string, value: string) => void; onSave: () => void; onCancel: () => void;
+  saving: boolean; testID: string;
+}) {
+  return (
+    <Modal visible={visible} animationType="slide" transparent onRequestClose={onCancel} testID={testID}>
+      <View style={styles.modalOverlay}>
+        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.modalCard}>
+          <Text style={styles.modalTitle}>{title}</Text>
+          <ScrollView keyboardShouldPersistTaps="handled">
+            {fields.map((f) => (
+              <View key={f.key} style={styles.formFieldWrap}>
+                <Text style={styles.formFieldLabel}>{f.label}</Text>
+                <TextInput
+                  testID={`${testID}-${f.key}`}
+                  style={styles.formFieldInput}
+                  value={values[f.key] ?? ''}
+                  onChangeText={(t) => onChange(f.key, t)}
+                  keyboardType={f.keyboardType === 'numeric' ? 'decimal-pad' : 'default'}
+                  placeholder={f.placeholder}
+                  placeholderTextColor={theme.color.textDim}
+                />
+              </View>
+            ))}
+          </ScrollView>
+          <View style={styles.modalActions}>
+            <Pressable testID={`${testID}-cancel`} onPress={onCancel} style={styles.modalCancelBtn} disabled={saving}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </Pressable>
+            <Pressable testID={`${testID}-save`} onPress={onSave} style={styles.modalSaveBtn} disabled={saving}>
+              {saving ? <ActivityIndicator color={theme.color.onBrand} size="small" /> : <Text style={styles.modalSaveText}>Save</Text>}
+            </Pressable>
+          </View>
+        </KeyboardAvoidingView>
+      </View>
+    </Modal>
+  );
+}
+
+function Section({ title, icon, expanded, onToggle, children, testID, noCollapse, headerAction }: {
   title: string; icon: any; expanded: boolean; onToggle: () => void; children: React.ReactNode;
-  testID: string; noCollapse?: boolean;
+  testID: string; noCollapse?: boolean; headerAction?: React.ReactNode;
 }) {
   return (
     <View style={styles.section} testID={testID}>
@@ -303,7 +551,10 @@ function Section({ title, icon, expanded, onToggle, children, testID, noCollapse
           <Ionicons name={icon} size={16} color={theme.color.brand} />
           <Text style={styles.sectionTitle}>{title}</Text>
         </View>
-        {!noCollapse && <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.color.textDim} />}
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+          {headerAction}
+          {!noCollapse && <Ionicons name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={theme.color.textDim} />}
+        </View>
       </Pressable>
       {expanded && <View style={styles.sectionBody}>{children}</View>}
     </View>
@@ -314,6 +565,7 @@ function Tile({ label, value, negative }: { label: string; value: string; negati
   return (
     <View style={styles.tile}>
       <Text style={styles.tileLabel}>{label}</Text>
+
       <Text style={[styles.tileValue, negative && styles.tileValueNegative]}>{value}</Text>
     </View>
   );
@@ -339,7 +591,9 @@ const MILESTONE_STATUS_LABEL: Record<string, string> = {
   payment_requested: 'Completed', paid: 'Completed', closed: 'Completed',
 };
 
-function MilestoneRow({ milestone, linkedPr }: { milestone: Milestone; linkedPr: PaymentRequest | null }) {
+function MilestoneRow({ milestone, linkedPr, canEdit, onEdit }: {
+  milestone: Milestone; linkedPr: PaymentRequest | null; canEdit?: boolean; onEdit?: () => void;
+}) {
   const done = ['achieved', 'payment_requested', 'paid', 'closed'].includes(milestone.status);
   return (
     <View style={styles.row} testID={`milestone-${milestone.id}`}>
@@ -352,6 +606,11 @@ function MilestoneRow({ milestone, linkedPr }: { milestone: Milestone; linkedPr:
           {linkedPr ? ` · ${linkedPr.status}` : ''}
         </Text>
       </View>
+      {canEdit && (
+        <Pressable testID={`edit-milestone-${milestone.id}`} onPress={onEdit} hitSlop={10} style={{ marginRight: 8 }}>
+          <Ionicons name="create-outline" size={16} color={theme.color.brand} />
+        </Pressable>
+      )}
       <Text style={styles.statusPill}>{MILESTONE_STATUS_LABEL[milestone.status] || milestone.status}</Text>
     </View>
   );
@@ -439,6 +698,37 @@ function TimelineRow({ event }: { event: CommercialEvent }) {
 }
 
 const styles = StyleSheet.create({
+  modalOverlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end',
+  },
+  modalCard: {
+    backgroundColor: theme.color.surface2, borderTopLeftRadius: theme.radius.lg,
+    borderTopRightRadius: theme.radius.lg, padding: theme.spacing.lg, maxHeight: '80%',
+  },
+  modalTitle: { color: theme.color.text, fontSize: 17, fontWeight: '800', marginBottom: theme.spacing.md },
+  formFieldWrap: { marginBottom: theme.spacing.md },
+  formFieldLabel: { color: theme.color.textDim, fontSize: 12, fontWeight: '700', marginBottom: 4 },
+  formFieldInput: {
+    borderWidth: 1, borderColor: theme.color.border, borderRadius: theme.radius.sm,
+    paddingHorizontal: 12, paddingVertical: 10, color: theme.color.text, fontSize: 15,
+    backgroundColor: theme.color.surface,
+  },
+  modalActions: { flexDirection: 'row', gap: theme.spacing.sm, marginTop: theme.spacing.sm },
+  modalCancelBtn: {
+    flex: 1, paddingVertical: 12, borderRadius: theme.radius.sm, alignItems: 'center',
+    borderWidth: 1, borderColor: theme.color.border,
+  },
+  modalCancelText: { color: theme.color.text, fontWeight: '700' },
+  modalSaveBtn: {
+    flex: 1, paddingVertical: 12, borderRadius: theme.radius.sm, alignItems: 'center',
+    backgroundColor: theme.color.brand,
+  },
+  modalSaveText: { color: theme.color.onBrand, fontWeight: '700' },
+  primaryBtn: {
+    marginTop: theme.spacing.md, paddingHorizontal: 20, paddingVertical: 12,
+    borderRadius: theme.radius.sm, backgroundColor: theme.color.brand,
+  },
+  primaryBtnText: { color: theme.color.onBrand, fontWeight: '700' },
   container: { flex: 1, backgroundColor: theme.color.surface },
   center: { flex: 1, backgroundColor: theme.color.surface, alignItems: 'center', justifyContent: 'center' },
   header: {

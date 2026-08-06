@@ -173,6 +173,48 @@ async def create_contract(*, actor: dict, project_id: str, client_id: Optional[s
     return await get_contract(project_id)
 
 
+async def update_contract(project_id: str, *, actor: dict,
+                          duration_days: Optional[int] = None,
+                          retention_percent: Optional[float] = None,
+                          advance_percent: Optional[float] = None,
+                          gst_percent: Optional[float] = None) -> dict:
+    """CP-01 — the smallest possible extension of the Contract lifecycle:
+    correcting a term before the contract is active. Deliberately does
+    NOT touch original_contract_value (that only ever changes through
+    approved Variations, per Contract's own existing, correct design —
+    preserved exactly, not reopened here) and is only permitted while
+    status is still "draft", so nothing already reviewed or approved
+    can silently change underneath anyone. Full contract-revision
+    versioning (CO-01 §2, Phase 2) remains a later package's scope —
+    this reuses the existing commercial_events ledger for its own
+    audit trail rather than introducing a new one."""
+    contract = await db.contracts.find_one({"project_id": project_id}, {"_id": 0})
+    if not contract:
+        raise CommercialNotFoundError(f"No Contract for project '{project_id}'.")
+    if contract["status"] != "draft":
+        raise CommercialError(
+            f"Contract terms can only be edited while status is 'draft' (currently '{contract['status']}').")
+
+    updates: dict = {}
+    changes: dict = {}
+    for field, value in (
+        ("duration_days", duration_days), ("retention_percent", retention_percent),
+        ("advance_percent", advance_percent), ("gst_percent", gst_percent),
+    ):
+        if value is not None and value != contract.get(field):
+            updates[field] = value
+            changes[field] = {"from": contract.get(field), "to": value}
+    if not updates:
+        return await get_contract(project_id)
+
+    updates["updated_at"] = _iso(_now())
+    await db.contracts.update_one({"id": contract["id"]}, {"$set": updates})
+    await append_commercial_event(project_id=project_id, kind="contract_updated", actor=actor,
+                                  entity_type="contract", entity_id=contract["id"],
+                                  payload={"changes": changes})
+    return await get_contract(project_id)
+
+
 async def get_contract(project_id: str) -> Optional[dict]:
     """Returns the Contract enriched with its derived
     current_contract_value — original + every APPROVED variation's
@@ -265,6 +307,55 @@ async def list_milestones(project_id: str) -> list[dict]:
 
 async def get_milestone(milestone_id: str) -> Optional[dict]:
     return await db.milestones.find_one({"id": milestone_id}, {"_id": 0})
+
+
+async def update_milestone(milestone_id: str, *, actor: dict,
+                           name: Optional[str] = None,
+                           sequence: Optional[int] = None,
+                           planned_percent: Optional[float] = None,
+                           trigger: Optional[str] = None,
+                           planned_date: Optional[str] = None) -> dict:
+    """CP-01 — per CO-01's own Product Decisions Register: "full edit
+    while pending, append-only notes/comments after." A milestone's
+    financial percentage is client-visible once work is underway
+    against it; editing it silently after that point is exactly what
+    CO-01's own First Principle rules out. contract_value is
+    deliberately NOT recomputed here even when planned_percent
+    changes — it stays the same one-time-derived snapshot create_
+    milestone already establishes, for the same reason create_
+    milestone itself derives it once rather than live."""
+    milestone = await get_milestone(milestone_id)
+    if not milestone:
+        raise CommercialNotFoundError(f"Milestone '{milestone_id}' not found.")
+    if milestone["status"] != "pending":
+        raise CommercialError(
+            f"Milestone terms can only be edited while status is 'pending' (currently '{milestone['status']}').")
+
+    updates: dict = {}
+    changes: dict = {}
+    for field, value in (
+        ("name", name), ("sequence", sequence), ("planned_percent", planned_percent),
+        ("trigger", trigger), ("planned_date", planned_date),
+    ):
+        if value is not None and value != milestone.get(field):
+            updates[field] = value
+            changes[field] = {"from": milestone.get(field), "to": value}
+    if not updates:
+        return milestone
+
+    # planned_date also drives forecast_date at creation; keep them in
+    # sync on edit too, unless forecast_date has already been
+    # independently set by a later re-forecast (a real, different
+    # workflow this edit must not clobber).
+    if planned_date is not None and milestone.get("forecast_date") == milestone.get("planned_date"):
+        updates["forecast_date"] = planned_date
+
+    updates["updated_at"] = _iso(_now())
+    await db.milestones.update_one({"id": milestone["id"]}, {"$set": updates})
+    await append_commercial_event(project_id=milestone["project_id"], kind="milestone_updated", actor=actor,
+                                  entity_type="milestone", entity_id=milestone["id"],
+                                  payload={"changes": changes})
+    return await get_milestone(milestone_id)
 
 
 async def transition_milestone_status(milestone_id: str, to_status: str, *, actor: dict,

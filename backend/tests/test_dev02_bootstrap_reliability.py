@@ -1421,3 +1421,86 @@ async def test_seeded_database_does_not_grant_founding_admin_to_later_registrati
     late = await memory_engine.register_user(phone="9990001004", name="Cert Late Registrant")
     assert late["role"] == "site_supervisor"
     assert late["approval_status"] == "pending"
+
+
+# ==========================================================================
+# CP-01 — Commercial Operations Phase I (Vertical Slice).
+#
+# update_contract and update_milestone are new, minimal extensions
+# (CO-01's own Product Decisions Register: editable only before the
+# record is genuinely relied upon by anyone downstream - draft for
+# Contract, pending for Milestone). Both reuse the exact same
+# append_commercial_event audit pattern every other commercial
+# mutation already uses - no new audit mechanism.
+# ==========================================================================
+async def test_update_contract_while_draft_succeeds_and_logs_event():
+    admin = {"id": "cp01_u1", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="CP01 Contract Edit Test", code="CP01CE1")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+
+    updated = await commercial_engine.update_contract(
+        project["id"], actor=admin, duration_days=150, retention_percent=7.5)
+    assert updated["duration_days"] == 150
+    assert updated["retention_percent"] == 7.5
+    # original_contract_value must be completely untouched - this
+    # function deliberately never edits it, per CO-01's own ruling
+    # that contract value only ever changes through approved
+    # Variations.
+    assert updated["original_contract_value"] == 1000000
+
+    events = await commercial_engine.list_commercial_events(project["id"])
+    assert any(e["kind"] == "contract_updated" for e in events)
+
+
+async def test_update_contract_blocked_after_activation():
+    admin = {"id": "cp01_u2", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="CP01 Contract Lock Test", code="CP01CL1")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    await commercial_engine.transition_contract_status(project["id"], "review", actor=admin)
+    await commercial_engine.transition_contract_status(project["id"], "approved", actor=admin)
+    await commercial_engine.transition_contract_status(project["id"], "active", actor=admin)
+
+    with pytest.raises(commercial_engine.CommercialError, match="only be edited while status is 'draft'"):
+        await commercial_engine.update_contract(project["id"], actor=admin, duration_days=999)
+
+
+async def test_update_milestone_while_pending_succeeds_and_logs_event():
+    admin = {"id": "cp01_u3", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="CP01 Milestone Edit Test", code="CP01ME1")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1,
+        planned_percent=20, trigger="foundation complete")
+
+    updated = await commercial_engine.update_milestone(
+        ms["id"], actor=admin, name="Foundation Works", planned_percent=25)
+    assert updated["name"] == "Foundation Works"
+    assert updated["planned_percent"] == 25
+    # contract_value stays the one-time-derived snapshot, deliberately
+    # not recomputed on edit - matching create_milestone's own
+    # documented reasoning.
+    assert updated["contract_value"] == ms["contract_value"]
+
+    events = await commercial_engine.list_commercial_events(project["id"])
+    assert any(e["kind"] == "milestone_updated" for e in events)
+
+
+async def test_update_milestone_blocked_after_ready():
+    admin = {"id": "cp01_u4", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="CP01 Milestone Lock Test", code="CP01ML1")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1,
+        planned_percent=20, trigger="foundation complete")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+
+    with pytest.raises(commercial_engine.CommercialError, match="only be edited while status is 'pending'"):
+        await commercial_engine.update_milestone(ms["id"], actor=admin, name="Should not save")

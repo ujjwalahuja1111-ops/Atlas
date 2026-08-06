@@ -133,6 +133,102 @@ export async function apiGetCommercialSummary(projectId: string): Promise<Commer
 }
 
 // ---------------------------------------------------------------------------
+// CP-01 — Commercial Operations Phase I: Contract, Budget, Milestone
+// create/edit. Viewing reuses apiGetCommercialSummary above (contract,
+// budget, and milestones are all already part of that response) — no
+// separate GET functions needed for this slice.
+// ---------------------------------------------------------------------------
+
+export type ContractCreateInput = {
+  project_id: string; client_id?: string | null;
+  original_contract_value: number; contract_date: string; duration_days: number;
+  retention_percent?: number; advance_percent?: number; gst_percent?: number;
+};
+
+export async function apiCreateContract(input: ContractCreateInput): Promise<Contract> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/contracts`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error('create-contract');
+  return r.json();
+}
+
+export type ContractUpdateInput = {
+  duration_days?: number; retention_percent?: number; advance_percent?: number; gst_percent?: number;
+};
+
+export async function apiUpdateContract(projectId: string, input: ContractUpdateInput): Promise<Contract> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/commercial/contract`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error('update-contract');
+  return r.json();
+}
+
+export async function apiTransitionContractStatus(projectId: string, status: string): Promise<Contract> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/commercial/contract/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ status }),
+  });
+  if (!r.ok) throw new Error('transition-contract-status');
+  return r.json();
+}
+
+export async function apiCreateBudget(projectId: string, originalBudget: number): Promise<Budget> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/budgets`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ project_id: projectId, original_budget: originalBudget }),
+  });
+  if (!r.ok) throw new Error('create-budget');
+  return r.json();
+}
+
+export async function apiReviseBudget(projectId: string, newCurrentBudget: number, reason: string): Promise<Budget> {
+  const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/commercial/budget/revise`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ new_current_budget: newCurrentBudget, reason }),
+  });
+  if (!r.ok) throw new Error('revise-budget');
+  return r.json();
+}
+
+export type MilestoneCreateInput = {
+  project_id: string; name: string; sequence: number;
+  planned_percent: number; trigger: string; planned_date?: string | null;
+};
+
+export async function apiCreateMilestone(input: MilestoneCreateInput): Promise<Milestone> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/milestones`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error('create-milestone');
+  return r.json();
+}
+
+export type MilestoneUpdateInput = {
+  name?: string; sequence?: number; planned_percent?: number; trigger?: string; planned_date?: string | null;
+};
+
+export async function apiUpdateMilestone(milestoneId: string, input: MilestoneUpdateInput): Promise<Milestone> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/milestones/${milestoneId}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error('update-milestone');
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Client Experience Layer (CX-01) — thin, client-safe views over the
 // same commercial_engine data above. Never includes Budget/Forecast/
 // internal cost fields — see reasoning_engine.client_investment_summary's

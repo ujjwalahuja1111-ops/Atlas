@@ -57,6 +57,7 @@ class ContractCreate(BaseModel):
 async def create_contract(req: ContractCreate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        await ce.assert_project_visible(req.project_id, user)
         return await ce.create_contract(actor=user, **req.model_dump())
     except ValueError as e:
         _raise_for(e)
@@ -74,6 +75,23 @@ async def get_contract(project_id: str, user: dict = Depends(get_current_user)):
     return contract
 
 
+class ContractUpdate(BaseModel):
+    duration_days: Optional[int] = None
+    retention_percent: Optional[float] = None
+    advance_percent: Optional[float] = None
+    gst_percent: Optional[float] = None
+
+
+@router.patch("/projects/{project_id}/commercial/contract")
+async def update_contract(project_id: str, req: ContractUpdate, user: dict = Depends(get_current_user)):
+    _require_write_access(user)
+    try:
+        await ce.assert_project_visible(project_id, user)
+        return await ce.update_contract(project_id, actor=user, **req.model_dump())
+    except ValueError as e:
+        _raise_for(e)
+
+
 class ContractStatusUpdate(BaseModel):
     status: str
 
@@ -82,6 +100,7 @@ class ContractStatusUpdate(BaseModel):
 async def set_contract_status(project_id: str, req: ContractStatusUpdate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        await ce.assert_project_visible(project_id, user)
         return await ce.transition_contract_status(project_id, req.status, actor=user)
     except ValueError as e:
         _raise_for(e)
@@ -105,6 +124,7 @@ class MilestoneCreate(BaseModel):
 async def create_milestone(req: MilestoneCreate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        await ce.assert_project_visible(req.project_id, user)
         return await ce.create_milestone(actor=user, **req.model_dump())
     except ValueError as e:
         _raise_for(e)
@@ -119,6 +139,27 @@ async def list_milestones(project_id: str, user: dict = Depends(get_current_user
     return await ce.list_milestones(project_id)
 
 
+class MilestoneUpdate(BaseModel):
+    name: Optional[str] = None
+    sequence: Optional[int] = None
+    planned_percent: Optional[float] = None
+    trigger: Optional[str] = None
+    planned_date: Optional[str] = None
+
+
+@router.patch("/commercial/milestones/{milestone_id}")
+async def update_milestone(milestone_id: str, req: MilestoneUpdate, user: dict = Depends(get_current_user)):
+    _require_write_access(user)
+    try:
+        milestone = await ce.get_milestone(milestone_id)
+        if not milestone:
+            raise CommercialNotFoundError(f"Milestone '{milestone_id}' not found.")
+        await ce.assert_project_visible(milestone["project_id"], user)
+        return await ce.update_milestone(milestone_id, actor=user, **req.model_dump())
+    except ValueError as e:
+        _raise_for(e)
+
+
 class MilestoneStatusUpdate(BaseModel):
     status: str
     forecast_date: Optional[str] = None
@@ -128,6 +169,10 @@ class MilestoneStatusUpdate(BaseModel):
 async def set_milestone_status(milestone_id: str, req: MilestoneStatusUpdate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        milestone = await ce.get_milestone(milestone_id)
+        if not milestone:
+            raise CommercialNotFoundError(f"Milestone '{milestone_id}' not found.")
+        await ce.assert_project_visible(milestone["project_id"], user)
         return await ce.transition_milestone_status(
             milestone_id, req.status, actor=user, forecast_date=req.forecast_date)
     except ValueError as e:
@@ -296,6 +341,7 @@ class BudgetCreate(BaseModel):
 async def create_budget(req: BudgetCreate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        await ce.assert_project_visible(req.project_id, user)
         return await ce.create_budget(actor=user, **req.model_dump())
     except ValueError as e:
         _raise_for(e)
@@ -320,6 +366,7 @@ class BudgetRevision(BaseModel):
 async def revise_budget(project_id: str, req: BudgetRevision, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        await ce.assert_project_visible(project_id, user)
         return await ce.revise_budget(project_id, req.new_current_budget, actor=user, reason=req.reason)
     except ValueError as e:
         _raise_for(e)
