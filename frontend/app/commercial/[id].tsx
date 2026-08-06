@@ -12,6 +12,8 @@ import {
   apiGetCommercialSummary, apiListCommercialEvents, apiDecideVariation,
   apiCreateContract, apiUpdateContract, apiCreateBudget, apiReviseBudget,
   apiCreateMilestone, apiUpdateMilestone,
+  apiCreateVariation, apiSubmitVariation, apiSendVariationForClientReview,
+  apiCreatePaymentRequest, apiRecordPayment,
   type CommercialSummary, type CommercialEvent, type Milestone, type PaymentRequest,
   type Payment, type Variation,
 } from '@/src/commercial_api';
@@ -79,7 +81,10 @@ export default function CommercialWorkspaceScreen() {
   type ActiveForm =
     | { kind: 'create-contract' } | { kind: 'edit-contract' }
     | { kind: 'create-budget' } | { kind: 'edit-budget' }
-    | { kind: 'create-milestone' } | { kind: 'edit-milestone'; milestoneId: string };
+    | { kind: 'create-milestone' } | { kind: 'edit-milestone'; milestoneId: string }
+    | { kind: 'create-variation' }
+    | { kind: 'create-payment-request'; milestoneId: string }
+    | { kind: 'record-payment'; paymentRequestId: string };
   const [activeForm, setActiveForm] = useState<ActiveForm | null>(null);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
   const [formSaving, setFormSaving] = useState(false);
@@ -124,6 +129,32 @@ export default function CommercialWorkspaceScreen() {
       await load();
     } catch (e: any) {
       Alert.alert('Could not update variation', e?.message || 'Please try again.');
+    } finally {
+      setDecidingId(null);
+    }
+  };
+
+  const onSubmitVariation = async (variationId: string) => {
+    if (decidingId) return;
+    setDecidingId(variationId);
+    try {
+      await apiSubmitVariation(variationId);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not submit variation', e?.message || 'Please try again.');
+    } finally {
+      setDecidingId(null);
+    }
+  };
+
+  const onSendForReview = async (variationId: string) => {
+    if (decidingId) return;
+    setDecidingId(variationId);
+    try {
+      await apiSendVariationForClientReview(variationId);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not send for client review', e?.message || 'Please try again.');
     } finally {
       setDecidingId(null);
     }
@@ -180,6 +211,34 @@ export default function CommercialWorkspaceScreen() {
             planned_percent: num('planned_percent'),
             trigger: formValues.trigger || undefined,
             planned_date: formValues.planned_date || undefined,
+          });
+          break;
+        case 'create-variation':
+          await apiCreateVariation({
+            project_id: id,
+            title: formValues.title || '',
+            description: formValues.description || '',
+            original_cost: num('original_cost') ?? 0,
+            proposed_cost: num('proposed_cost') ?? 0,
+            time_impact_days: num('time_impact_days'),
+          });
+          break;
+        case 'create-payment-request':
+          await apiCreatePaymentRequest({
+            project_id: id,
+            milestone_id: activeForm.milestoneId,
+            amount: num('amount') ?? 0,
+            raised_date: formValues.raised_date || new Date().toISOString().slice(0, 10),
+            due_date: formValues.due_date || new Date().toISOString().slice(0, 10),
+          });
+          break;
+        case 'record-payment':
+          await apiRecordPayment({
+            payment_request_id: activeForm.paymentRequestId,
+            amount: num('amount') ?? 0,
+            date: formValues.date || new Date().toISOString().slice(0, 10),
+            method: formValues.method || 'bank_transfer',
+            reference: formValues.reference || '',
           });
           break;
       }
@@ -259,6 +318,29 @@ export default function CommercialWorkspaceScreen() {
           </View>
         ) : (
           <>
+            {/* COMMERCIAL HEALTH — simple rule-based summary reusing
+                existing data only: the backend's own cash_flow_signal
+                (healthy/attention/critical) plus budget variance when
+                a budget exists. No new computation, no AI. */}
+            {(() => {
+              const cashCritical = summary.cash_flow_signal === 'critical';
+              const cashAttention = summary.cash_flow_signal === 'attention';
+              const budgetOver = !!summary.budget && summary.budget.variance < 0;
+              const healthy = !cashCritical && !cashAttention && !budgetOver;
+              return (
+                <View style={[styles.healthBanner, healthy ? styles.healthBannerGood : styles.healthBannerAttention]}>
+                  <Text style={styles.healthBannerEmoji}>{healthy ? '🟢' : '🟡'}</Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.healthBannerTitle}>Commercial Health</Text>
+                    <Text style={styles.healthBannerSubtitle}>
+                      {healthy ? 'Healthy' : cashCritical ? 'Attention required — cash flow critical'
+                        : budgetOver ? 'Attention required — over budget' : 'Attention required — cash flow needs review'}
+                    </Text>
+                  </View>
+                </View>
+              );
+            })()}
+
             {/* CASH FLOW — the anchor, per UX-01's own recommendation:
                 the single most time-sensitive answer to "is this
                 project financially healthy right now" leads the
@@ -300,6 +382,14 @@ export default function CommercialWorkspaceScreen() {
                 <Tile label="Approved Variations" value={formatInr(summary.approved_variations_total)} />
                 <Tile label="Pending Variations" value={formatInr(summary.pending_variations_total)} />
               </View>
+              {summary.contract.current_contract_value !== summary.contract.original_contract_value && (
+                <View style={styles.revisionNote}>
+                  <Ionicons name="information-circle" size={14} color={theme.color.brand} />
+                  <Text style={styles.revisionNoteText}>
+                    Contract value changed by {formatInr(summary.contract.current_contract_value - summary.contract.original_contract_value)} through approved variations
+                  </Text>
+                </View>
+              )}
               <View style={styles.metaRow}>
                 <Text style={styles.metaText}>Contract Date: {formatDate(summary.contract.contract_date)}</Text>
                 <Text style={styles.metaText}>Duration: {summary.contract.duration_days} days</Text>
@@ -355,13 +445,22 @@ export default function CommercialWorkspaceScreen() {
                   .map((m) => (
                     <MilestoneRow key={m.id} milestone={m}
                       linkedPr={summary.payment_requests.find((pr) => pr.milestone_id === m.id) || null}
-                      canEdit={canDecide && m.status === 'pending'} onEdit={() => openEditMilestone(m)} />
+                      canEdit={canDecide && m.status === 'pending'} onEdit={() => openEditMilestone(m)}
+                      canRaisePr={canDecide}
+                      onRaisePr={() => { setFormValues({ amount: String(m.contract_value) }); setActiveForm({ kind: 'create-payment-request', milestoneId: m.id }); }} />
                   ))
               )}
             </Section>
 
             {/* VARIATIONS */}
-            <Section title="VARIATIONS" icon="swap-horizontal" expanded={expanded.variations} onToggle={() => toggle('variations')} testID="section-variations">
+            <Section title="VARIATIONS" icon="swap-horizontal" expanded={expanded.variations} onToggle={() => toggle('variations')} testID="section-variations"
+              headerAction={canDecide ? (
+                <Pressable testID="create-variation-btn"
+                  onPress={() => { setFormValues({}); setActiveForm({ kind: 'create-variation' }); }}
+                  hitSlop={10}>
+                  <Ionicons name="add-circle-outline" size={20} color={theme.color.brand} />
+                </Pressable>
+              ) : undefined}>
               <FilterRow
                 options={[['all', 'All'], ['pending', 'Pending'], ['approved', 'Approved'], ['rejected', 'Rejected'], ['implemented', 'Implemented']]}
                 value={variationFilter} onChange={(v) => setVariationFilter(v as any)} testIDPrefix="variation-filter" />
@@ -370,7 +469,8 @@ export default function CommercialWorkspaceScreen() {
               ) : (
                 filterVariations(summary.variations, variationFilter).map((v) => (
                   <VariationCard key={v.id} variation={v} canDecide={canDecide}
-                    deciding={decidingId === v.id} onDecide={onDecide} />
+                    deciding={decidingId === v.id} onDecide={onDecide}
+                    onSubmit={onSubmitVariation} onSendForReview={onSendForReview} />
                 ))
               )}
             </Section>
@@ -403,7 +503,9 @@ export default function CommercialWorkspaceScreen() {
                   ) : (
                     filterPaymentRequests(summary.payment_requests, prFilter).map((pr) => (
                       <PaymentRequestRow key={pr.id} pr={pr} payments={summary.payments}
-                        milestone={summary.milestones.find((m) => m.id === pr.milestone_id) || null} />
+                        milestone={summary.milestones.find((m) => m.id === pr.milestone_id) || null}
+                        canRecord={canDecide}
+                        onRecordPayment={() => { setFormValues({ amount: String(pr.amount) }); setActiveForm({ kind: 'record-payment', paymentRequestId: pr.id }); }} />
                     ))
                   )}
                 </>
@@ -520,6 +622,42 @@ export default function CommercialWorkspaceScreen() {
         ]}
         values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
       />
+
+      <FormModal
+        visible={activeForm?.kind === 'create-variation'}
+        title="Create Variation" testID="form-create-variation"
+        fields={[
+          { key: 'title', label: 'Title', placeholder: 'e.g. Additional foundation waterproofing' },
+          { key: 'description', label: 'Description' },
+          { key: 'original_cost', label: 'Original Cost (₹)', keyboardType: 'numeric', placeholder: '0' },
+          { key: 'proposed_cost', label: 'Proposed Cost (₹)', keyboardType: 'numeric' },
+          { key: 'time_impact_days', label: 'Schedule Impact (days, optional)', keyboardType: 'numeric' },
+        ]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
+
+      <FormModal
+        visible={activeForm?.kind === 'create-payment-request'}
+        title="Raise Payment Request" testID="form-create-payment-request"
+        fields={[
+          { key: 'amount', label: 'Amount (₹)', keyboardType: 'numeric' },
+          { key: 'raised_date', label: 'Raised Date (YYYY-MM-DD)', placeholder: new Date().toISOString().slice(0, 10) },
+          { key: 'due_date', label: 'Due Date (YYYY-MM-DD)' },
+        ]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
+
+      <FormModal
+        visible={activeForm?.kind === 'record-payment'}
+        title="Record Payment" testID="form-record-payment"
+        fields={[
+          { key: 'amount', label: 'Amount (₹)', keyboardType: 'numeric' },
+          { key: 'date', label: 'Payment Date (YYYY-MM-DD)', placeholder: new Date().toISOString().slice(0, 10) },
+          { key: 'method', label: 'Method', placeholder: 'e.g. bank_transfer' },
+          { key: 'reference', label: 'Reference (optional)', placeholder: 'e.g. cheque or UTR number' },
+        ]}
+        values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
+      />
     </SafeAreaView>
   );
 }
@@ -633,10 +771,12 @@ const MILESTONE_STATUS_LABEL: Record<string, string> = {
   payment_requested: 'Completed', paid: 'Completed', closed: 'Completed',
 };
 
-function MilestoneRow({ milestone, linkedPr, canEdit, onEdit }: {
+function MilestoneRow({ milestone, linkedPr, canEdit, onEdit, canRaisePr, onRaisePr }: {
   milestone: Milestone; linkedPr: PaymentRequest | null; canEdit?: boolean; onEdit?: () => void;
+  canRaisePr?: boolean; onRaisePr?: () => void;
 }) {
   const done = ['achieved', 'payment_requested', 'paid', 'closed'].includes(milestone.status);
+  const canRaise = canRaisePr && milestone.status === 'achieved' && !linkedPr;
   return (
     <View style={styles.row} testID={`milestone-${milestone.id}`}>
       <Ionicons name={done ? 'checkmark-circle' : 'ellipse-outline'} size={18}
@@ -647,6 +787,11 @@ function MilestoneRow({ milestone, linkedPr, canEdit, onEdit }: {
           {milestone.planned_percent}% · {formatInr(milestone.contract_value)} · {formatDate(milestone.planned_date)}
           {linkedPr ? ` · ${linkedPr.status}` : ''}
         </Text>
+        {canRaise && (
+          <Pressable testID={`raise-pr-${milestone.id}`} onPress={onRaisePr} style={styles.raisePrLink}>
+            <Text style={styles.raisePrLinkText}>Raise Payment Request</Text>
+          </Pressable>
+        )}
       </View>
       {canEdit && (
         <Pressable testID={`edit-milestone-${milestone.id}`} onPress={onEdit} hitSlop={10} style={{ marginRight: 8 }}>
@@ -658,9 +803,13 @@ function MilestoneRow({ milestone, linkedPr, canEdit, onEdit }: {
   );
 }
 
-function PaymentRequestRow({ pr, payments, milestone }: { pr: PaymentRequest; payments: Payment[]; milestone: Milestone | null }) {
+function PaymentRequestRow({ pr, payments, milestone, canRecord, onRecordPayment }: {
+  pr: PaymentRequest; payments: Payment[]; milestone: Milestone | null;
+  canRecord?: boolean; onRecordPayment?: () => void;
+}) {
   const paidAmount = payments.filter((p) => p.payment_request_id === pr.id).reduce((s, p) => s + p.amount, 0);
   const remaining = pr.amount - paidAmount;
+  const canPay = canRecord && remaining > 0 && !['cancelled', 'draft'].includes(pr.status);
   return (
     <View style={styles.row} testID={`payment-request-${pr.id}`}>
       <View style={{ flex: 1 }}>
@@ -669,6 +818,11 @@ function PaymentRequestRow({ pr, payments, milestone }: { pr: PaymentRequest; pa
           Remaining: {formatInr(remaining)} · Due {formatDate(pr.due_date)}
           {milestone ? ` · ${milestone.name}` : ''}
         </Text>
+        {canPay && (
+          <Pressable testID={`record-payment-${pr.id}`} onPress={onRecordPayment} style={styles.recordPaymentLink}>
+            <Text style={styles.recordPaymentLinkText}>Record Payment</Text>
+          </Pressable>
+        )}
       </View>
       <Text style={[styles.statusPill, pr.status === 'overdue' && styles.statusPillError]}>{pr.status}</Text>
     </View>
@@ -688,9 +842,10 @@ function PaymentRow({ payment }: { payment: Payment }) {
   );
 }
 
-function VariationCard({ variation, canDecide, deciding, onDecide }: {
+function VariationCard({ variation, canDecide, deciding, onDecide, onSubmit, onSendForReview }: {
   variation: Variation; canDecide: boolean; deciding: boolean;
   onDecide: (id: string, decision: 'approved' | 'rejected') => void;
+  onSubmit: (id: string) => void; onSendForReview: (id: string) => void;
 }) {
   const pending = ['submitted', 'client_review'].includes(variation.status);
   const afterCost = variation.status === 'approved' ? variation.approved_cost : variation.proposed_cost;
@@ -709,7 +864,17 @@ function VariationCard({ variation, canDecide, deciding, onDecide }: {
         {variation.time_impact_days > 0 && <Text style={styles.impactChip}>+{variation.time_impact_days}d</Text>}
       </View>
       <Text style={styles.mutedText}>Raised by {variation.raised_by_user_name}{variation.approved_by_user_name ? ` · decided by ${variation.approved_by_user_name}` : ''}</Text>
-      {pending && canDecide ? (
+      {variation.status === 'draft' && canDecide ? (
+        <Pressable testID={`variation-submit-${variation.id}`} disabled={deciding}
+          onPress={() => onSubmit(variation.id)} style={styles.primaryBtn}>
+          <Text style={styles.primaryBtnText}>SUBMIT</Text>
+        </Pressable>
+      ) : variation.status === 'submitted' && canDecide ? (
+        <Pressable testID={`variation-send-review-${variation.id}`} disabled={deciding}
+          onPress={() => onSendForReview(variation.id)} style={styles.primaryBtn}>
+          <Text style={styles.primaryBtnText}>SEND FOR CLIENT REVIEW</Text>
+        </Pressable>
+      ) : pending && canDecide ? (
         <View style={styles.variationActionsRow}>
           <Pressable testID={`variation-reject-${variation.id}`} disabled={deciding}
             onPress={() => onDecide(variation.id, 'rejected')} style={styles.rejectButton}>
@@ -784,6 +949,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: theme.spacing.md, justifyContent: 'center',
   },
   viewHistoryText: { color: theme.color.brand, fontWeight: '700', fontSize: 14 },
+  raisePrLink: { marginTop: 4 },
+  raisePrLinkText: { color: theme.color.brand, fontSize: 12, fontWeight: '700' },
+  revisionNote: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 8,
+    paddingVertical: 8, paddingHorizontal: 10, backgroundColor: theme.color.surface,
+    borderRadius: theme.radius.sm,
+  },
+  revisionNoteText: { flex: 1, color: theme.color.textDim, fontSize: 12 },
+  healthBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm,
+    marginHorizontal: theme.spacing.md, marginTop: theme.spacing.md,
+    padding: theme.spacing.md, borderRadius: theme.radius.md, borderWidth: 1,
+  },
+  healthBannerGood: { backgroundColor: 'rgba(34,197,94,0.1)', borderColor: theme.color.success },
+  healthBannerAttention: { backgroundColor: 'rgba(234,179,8,0.1)', borderColor: theme.color.warning },
+  healthBannerEmoji: { fontSize: 24 },
+  healthBannerTitle: { color: theme.color.text, fontSize: 14, fontWeight: '800' },
+  healthBannerSubtitle: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
+  recordPaymentLink: { marginTop: 4 },
+  recordPaymentLinkText: { color: theme.color.brand, fontSize: 12, fontWeight: '700' },
   historyModalHeader: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
     marginBottom: theme.spacing.md,

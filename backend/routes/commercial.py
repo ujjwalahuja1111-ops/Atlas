@@ -196,6 +196,7 @@ class PaymentRequestCreate(BaseModel):
 async def create_payment_request(req: PaymentRequestCreate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        await ce.assert_project_visible(req.project_id, user)
         return await ce.create_payment_request(actor=user, **req.model_dump())
     except ValueError as e:
         _raise_for(e)
@@ -219,6 +220,10 @@ async def set_payment_request_status(payment_request_id: str, req: PaymentReques
                                      user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        pr = await ce.get_payment_request(payment_request_id)
+        if not pr:
+            raise CommercialNotFoundError(f"Payment request '{payment_request_id}' not found.")
+        await ce.assert_project_visible(pr["project_id"], user)
         return await ce.transition_payment_request_status(payment_request_id, req.status, actor=user)
     except ValueError as e:
         _raise_for(e)
@@ -241,6 +246,10 @@ class PaymentCreate(BaseModel):
 async def record_payment(req: PaymentCreate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        pr = await ce.get_payment_request(req.payment_request_id)
+        if not pr:
+            raise CommercialNotFoundError(f"Payment request '{req.payment_request_id}' not found.")
+        await ce.assert_project_visible(pr["project_id"], user)
         return await ce.record_payment(actor=user, **req.model_dump())
     except ValueError as e:
         _raise_for(e)
@@ -275,6 +284,7 @@ class VariationCreate(BaseModel):
 async def create_variation(req: VariationCreate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        await ce.assert_project_visible(req.project_id, user)
         return await ce.create_variation(actor=user, **req.model_dump())
     except ValueError as e:
         _raise_for(e)
@@ -293,6 +303,10 @@ async def list_variations(project_id: str, user: dict = Depends(get_current_user
 async def submit_variation(variation_id: str, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        variation = await ce.get_variation(variation_id)
+        if not variation:
+            raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
+        await ce.assert_project_visible(variation["project_id"], user)
         return await ce.submit_variation(variation_id, actor=user)
     except ValueError as e:
         _raise_for(e)
@@ -302,6 +316,10 @@ async def submit_variation(variation_id: str, user: dict = Depends(get_current_u
 async def send_variation_for_client_review(variation_id: str, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
+        variation = await ce.get_variation(variation_id)
+        if not variation:
+            raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
+        await ce.assert_project_visible(variation["project_id"], user)
         return await ce.send_variation_to_client_review(variation_id, actor=user)
     except ValueError as e:
         _raise_for(e)
@@ -323,6 +341,10 @@ async def decide_variation(variation_id: str, req: VariationDecision, user: dict
     if user["role"] not in ("management", "project_manager", "client"):
         raise HTTPException(status_code=403, detail="Not authorized to decide on this variation.")
     try:
+        variation = await ce.get_variation(variation_id)
+        if not variation:
+            raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
+        await ce.assert_project_visible(variation["project_id"], user)
         return await ce.decide_variation(variation_id, req.decision, actor=user, approved_cost=req.approved_cost)
     except ValueError as e:
         _raise_for(e)
@@ -438,6 +460,6 @@ async def get_project_commercial_summary(project_id: str, user: dict = Depends(g
     except ValueError as e:
         _raise_for(e)
     summary = await ce.get_project_commercial_summary(project_id)
-    if summary and user["role"] != "management":
+    if summary and user["role"] not in ("management", "project_manager"):
         summary = {**summary, "budget": None}
     return summary

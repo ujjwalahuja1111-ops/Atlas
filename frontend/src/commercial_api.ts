@@ -229,6 +229,86 @@ export async function apiUpdateMilestone(milestoneId: string, input: MilestoneUp
 }
 
 // ---------------------------------------------------------------------------
+// CP-02 — Commercial Lifecycle Completion. Variation create/submit/
+// send-for-review, Payment Request create/status, Payment recording.
+// apiDecideVariation already existed (client-facing approve/reject);
+// everything below is the PM/Management-facing half of the same
+// workflows.
+// ---------------------------------------------------------------------------
+
+export type VariationCreateInput = {
+  project_id: string; title: string; description: string;
+  original_cost: number; proposed_cost: number; time_impact_days?: number;
+};
+
+export async function apiCreateVariation(input: VariationCreateInput): Promise<Variation> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/variations`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error('create-variation');
+  return r.json();
+}
+
+export async function apiSubmitVariation(variationId: string): Promise<Variation> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/variations/${variationId}/submit`, {
+    method: 'POST',
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error('submit-variation');
+  return r.json();
+}
+
+export async function apiSendVariationForClientReview(variationId: string): Promise<Variation> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/variations/${variationId}/send-for-client-review`, {
+    method: 'POST',
+    headers: await authHeaders(),
+  });
+  if (!r.ok) throw new Error('send-variation-for-review');
+  return r.json();
+}
+
+export type PaymentRequestCreateInput = {
+  project_id: string; milestone_id: string; amount: number; raised_date: string; due_date: string;
+};
+
+export async function apiCreatePaymentRequest(input: PaymentRequestCreateInput): Promise<PaymentRequest> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/payment-requests`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error('create-payment-request');
+  return r.json();
+}
+
+export async function apiSetPaymentRequestStatus(paymentRequestId: string, status: string): Promise<PaymentRequest> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/payment-requests/${paymentRequestId}/status`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ status }),
+  });
+  if (!r.ok) throw new Error('set-payment-request-status');
+  return r.json();
+}
+
+export type PaymentRecordInput = {
+  payment_request_id: string; amount: number; date: string; method: string;
+  reference?: string; is_adjustment?: boolean;
+};
+
+export async function apiRecordPayment(input: PaymentRecordInput): Promise<Payment> {
+  const r = await apiFetch(`${BACKEND}/api/commercial/payments`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(input),
+  });
+  if (!r.ok) throw new Error('record-payment');
+  return r.json();
+}
+
+// ---------------------------------------------------------------------------
 // Client Experience Layer (CX-01) — thin, client-safe views over the
 // same commercial_engine data above. Never includes Budget/Forecast/
 // internal cost fields — see reasoning_engine.client_investment_summary's

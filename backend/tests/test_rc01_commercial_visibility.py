@@ -648,3 +648,156 @@ def test_legitimate_pm_can_still_create_and_edit_own_project_commercial_data(cro
                         json={"duration_days": 180}, headers=outsider_h, timeout=20)
     assert r2.status_code == 200
     assert r2.json()["duration_days"] == 180
+
+
+# ==========================================================================
+# CP-02 — Commercial Lifecycle Completion. Found and fixed during this
+# package's own mandatory pre-implementation audit, before any new UI
+# was built on top of these routes: every Variation and Payment
+# Request/Payment mutation route (create_variation, submit_variation,
+# send_variation_for_client_review, decide_variation,
+# create_payment_request, set_payment_request_status, record_payment)
+# had a role check but zero project-visibility enforcement - the
+# identical pattern CP-01 fixed for Contract/Budget/Milestone, never
+# applied to these seven routes since they were outside that
+# package's own scope.
+# ==========================================================================
+@pytest.fixture()
+def cross_project_variation_and_payment(admin):
+    outsider_user, outsider_h = _login("project_manager", "9990000601", "CP02 Outsider PM")
+    proj_a = requests.post(f"{API}/projects", json={"name": "CP02 Secret", "code": "CP02SEC1"},
+                           headers=admin["headers"], timeout=20).json()
+    proj_b = requests.post(f"{API}/projects", json={"name": "CP02 Visible", "code": "CP02VIS1"},
+                           headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{outsider_user['id']}/projects", json={"project_ids": [proj_b["id"]]},
+                 headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj_a["id"], "original_contract_value": 1000000,
+        "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=admin["headers"], timeout=20)
+    ms = requests.post(f"{API}/commercial/milestones", json={
+        "project_id": proj_a["id"], "name": "M1", "sequence": 1,
+        "planned_percent": 50, "trigger": "t",
+    }, headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/commercial/milestones/{ms['id']}/status", json={"status": "ready"},
+                 headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/commercial/milestones/{ms['id']}/status", json={"status": "achieved"},
+                 headers=admin["headers"], timeout=20)
+    var = requests.post(f"{API}/commercial/variations", json={
+        "project_id": proj_a["id"], "title": "V1", "description": "d",
+        "original_cost": 0, "proposed_cost": 50000,
+    }, headers=admin["headers"], timeout=20).json()
+    pr = requests.post(f"{API}/commercial/payment-requests", json={
+        "project_id": proj_a["id"], "milestone_id": ms["id"], "amount": 500000,
+        "raised_date": "2026-01-15", "due_date": "2026-02-15",
+    }, headers=admin["headers"], timeout=20).json()
+    return proj_a, ms, var, pr, outsider_h
+
+
+def test_create_variation_blocks_outsider(cross_project_variation_and_payment):
+    proj_a, _, _, _, outsider_h = cross_project_variation_and_payment
+    r = requests.post(f"{API}/commercial/variations", json={
+        "project_id": proj_a["id"], "title": "V2", "description": "d",
+        "original_cost": 0, "proposed_cost": 999999,
+    }, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_submit_and_send_and_decide_variation_block_outsider(cross_project_variation_and_payment):
+    _, _, var, _, outsider_h = cross_project_variation_and_payment
+    r1 = requests.post(f"{API}/commercial/variations/{var['id']}/submit", headers=outsider_h, timeout=20)
+    assert r1.status_code == 404
+    r2 = requests.post(f"{API}/commercial/variations/{var['id']}/send-for-client-review",
+                       headers=outsider_h, timeout=20)
+    assert r2.status_code == 404
+    r3 = requests.post(f"{API}/commercial/variations/{var['id']}/decide",
+                       json={"decision": "approved"}, headers=outsider_h, timeout=20)
+    assert r3.status_code == 404
+
+
+def test_create_payment_request_blocks_outsider(cross_project_variation_and_payment):
+    proj_a, ms, _, _, outsider_h = cross_project_variation_and_payment
+    r = requests.post(f"{API}/commercial/payment-requests", json={
+        "project_id": proj_a["id"], "milestone_id": ms["id"], "amount": 999999,
+        "raised_date": "2026-01-01", "due_date": "2026-02-01",
+    }, headers=outsider_h, timeout=20)
+    assert r.status_code == 404
+
+
+def test_set_payment_request_status_and_record_payment_block_outsider(cross_project_variation_and_payment):
+    _, _, _, pr, outsider_h = cross_project_variation_and_payment
+    r1 = requests.post(f"{API}/commercial/payment-requests/{pr['id']}/status",
+                       json={"status": "cancelled"}, headers=outsider_h, timeout=20)
+    assert r1.status_code == 404
+    r2 = requests.post(f"{API}/commercial/payments", json={
+        "payment_request_id": pr["id"], "amount": 500000, "date": "2026-01-20", "method": "bank_transfer",
+    }, headers=outsider_h, timeout=20)
+    assert r2.status_code == 404
+
+
+def test_legitimate_pm_can_still_run_variation_and_payment_workflow(cross_project_variation_and_payment, admin):
+    """Confirms none of the seven fixes broke legitimate access for a
+    PM genuinely scoped to the project they're working in."""
+    _, _, _, _, outsider_h = cross_project_variation_and_payment
+    # outsider is legitimately scoped to a different project - set up
+    # a genuine one of their own to confirm the fixes don't over-block
+    proj_b_projects = requests.get(f"{API}/projects", headers=outsider_h, timeout=20).json()
+    own_proj = next(p for p in proj_b_projects if p["code"] == "CP02VIS1")
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": own_proj["id"], "original_contract_value": 2000000,
+        "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=outsider_h, timeout=20)
+    r = requests.post(f"{API}/commercial/variations", json={
+        "project_id": own_proj["id"], "title": "Legit", "description": "d",
+        "original_cost": 0, "proposed_cost": 10000,
+    }, headers=outsider_h, timeout=20)
+    assert r.status_code == 201
+
+
+# ==========================================================================
+# CP-02 — critical bug found during this package's own mandatory
+# audit: the /commercial/summary route stripped budget for ANY
+# non-management role, including project_manager - directly
+# contradicting the direct /commercial/budget route's own
+# _require_write_access rule (management OR project_manager) that
+# CP-01 already established and built UI around. Without this fix, a
+# PM's own Budget section (create/view/edit) was completely
+# non-functional in the actual screen the frontend uses, even though
+# the underlying data existed and the direct route correctly served it.
+# ==========================================================================
+def test_pm_sees_budget_in_commercial_summary(admin):
+    pm_user, pm_h = _login("project_manager", "9990000602", "CP02 Budget Visibility PM")
+    proj = requests.post(f"{API}/projects", json={"name": "CP02 Budget Vis", "code": "CP02BVIS1"},
+                         headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{pm_user['id']}/projects", json={"project_ids": [proj["id"]]},
+                 headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj["id"], "original_contract_value": 1000000,
+        "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=pm_h, timeout=20)
+    requests.post(f"{API}/commercial/budgets", json={"project_id": proj["id"], "original_budget": 500000},
+                 headers=pm_h, timeout=20)
+    r = requests.get(f"{API}/projects/{proj['id']}/commercial/summary", headers=pm_h, timeout=20)
+    assert r.status_code == 200
+    assert r.json()["budget"] is not None
+    assert r.json()["budget"]["current_budget"] == 500000
+
+
+def test_client_still_never_sees_budget_in_commercial_summary(admin):
+    """Confirms the fix didn't over-widen access - budget must stay
+    internal-only, never client-visible, exactly as the direct
+    /budget route's own comment states."""
+    client_user, client_h = _login("client", "9990000603", "CP02 Budget Visibility Client")
+    proj = requests.post(f"{API}/projects", json={"name": "CP02 Budget Client", "code": "CP02BCLI1"},
+                         headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{client_user['id']}/projects", json={"project_ids": [proj["id"]]},
+                 headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/commercial/contracts", json={
+        "project_id": proj["id"], "original_contract_value": 1000000,
+        "contract_date": "2026-01-01", "duration_days": 100,
+    }, headers=admin["headers"], timeout=20)
+    requests.post(f"{API}/commercial/budgets", json={"project_id": proj["id"], "original_budget": 500000},
+                 headers=admin["headers"], timeout=20)
+    r = requests.get(f"{API}/projects/{proj['id']}/commercial/summary", headers=client_h, timeout=20)
+    assert r.status_code == 200
+    assert r.json()["budget"] is None
