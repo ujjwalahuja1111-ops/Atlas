@@ -210,6 +210,19 @@ export default function ProjectDetail() {
             </View>
           )}
 
+          {/* EX-01 — Unified Execution Workspace, the primary
+              destination for this project; every other card below
+              remains reachable as supporting detail. */}
+          <Pressable onPress={() => router.push(`/workspace/${id}`)} style={[styles.workflowCard, styles.workspacePrimaryCard]} testID="open-workspace">
+            <View style={styles.commercialHeaderRow}>
+              <Text style={[styles.sectionLabel, { color: theme.color.onBrand }]}>OPEN WORKSPACE</Text>
+              <View style={styles.commercialHeaderLink}>
+                <Ionicons name="chevron-forward" size={16} color={theme.color.onBrand} />
+              </View>
+            </View>
+            <Text style={styles.workspaceCardSubtitle}>Everything for this project — one screen</Text>
+          </Pressable>
+
           {/* Site Progress (Beta-04) — one operational story composed
               from Reality/Workflow/Operations, not a new engine. */}
           <Pressable onPress={() => router.push(`/site-progress/${id}`)} style={styles.workflowCard} testID="open-site-progress">
@@ -535,6 +548,8 @@ const styles = StyleSheet.create({
   workflowCard: { marginBottom: theme.spacing.md, padding: theme.spacing.md,
                  backgroundColor: theme.color.surface2, borderRadius: theme.radius.md,
                  borderWidth: 1, borderColor: theme.color.border },
+  workspacePrimaryCard: { backgroundColor: theme.color.brand, borderColor: theme.color.brand },
+  workspaceCardSubtitle: { color: theme.color.onBrand, fontSize: 12, marginTop: 4, opacity: 0.85 },
   workflowBtn: { flexDirection: 'row', alignItems: 'center', gap: 10, height: 48,
                 paddingHorizontal: 4 },
   workflowBtnText: { flex: 1, color: theme.color.text, fontSize: 13, fontWeight: '800' },
