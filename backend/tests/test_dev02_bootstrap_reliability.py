@@ -1558,3 +1558,71 @@ async def test_variation_approved_automatically_surfaces_contract_review_insight
     review = [i for i in after if i["rule_id"] == "commercial.variation_approved_needs_contract_review"]
     assert len(review) == 1
     assert review[0]["suggested_responsible_role"] == "management"
+
+
+# ==========================================================================
+# CM-01 — Continuous Project Memory. "Since Last Visit" is a pure
+# composition over the existing commercial_events ledger - these tests
+# confirm the actual promise: an honest empty first visit, a genuinely
+# complete accounting of everything that happened since, and a
+# correctly-scoped visit boundary that neither repeats old events nor
+# misses new ones.
+# ==========================================================================
+async def test_first_visit_is_honestly_empty_not_fabricated():
+    admin = {"id": "cm01_u1", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="CM01 First Visit Test", code="CM01FV1")
+    result = await reasoning_engine.get_since_last_visit(project["id"], user=admin)
+    assert result["is_first_visit"] is True
+    assert result["since"] is None
+    assert result["changes"] == []
+
+
+async def test_second_visit_shows_everything_since_first_visit():
+    admin = {"id": "cm01_u2", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="CM01 Second Visit Test", code="CM01SV1")
+
+    # First visit - records the boundary, nothing to show yet.
+    await reasoning_engine.get_since_last_visit(project["id"], user=admin)
+
+    # Real activity happens "while the user is away".
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1,
+        planned_percent=20, trigger="foundation complete")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+
+    result = await reasoning_engine.get_since_last_visit(project["id"], user=admin)
+    assert result["is_first_visit"] is False
+    kinds = [c["kind"] for c in result["changes"]]
+    assert "contract_created" in kinds
+    assert "milestone_created" in kinds
+    assert kinds.count("milestone_status_changed") == 2  # ready, then achieved
+
+    achieved_entry = next(c for c in result["changes"] if c["kind"] == "milestone_status_changed"
+                          and c["entity_id"] == ms["id"] and "completed" in c["what_changed"].lower())
+    assert "AI Suggestions" in achieved_entry["why_it_matters"]
+
+
+async def test_third_visit_immediately_after_is_empty():
+    admin = {"id": "cm01_u3", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="CM01 Third Visit Test", code="CM01TV1")
+    await reasoning_engine.get_since_last_visit(project["id"], user=admin)
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    await reasoning_engine.get_since_last_visit(project["id"], user=admin)  # second visit, consumes the event
+
+    third = await reasoning_engine.get_since_last_visit(project["id"], user=admin)
+    assert third["changes"] == []
+
+
+async def test_since_last_visit_blocks_outsider():
+    admin = {"id": "cm01_u4", "name": "Admin", "role": "management"}
+    outsider = {"id": "cm01_outsider", "name": "Outsider", "role": "project_manager",
+               "scope_projects": True, "assigned_project_ids": []}
+    project = await memory_engine.insert_project(name="CM01 Security Test", code="CM01SEC1")
+    with pytest.raises(reasoning_engine.ReasoningNotFoundError):
+        await reasoning_engine.get_since_last_visit(project["id"], user=outsider)

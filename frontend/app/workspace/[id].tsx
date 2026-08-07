@@ -17,7 +17,7 @@ import { useRouter, useLocalSearchParams } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, type ViewRole } from '@/src/roles';
 import { apiMyDay, type MyDayResponse, type MyDayPm, type MyDaySupervisor } from '@/src/ops_api';
-import { apiExplainHealth, apiListInsights, type ExplainedHealth, type Insight } from '@/src/cre_api';
+import { apiExplainHealth, apiListInsights, apiGetSinceLastVisit, type ExplainedHealth, type Insight, type SinceLastVisit } from '@/src/cre_api';
 import { apiGetCommercialSummary, apiListCommercialEvents, type CommercialSummary, type CommercialEvent } from '@/src/commercial_api';
 import { apiListProjects, apiSetLifecycleStage, type Project } from '@/src/api';
 
@@ -67,6 +67,7 @@ export default function UnifiedWorkspace() {
   const [commercial, setCommercial] = useState<CommercialSummary>(null);
   const [events, setEvents] = useState<CommercialEvent[]>([]);
   const [stageChanging, setStageChanging] = useState(false);
+  const [sinceLastVisit, setSinceLastVisit] = useState<SinceLastVisit | null>(null);
 
   const currentProject = projects.find((p) => p.id === id);
 
@@ -87,6 +88,14 @@ export default function UnifiedWorkspace() {
     } catch {
       setLoadError('Could not load this project\'s workspace.');
     }
+  }, [id]);
+
+  // CM-01 — deliberately separate from load()/onRefresh: this call
+  // itself records a fresh visit, so it must fire exactly once per
+  // genuine app-open, never on a pull-to-refresh.
+  useEffect(() => {
+    if (!id) return;
+    apiGetSinceLastVisit(id).then(setSinceLastVisit).catch(() => setSinceLastVisit(null));
   }, [id]);
 
   useEffect(() => {
@@ -201,6 +210,34 @@ export default function UnifiedWorkspace() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.color.brand} />}
       >
         {loadError && <Text style={styles.errorText} testID="workspace-load-error">{loadError}</Text>}
+
+        {/* SINCE YOU WERE LAST HERE — the first thing this task's own
+            mission statement asks for. Every entry reuses IN-01's own
+            deep-link URL shapes for "Resume" - no new navigation
+            invented, no AI-generated summary, every line derived
+            directly from the existing commercial_events ledger. */}
+        {sinceLastVisit && !sinceLastVisit.is_first_visit && sinceLastVisit.changes.length > 0 && (
+          <View style={styles.sinceLastVisitCard} testID="since-last-visit">
+            <Text style={styles.sinceLastVisitTitle}>Since you were last here</Text>
+            {sinceLastVisit.changes.slice(0, 6).map((c) => (
+              <Pressable
+                key={c.event_id}
+                testID={`since-last-visit-${c.event_id}`}
+                onPress={() => {
+                  if (c.entity_type === 'milestone') router.push(`/commercial/${id}?action=edit-milestone&milestoneId=${c.entity_id}`);
+                  else if (c.entity_type === 'variation') router.push(`/commercial/${id}?action=view-variation&variationId=${c.entity_id}`);
+                  else openCommercial();
+                }}
+                style={styles.sinceLastVisitRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.rowTitle}>{c.what_changed}</Text>
+                  <Text style={styles.rowSubtext}>{c.why_it_matters}</Text>
+                </View>
+                <Text style={styles.resumeLink}>Resume</Text>
+              </Pressable>
+            ))}
+          </View>
+        )}
 
         {/* LIFECYCLE STAGE SELECTOR — a deliberate, PM-set signal
             (Product Decision, PL-01): the workspace adapts to where
@@ -465,6 +502,16 @@ const styles = StyleSheet.create({
   },
   stageFocusTitle: { color: theme.color.text, fontSize: 13, fontWeight: '800' },
   stageFocusBody: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
+  sinceLastVisitCard: {
+    backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, borderWidth: 1,
+    borderColor: theme.color.brand, padding: theme.spacing.md, marginBottom: theme.spacing.md,
+  },
+  sinceLastVisitTitle: { color: theme.color.text, fontSize: 14, fontWeight: '800', marginBottom: theme.spacing.sm },
+  sinceLastVisitRow: {
+    flexDirection: 'row', alignItems: 'center', paddingVertical: 8,
+    borderTopWidth: 1, borderTopColor: theme.color.border,
+  },
+  resumeLink: { color: theme.color.brand, fontSize: 12, fontWeight: '700', marginLeft: 8 },
   healthStrip: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: theme.spacing.md },
   healthChip: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   healthDot: { width: 8, height: 8, borderRadius: 4 },

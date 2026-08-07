@@ -87,6 +87,14 @@ async def run_reasoning(project_id: str, req: RunReasoningRequest,
         _raise_for(e)
 
 
+@router.get("/projects/{project_id}/since-last-visit")
+async def get_since_last_visit(project_id: str, user: dict = Depends(get_current_user)):
+    try:
+        return await reasoning_engine.get_since_last_visit(project_id, user=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 @router.get("/projects/{project_id}/insights")
 async def list_insights(project_id: str,
                         status: Optional[str] = None,

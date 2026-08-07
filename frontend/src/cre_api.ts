@@ -61,6 +61,20 @@ export async function apiExplainHealth(projectId: string): Promise<ExplainedHeal
   return get(`/api/projects/${projectId}/explain-health`);
 }
 
+export type SinceLastVisitChange = {
+  event_id: string; kind: string; entity_type: string; entity_id: string;
+  what_changed: string; why_it_matters: string; actor_user_name: string; created_at: string;
+};
+
+export type SinceLastVisit = {
+  since: string | null; is_first_visit: boolean;
+  changes: SinceLastVisitChange[]; visit_recorded_at: string;
+};
+
+export async function apiGetSinceLastVisit(projectId: string): Promise<SinceLastVisit> {
+  return get(`/api/projects/${projectId}/since-last-visit`);
+}
+
 export type Insight = {
   id: string;
   rule_id: string;

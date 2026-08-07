@@ -600,6 +600,31 @@ async def set_project_lifecycle_stage(project_id: str, stage: str) -> Optional[d
     return await get_project(project_id)
 
 
+async def get_last_visit(project_id: str, user_id: str) -> Optional[str]:
+    """CM-01 — the one new piece of state this package genuinely
+    requires: when this user last opened this project's own Workspace.
+    Nothing existing tracks this (confirmed by direct search — CRE's
+    own last_seen_at is unrelated, tracking insight recurrence, not
+    user visits)."""
+    doc = await db.project_visits.find_one({"project_id": project_id, "user_id": user_id}, {"_id": 0})
+    return doc["visited_at"] if doc else None
+
+
+async def record_visit(project_id: str, user_id: str) -> str:
+    """Upsert-only, one document per (project, user) pair — never a
+    growing log, since only the single most recent visit matters for
+    "what changed since you were last here." Returns the NEW visit
+    timestamp (the caller typically wants the OLD one first, via
+    get_last_visit, before calling this)."""
+    now = _now()
+    await db.project_visits.update_one(
+        {"project_id": project_id, "user_id": user_id},
+        {"$set": {"project_id": project_id, "user_id": user_id, "visited_at": now}},
+        upsert=True,
+    )
+    return now
+
+
 # ---------------------------------------------------------------------------
 # Reference Portfolio (RP-01) — commercial reference data.
 #

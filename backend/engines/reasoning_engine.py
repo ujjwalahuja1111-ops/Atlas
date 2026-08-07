@@ -2965,3 +2965,87 @@ async def portfolio_control_center(*, user: dict) -> dict:
     }
 
     return {"summary": summary, "projects": rows, "generated_at": _iso(_now())}
+
+
+# ---------------------------------------------------------------------------
+# CM-01 — Continuous Project Memory. "Since Last Visit" is a pure
+# composition over the existing commercial_events ledger — no new
+# event stream, no new business logic, no AI. Every entry's "what
+# changed" and "why you should care" is derived deterministically from
+# the event's own kind and payload, which already exist.
+# ---------------------------------------------------------------------------
+
+_SINCE_LAST_VISIT_RULES: dict[str, Callable[[dict], tuple[str, str]]] = {
+    "contract_created": lambda e: (
+        "Contract created", "The commercial foundation for this project is now in place."),
+    "contract_updated": lambda e: (
+        "Contract terms updated", "Review the revised terms before relying on the old ones."),
+    "contract_status_changed": lambda e: (
+        f"Contract moved to '{e['payload'].get('to')}'",
+        "The contract's own status changed — confirm this matches what you expected."),
+    "budget_created": lambda e: (
+        "Budget created", "Cost tracking is now active for this project."),
+    "budget_revised": lambda e: (
+        "Budget revised", "The cost baseline changed — check the reason before assuming it's routine."),
+    "milestone_created": lambda e: (
+        "New milestone added", "A new billing/progress checkpoint now exists."),
+    "milestone_updated": lambda e: (
+        "Milestone terms updated", "Confirm the updated terms before treating them as final."),
+    "milestone_status_changed": lambda e: (
+        (f"Milestone completed", "This is likely ready to bill — check AI Suggestions.")
+        if e["payload"].get("to") == "achieved" else
+        (f"Milestone moved to '{e['payload'].get('to')}'", "Its status changed since you were last here.")),
+    "milestone_closed": lambda e: (
+        "Milestone closed", "This checkpoint is fully settled — nothing further needed here."),
+    "payment_request_raised": lambda e: (
+        "Payment request raised", "Money has been formally requested from the client."),
+    "payment_request_status_changed": lambda e: (
+        f"Payment request moved to '{e['payload'].get('to')}'",
+        "Its status changed — check whether it's now overdue or paid."),
+    "payment_received": lambda e: (
+        "Payment received", "Cash came in — outstanding balance has changed."),
+    "variation_created": lambda e: (
+        f"Variation raised: '{e['payload'].get('title', '')}'", "A new scope/cost change is on the table."),
+    "variation_submitted": lambda e: (
+        "Variation submitted", "It's now ready to send for client review."),
+    "variation_sent_for_client_review": lambda e: (
+        "Variation sent to client", "Waiting on the client's own decision now."),
+    "variation_approved": lambda e: (
+        f"Variation approved: '{e['payload'].get('title', '')}'",
+        "The contract's own value already changed automatically — worth a review."),
+    "variation_rejected": lambda e: (
+        f"Variation rejected: '{e['payload'].get('title', '')}'", "This scope change was declined."),
+}
+
+
+async def get_since_last_visit(project_id: str, *, user: dict) -> dict:
+    """The literal answer to "what changed since you were last here,"
+    for one project, one user. Records this visit as having happened
+    (so the *next* call only sees what's new after this one) —
+    callers that only want to peek without marking the visit should
+    not call this function."""
+    await _assert_project_visible(project_id, user)
+    previous_visit = await memory_engine.get_last_visit(project_id, user["id"])
+    new_visit = await memory_engine.record_visit(project_id, user["id"])
+
+    if previous_visit is None:
+        # First-ever visit: nothing to compare against — an honest
+        # empty list, not a fabricated "everything is new" summary.
+        return {"since": None, "is_first_visit": True, "changes": [], "visit_recorded_at": new_visit}
+
+    events = await commercial_engine.list_commercial_events(project_id, limit=200)
+    changes = []
+    for e in events:
+        if e["created_at"] <= previous_visit:
+            break  # events are returned newest-first; once we hit the boundary, stop
+        rule = _SINCE_LAST_VISIT_RULES.get(e["kind"])
+        if not rule:
+            continue
+        what, why = rule(e)
+        changes.append({
+            "event_id": e["id"], "kind": e["kind"], "entity_type": e["entity_type"],
+            "entity_id": e["entity_id"], "what_changed": what, "why_it_matters": why,
+            "actor_user_name": e["actor_user_name"], "created_at": e["created_at"],
+        })
+
+    return {"since": previous_visit, "is_first_visit": False, "changes": changes, "visit_recorded_at": new_visit}
