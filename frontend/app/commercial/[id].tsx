@@ -433,11 +433,18 @@ export default function CommercialWorkspaceScreen() {
 
             {/* CONTRACT — stays highly visible, immediately after Cash Flow */}
             <Section title="CONTRACT" icon="document-text" expanded={expanded.contract} onToggle={() => toggle('contract')} testID="section-contract"
-              headerAction={canDecide && summary.contract.status === 'draft' ? (
-                <Pressable testID="edit-contract-btn" onPress={openEditContract} hitSlop={10}>
-                  <Ionicons name="create-outline" size={18} color={theme.color.brand} />
-                </Pressable>
-              ) : undefined}>
+              headerAction={
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                  <Pressable testID="explain-contract-btn" onPress={() => router.push(`/explain/contract/${id}?projectId=${id}`)} hitSlop={10}>
+                    <Ionicons name="help-circle-outline" size={18} color={theme.color.textDim} />
+                  </Pressable>
+                  {canDecide && summary.contract.status === 'draft' && (
+                    <Pressable testID="edit-contract-btn" onPress={openEditContract} hitSlop={10}>
+                      <Ionicons name="create-outline" size={18} color={theme.color.brand} />
+                    </Pressable>
+                  )}
+                </View>
+              }>
               <View style={styles.tileGrid}>
                 <Tile label="Original Contract Value" value={formatInr(summary.contract.original_contract_value)} />
                 <Tile label="Current Contract Value" value={formatInr(summary.contract.current_contract_value)} />
@@ -837,6 +844,7 @@ function MilestoneRow({ milestone, linkedPr, canEdit, onEdit, canRaisePr, onRais
   milestone: Milestone; linkedPr: PaymentRequest | null; canEdit?: boolean; onEdit?: () => void;
   canRaisePr?: boolean; onRaisePr?: () => void;
 }) {
+  const router = useRouter();
   const done = ['achieved', 'payment_requested', 'paid', 'closed'].includes(milestone.status);
   const canRaise = canRaisePr && milestone.status === 'achieved' && !linkedPr;
   return (
@@ -855,6 +863,11 @@ function MilestoneRow({ milestone, linkedPr, canEdit, onEdit, canRaisePr, onRais
           </Pressable>
         )}
       </View>
+      <Pressable testID={`explain-milestone-${milestone.id}`}
+        onPress={() => router.push(`/explain/milestone/${milestone.id}?projectId=${milestone.project_id}`)}
+        hitSlop={10} style={{ marginRight: 8 }}>
+        <Ionicons name="help-circle-outline" size={18} color={theme.color.textDim} />
+      </Pressable>
       {canEdit && (
         <Pressable testID={`edit-milestone-${milestone.id}`} onPress={onEdit} hitSlop={10} style={{ marginRight: 8 }}>
           <Ionicons name="create-outline" size={16} color={theme.color.brand} />
@@ -869,6 +882,7 @@ function PaymentRequestRow({ pr, payments, milestone, canRecord, onRecordPayment
   pr: PaymentRequest; payments: Payment[]; milestone: Milestone | null;
   canRecord?: boolean; onRecordPayment?: () => void;
 }) {
+  const router = useRouter();
   const paidAmount = payments.filter((p) => p.payment_request_id === pr.id).reduce((s, p) => s + p.amount, 0);
   const remaining = pr.amount - paidAmount;
   const canPay = canRecord && remaining > 0 && !['cancelled', 'draft'].includes(pr.status);
@@ -886,12 +900,18 @@ function PaymentRequestRow({ pr, payments, milestone, canRecord, onRecordPayment
           </Pressable>
         )}
       </View>
+      <Pressable testID={`explain-payment-request-${pr.id}`}
+        onPress={() => router.push(`/explain/payment_request/${pr.id}?projectId=${pr.project_id}`)}
+        hitSlop={10} style={{ marginRight: 8 }}>
+        <Ionicons name="help-circle-outline" size={18} color={theme.color.textDim} />
+      </Pressable>
       <Text style={[styles.statusPill, pr.status === 'overdue' && styles.statusPillError]}>{pr.status}</Text>
     </View>
   );
 }
 
 function PaymentRow({ payment }: { payment: Payment }) {
+  const router = useRouter();
   return (
     <View style={styles.row} testID={`payment-${payment.id}`}>
       <Ionicons name="checkmark-circle" size={18} color={theme.color.success} />
@@ -899,6 +919,11 @@ function PaymentRow({ payment }: { payment: Payment }) {
         <Text style={styles.rowTitle}>{formatInr(payment.amount)}</Text>
         <Text style={styles.rowSubtext}>{formatDate(payment.date)} · {payment.method}{payment.reference ? ` · ${payment.reference}` : ''}</Text>
       </View>
+      <Pressable testID={`explain-payment-${payment.id}`}
+        onPress={() => router.push(`/explain/payment/${payment.id}?projectId=${payment.project_id}`)}
+        hitSlop={10} style={{ marginRight: 8 }}>
+        <Ionicons name="help-circle-outline" size={18} color={theme.color.textDim} />
+      </Pressable>
       <Text style={styles.statusPill}>{payment.status}</Text>
     </View>
   );
@@ -909,12 +934,20 @@ function VariationCard({ variation, canDecide, deciding, onDecide, onSubmit, onS
   onDecide: (id: string, decision: 'approved' | 'rejected') => void;
   onSubmit: (id: string) => void; onSendForReview: (id: string) => void;
 }) {
+  const router = useRouter();
   const pending = ['submitted', 'client_review'].includes(variation.status);
   const afterCost = variation.status === 'approved' ? variation.approved_cost : variation.proposed_cost;
   const costImpact = (afterCost ?? variation.proposed_cost) - variation.original_cost;
   return (
     <View style={styles.variationCard} testID={`variation-${variation.id}`}>
-      <Text style={styles.rowTitle}>{variation.title}</Text>
+      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+        <Text style={styles.rowTitle}>{variation.title}</Text>
+        <Pressable testID={`explain-variation-${variation.id}`}
+          onPress={() => router.push(`/explain/variation/${variation.id}?projectId=${variation.project_id}`)}
+          hitSlop={10}>
+          <Ionicons name="help-circle-outline" size={18} color={theme.color.textDim} />
+        </Pressable>
+      </View>
       <Text style={styles.rowSubtext}>{variation.description}</Text>
       <View style={styles.variationRow}>
         <Text style={styles.mutedText}>Before: {formatInr(variation.original_cost)}</Text>
