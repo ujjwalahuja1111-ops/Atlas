@@ -182,6 +182,18 @@ def _all_rules_snapshot():
         "recent_events": [],
         "event_assets": {},
         "recent_proposals": [],
+        # WF-01 — commercial data exercising the two new commercial-domain
+        # rules: a milestone achieved with no linked payment request, and
+        # a variation approved with no explicit review acknowledgment.
+        "milestones": [
+            {"id": "ms1", "name": "Foundation Complete", "status": "achieved",
+             "contract_value": 500000, "sequence": 1},
+        ],
+        "variations": [
+            {"id": "var1", "title": "Extra waterproofing", "status": "approved",
+             "approved_cost": 50000, "proposed_cost": 50000},
+        ],
+        "payment_requests": [],
         "stage": proj.infer_project_stage(acts),
     }
 

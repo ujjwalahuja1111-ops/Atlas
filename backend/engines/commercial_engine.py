@@ -44,9 +44,12 @@ explicitly, once, here — not silently reversed without explanation.
 """
 from __future__ import annotations
 import uuid
+import logging
 from datetime import datetime, timezone
 from typing import Optional
 from core.db import db
+
+logger = logging.getLogger(__name__)
 from engines import memory_engine
 
 # ---------------------------------------------------------------------------
@@ -107,6 +110,22 @@ async def assert_project_visible(project_id: str, user: dict) -> dict:
 # timeline_engine.for_project_commercial() below; never a second,
 # independently-maintained event log.
 # ---------------------------------------------------------------------------
+
+async def _trigger_reasoning_pass(project_id: str, actor: dict) -> None:
+    """WF-01 — orchestration trigger: refreshes CRE insights immediately
+    after a commercial event a rule cares about, instead of waiting for
+    a manual refresh. Deferred import avoids a circular dependency
+    (reasoning_engine imports commercial_engine for its own snapshot).
+    Never allowed to break the mutation it's attached to - a reasoning
+    failure is logged and swallowed, matching evaluate_rules' own
+    per-rule resilience. Only ever refreshes suggestions; never
+    approves, executes, or modifies anything on its own."""
+    try:
+        from engines import reasoning_engine
+        await reasoning_engine.run_reasoning(project_id, actor=actor, include_ai=False)
+    except Exception:
+        logger.exception(f"WF-01 reasoning trigger failed for project '{project_id}'; continuing")
+
 
 async def append_commercial_event(*, project_id: str, kind: str, actor: dict,
                                    entity_type: str, entity_id: str,
@@ -380,6 +399,11 @@ async def transition_milestone_status(milestone_id: str, to_status: str, *, acto
     if to_status == "closed":
         await append_commercial_event(project_id=ms["project_id"], kind="milestone_closed", actor=actor,
                                       entity_type="milestone", entity_id=milestone_id)
+    if to_status == "achieved":
+        # WF-01 — orchestration trigger: refresh insights immediately
+        # so "raise a payment request" surfaces in the workspace
+        # without waiting for a manual refresh.
+        await _trigger_reasoning_pass(ms["project_id"], actor)
     return await get_milestone(milestone_id)
 
 
@@ -647,6 +671,11 @@ async def decide_variation(variation_id: str, decision: str, *, actor: dict,
     await append_commercial_event(project_id=variation["project_id"], kind=kind, actor=actor,
                                   entity_type="variation", entity_id=variation_id,
                                   payload={"title": variation["title"], "decision": decision})
+
+    if decision == "approved":
+        # WF-01 — orchestration trigger: refresh insights immediately
+        # so "review the contract" surfaces without a manual refresh.
+        await _trigger_reasoning_pass(variation["project_id"], actor)
 
     impact = calculate_variation_impact(updated)
     return {**updated, "impact": impact}

@@ -101,6 +101,7 @@ from typing import Callable, Optional
 from core.db import db
 from core.settings import EMERGENT_LLM_KEY
 from engines import memory_engine
+from engines import commercial_engine
 from engines import reasoning_projections as projections
 from engines.reasoning_projections import (_iso, _now, _parse_iso, snapshot_now)
 
@@ -262,6 +263,15 @@ async def build_project_snapshot(project_id: str) -> dict:
          "decided_by_user_name": 1, "decided_at": 1},
     ).to_list(1000) if events else []
 
+    # WF-01 — commercial data, reused directly from commercial_engine's
+    # own list functions (never re-queried a second way), so new
+    # deterministic rules can observe milestone/variation/payment
+    # events exactly as existing rules already observe workflow and
+    # operational ones.
+    milestones = await commercial_engine.list_milestones(project_id)
+    variations = await commercial_engine.list_variations(project_id)
+    payment_requests = await commercial_engine.list_payment_requests(project_id)
+
     return {
         "schema_version": SNAPSHOT_SCHEMA_VERSION,
         "generated_at": _iso(_now()),
@@ -272,6 +282,9 @@ async def build_project_snapshot(project_id: str) -> dict:
         "recent_events": events,
         "event_assets": event_assets,
         "recent_proposals": proposals,
+        "milestones": milestones,
+        "variations": variations,
+        "payment_requests": payment_requests,
         # Sprint 01B: stage awareness — every reasoning pass knows where
         # the project is in its lifecycle (derived deterministically from
         # the workflow itself; see projections.infer_project_stage).
@@ -1067,6 +1080,106 @@ def _r_frontier_material_gap(snap: dict) -> list[dict]:
         ),
         subject_id=proj.get("id"),
     )]
+
+
+# ---------------------------------------------------------------------------
+# WF-01 — Workflow Orchestration. Two new, purely deterministic rules
+# (no AI) closing named gaps from CP-02's own "remaining commercial
+# gaps" report: a milestone reaching achieved with no payment request
+# yet, and a variation reaching approved with the contract value
+# already changed underneath it but no deliberate review yet
+# acknowledged. Both reuse the exact same _finding/_suggested_action
+# pattern every existing rule already uses.
+# ---------------------------------------------------------------------------
+
+@rule("commercial.milestone_ready_for_billing", "commercial",
+      "A milestone has reached 'achieved' but no payment request has "
+      "been raised against it yet.")
+def _rule_milestone_ready_for_billing(snap: dict) -> list[dict]:
+    proj = snap["project"]
+    requested_milestone_ids = {pr.get("milestone_id") for pr in snap.get("payment_requests", [])}
+    ready = [m for m in snap.get("milestones", [])
+             if m.get("status") == "achieved" and m["id"] not in requested_milestone_ids]
+    if not ready:
+        return []
+    findings = []
+    for m in ready[:5]:
+        findings.append(_finding(
+            rule_id="commercial.milestone_ready_for_billing",
+            domain="commercial", severity="advisory",
+            observation=(f"Milestone '{m['name']}' reached 'achieved' "
+                         "with no payment request raised against it yet."),
+            risk=("Completed, billable work sits unbilled — the longer "
+                  "this goes unnoticed, the further payment slips from "
+                  "when the work was actually delivered."),
+            recommendation=(f"Raise a payment request for '{m['name']}' "
+                            f"({m.get('contract_value')})."),
+            suggested_operational_action=_suggested_action(
+                "follow_up", f"Raise payment request for '{m['name']}'",
+                f"Milestone value: {m.get('contract_value')}. No payment "
+                "request exists for this milestone yet."),
+            suggested_responsible_role="project_manager",
+            suggested_due_date=_due_date(snap, "advisory"),
+            confidence=_confidence(
+                "high",
+                "Both the milestone's own status and the absence of a "
+                "linked payment request are directly recorded — no "
+                "inference involved.",
+            ),
+            evidence=_evidence(
+                absences=[_ref(m["id"], "no payment_request references "
+                               "this milestone_id")],
+            ),
+            subject_id=proj.get("id"),
+        ))
+    return findings
+
+
+@rule("commercial.variation_approved_needs_contract_review", "commercial",
+      "A variation was approved (automatically changing the contract's "
+      "derived value) but has not yet been marked as implemented.")
+def _rule_variation_approved_needs_contract_review(snap: dict) -> list[dict]:
+    proj = snap["project"]
+    pending_review = [v for v in snap.get("variations", []) if v.get("status") == "approved"]
+    if not pending_review:
+        return []
+    findings = []
+    for v in pending_review[:5]:
+        findings.append(_finding(
+            rule_id="commercial.variation_approved_needs_contract_review",
+            domain="commercial", severity="advisory",
+            observation=(f"Variation '{v['title']}' was approved, which "
+                         "already changed the contract's current value "
+                         "automatically."),
+            risk=("The contract's own team may not have deliberately "
+                  "reviewed the revised terms just because the number "
+                  "changed on its own."),
+            recommendation=(f"Review the contract's updated value in "
+                            f"light of '{v['title']}' and mark the "
+                            "variation implemented once physical work "
+                            "reflects it."),
+            suggested_operational_action=_suggested_action(
+                "follow_up", f"Review contract after variation '{v['title']}'",
+                f"Approved cost impact: {v.get('approved_cost') or v.get('proposed_cost')}."),
+            suggested_responsible_role="management",
+            suggested_due_date=_due_date(snap, "advisory"),
+            confidence=_confidence(
+                "high",
+                "The variation's own status is directly recorded; "
+                "Atlas cannot yet verify whether a human has actually "
+                "reviewed the resulting contract change.",
+                missing_evidence=["an explicit 'contract reviewed' "
+                                  "acknowledgment, which does not exist "
+                                  "in the current data model"],
+            ),
+            evidence=_evidence(
+                absences=[_ref(v["id"], "no explicit contract-review "
+                               "acknowledgment recorded for this "
+                               "variation")],
+            ),
+            subject_id=proj.get("id"),
+        ))
+    return findings
 
 
 def evaluate_rules(snapshot: dict) -> list[dict]:

@@ -34,7 +34,8 @@ def days_ahead(n: float) -> str:
     return iso(NOW + timedelta(days=n))
 
 
-def snap(activities=None, items=None, events=None, event_assets=None) -> dict:
+def snap(activities=None, items=None, events=None, event_assets=None,
+        milestones=None, variations=None, payment_requests=None) -> dict:
     return {
         "schema_version": cre.SNAPSHOT_SCHEMA_VERSION,
         "generated_at": iso(NOW),
@@ -45,6 +46,9 @@ def snap(activities=None, items=None, events=None, event_assets=None) -> dict:
         "recent_events": events or [],
         "event_assets": event_assets or {},
         "recent_proposals": [],
+        "milestones": milestones or [],
+        "variations": variations or [],
+        "payment_requests": payment_requests or [],
     }
 
 
@@ -157,14 +161,15 @@ def test_suggested_due_date_tracks_severity():
 
 def test_every_rule_declares_exactly_one_known_domain():
     rules = cre.list_rules()
-    assert len(rules) == 11  # 9 from Sprint 01 + forecast + frontier-gap (01B)
+    assert len(rules) == 13  # 9 from Sprint 01 + forecast + frontier-gap (01B) + 2 commercial (WF-01)
     for r in rules:
         assert r["domain"] in cre.DOMAINS
         assert r["description"]
     # reserved, rule-less domains exist as metadata only
     used = {r["domain"] for r in rules}
-    assert {"commercial", "documentation", "resource_planning"} <= \
+    assert {"documentation", "resource_planning"} <= \
         cre.DOMAINS - used
+    assert "commercial" in used  # WF-01 — no longer reserved, actively used
 
 
 def test_findings_never_leave_their_rules_domain():
@@ -472,3 +477,67 @@ def test_health_reuses_precomputed_findings_when_given():
     findings = cre.evaluate_rules(s)
     assert cre.compute_project_health(s, findings) == \
         cre.compute_project_health(s)
+
+
+# ==========================================================================
+# WF-01 — Workflow Orchestration. Unit tests for the two new,
+# deterministic commercial-domain rules.
+# ==========================================================================
+def test_milestone_ready_for_billing_fires_when_achieved_with_no_payment_request():
+    s = snap(milestones=[
+        {"id": "ms1", "name": "Foundation", "status": "achieved", "contract_value": 500000, "sequence": 1},
+    ])
+    findings = cre.evaluate_rules(s)
+    matches = [f for f in findings if f["rule_id"] == "commercial.milestone_ready_for_billing"]
+    assert len(matches) == 1
+    assert matches[0]["domain"] == "commercial"
+    assert "Foundation" in matches[0]["suggested_operational_action"]["title"]
+
+
+def test_milestone_ready_for_billing_silent_once_payment_request_exists():
+    s = snap(
+        milestones=[{"id": "ms1", "name": "Foundation", "status": "achieved", "contract_value": 500000, "sequence": 1}],
+        payment_requests=[{"id": "pr1", "milestone_id": "ms1", "amount": 500000, "status": "raised"}],
+    )
+    findings = cre.evaluate_rules(s)
+    assert not [f for f in findings if f["rule_id"] == "commercial.milestone_ready_for_billing"]
+
+
+def test_milestone_ready_for_billing_silent_when_not_yet_achieved():
+    s = snap(milestones=[{"id": "ms1", "name": "Foundation", "status": "ready", "contract_value": 500000, "sequence": 1}])
+    findings = cre.evaluate_rules(s)
+    assert not [f for f in findings if f["rule_id"] == "commercial.milestone_ready_for_billing"]
+
+
+def test_variation_approved_needs_contract_review_fires_on_approved():
+    s = snap(variations=[
+        {"id": "var1", "title": "Extra waterproofing", "status": "approved", "approved_cost": 50000, "proposed_cost": 50000},
+    ])
+    findings = cre.evaluate_rules(s)
+    matches = [f for f in findings if f["rule_id"] == "commercial.variation_approved_needs_contract_review"]
+    assert len(matches) == 1
+    assert matches[0]["suggested_responsible_role"] == "management"
+
+
+def test_variation_approved_needs_contract_review_silent_for_other_statuses():
+    s = snap(variations=[
+        {"id": "var1", "title": "Extra waterproofing", "status": "draft", "proposed_cost": 50000},
+        {"id": "var2", "title": "Extra plumbing", "status": "rejected", "proposed_cost": 20000},
+        {"id": "var3", "title": "Extra tiling", "status": "implemented", "approved_cost": 30000, "proposed_cost": 30000},
+    ])
+    findings = cre.evaluate_rules(s)
+    assert not [f for f in findings if f["rule_id"] == "commercial.variation_approved_needs_contract_review"]
+
+
+def test_commercial_rules_never_fire_findings_outside_commercial_domain():
+    """Reuses this file's own domain-integrity discipline: every
+    finding a commercial rule emits must declare domain='commercial',
+    matching evaluate_rules' own assertion for every rule."""
+    s = snap(
+        milestones=[{"id": "ms1", "name": "Foundation", "status": "achieved", "contract_value": 500000, "sequence": 1}],
+        variations=[{"id": "var1", "title": "Extra work", "status": "approved", "approved_cost": 10000, "proposed_cost": 10000}],
+    )
+    findings = cre.evaluate_rules(s)
+    commercial_findings = [f for f in findings if f["rule_id"].startswith("commercial.")]
+    assert len(commercial_findings) == 2
+    assert all(f["domain"] == "commercial" for f in commercial_findings)

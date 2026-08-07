@@ -1504,3 +1504,57 @@ async def test_update_milestone_blocked_after_ready():
 
     with pytest.raises(commercial_engine.CommercialError, match="only be edited while status is 'pending'"):
         await commercial_engine.update_milestone(ms["id"], actor=admin, name="Should not save")
+
+
+# ==========================================================================
+# WF-01 — Workflow Orchestration. Integration tests confirming the full
+# chain works end-to-end: a commercial mutation automatically triggers
+# a reasoning pass, which persists an insight a caller can retrieve via
+# reasoning_engine.list_insights — no manual "refresh insights" call
+# anywhere in either test, matching this package's own core objective.
+# ==========================================================================
+async def test_milestone_achieved_automatically_surfaces_billing_insight():
+    admin = {"id": "wf01_u1", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="WF01 Auto-Trigger Milestone", code="WF01ATM1")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1,
+        planned_percent=20, trigger="foundation complete")
+
+    before = await reasoning_engine.list_insights(project["id"], user=admin)
+    assert not [i for i in before if i["rule_id"] == "commercial.milestone_ready_for_billing"]
+
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+
+    # No manual reasoning_engine.run_reasoning() call here - the trigger
+    # inside transition_milestone_status must have already done it.
+    after = await reasoning_engine.list_insights(project["id"], user=admin)
+    billing = [i for i in after if i["rule_id"] == "commercial.milestone_ready_for_billing"]
+    assert len(billing) == 1
+    assert "Foundation" in billing[0]["suggested_operational_action"]["title"]
+
+
+async def test_variation_approved_automatically_surfaces_contract_review_insight():
+    admin = {"id": "wf01_u2", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="WF01 Auto-Trigger Variation", code="WF01ATV1")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    var = await commercial_engine.create_variation(
+        actor=admin, project_id=project["id"], title="Extra waterproofing",
+        description="d", original_cost=0, proposed_cost=50000)
+    await commercial_engine.submit_variation(var["id"], actor=admin)
+    await commercial_engine.send_variation_to_client_review(var["id"], actor=admin)
+
+    before = await reasoning_engine.list_insights(project["id"], user=admin)
+    assert not [i for i in before if i["rule_id"] == "commercial.variation_approved_needs_contract_review"]
+
+    await commercial_engine.decide_variation(var["id"], "approved", actor=admin)
+
+    after = await reasoning_engine.list_insights(project["id"], user=admin)
+    review = [i for i in after if i["rule_id"] == "commercial.variation_approved_needs_contract_review"]
+    assert len(review) == 1
+    assert review[0]["suggested_responsible_role"] == "management"
