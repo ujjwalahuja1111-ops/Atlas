@@ -234,7 +234,7 @@ async def test_non_completion_transitions_unaffected(dependency_chain):
 # CRE's own existing rule evaluation compute health from it - never by
 # assigning a health value directly.
 # ==========================================================================
-from engines import reasoning_engine, commercial_engine, operations_engine  # noqa: E402
+from engines import reasoning_engine, commercial_engine, operations_engine, knowledge_graph_engine  # noqa: E402
 reasoning_engine.db = _mock_db
 commercial_engine.db = _mock_db
 operations_engine.db = _mock_db
@@ -1626,3 +1626,106 @@ async def test_since_last_visit_blocks_outsider():
     project = await memory_engine.insert_project(name="CM01 Security Test", code="CM01SEC1")
     with pytest.raises(reasoning_engine.ReasoningNotFoundError):
         await reasoning_engine.get_since_last_visit(project["id"], user=outsider)
+
+
+# ==========================================================================
+# KM-01 — Construction Knowledge Graph. Confirms the exact chain this
+# package's own validation walkthrough required: Observation -> caused
+# -> Variation -> modified -> Contract, and Payment -> settles ->
+# Payment Request, entirely via relationships inferred from existing
+# fields (project_id, milestone_id, payment_request_id,
+# linked_photo_ids, raw_asset.event_id) - no new storage for any of
+# these edges.
+# ==========================================================================
+async def test_variation_relationships_show_causing_observation_and_modified_contract():
+    admin = {"id": "km01_u1", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="KM01 Relationship Test", code="KM01REL1")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    asset = await memory_engine.put_asset(event_id="km01_fake_event", kind="photo", mime="image/jpeg", raw_bytes=b"x")
+    await core_db.db.events.insert_one({
+        "id": "km01_fake_event", "site_id": site["id"], "project_id": project["id"],
+        "text": "Structural crack found", "type": "photo", "server_created_at": "2026-01-01T00:00:00+00:00",
+    })
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    var = await commercial_engine.create_variation(
+        actor=admin, project_id=project["id"], title="Structural repair",
+        description="d", original_cost=0, proposed_cost=50000, linked_photo_ids=[asset["id"]])
+    await commercial_engine.submit_variation(var["id"], actor=admin)
+    await commercial_engine.send_variation_to_client_review(var["id"], actor=admin)
+    await commercial_engine.decide_variation(var["id"], "approved", actor=admin)
+
+    rel = await knowledge_graph_engine.get_entity_relationships("variation", var["id"], user=admin)
+    incoming_relationships = [(e["entity_type"], e["relationship"]) for e in rel["incoming"]]
+    assert ("event", "CAUSED") in incoming_relationships
+    outgoing_relationships = [(e["entity_type"], e["relationship"]) for e in rel["outgoing"]]
+    assert ("contract", "MODIFIED") in outgoing_relationships
+
+
+async def test_impact_trace_walks_the_full_chain_without_crashing_on_dead_ends():
+    """The exact bug caught by live verification during this package's
+    own development: a Variation's own outgoing edges include 'project'
+    and 'contract', neither of which this engine expands further -
+    the trace must skip these gracefully, not abort entirely."""
+    admin = {"id": "km01_u2", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="KM01 Impact Trace Test", code="KM01IMP1")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    asset = await memory_engine.put_asset(event_id="km01_fake_event_2", kind="photo", mime="image/jpeg", raw_bytes=b"x")
+    await core_db.db.events.insert_one({
+        "id": "km01_fake_event_2", "site_id": site["id"], "project_id": project["id"],
+        "text": "Crack found", "type": "photo", "server_created_at": "2026-01-01T00:00:00+00:00",
+    })
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    var = await commercial_engine.create_variation(
+        actor=admin, project_id=project["id"], title="Repair",
+        description="d", original_cost=0, proposed_cost=50000, linked_photo_ids=[asset["id"]])
+    await commercial_engine.submit_variation(var["id"], actor=admin)
+    await commercial_engine.send_variation_to_client_review(var["id"], actor=admin)
+    await commercial_engine.decide_variation(var["id"], "approved", actor=admin)
+
+    trace = await knowledge_graph_engine.impact_trace("km01_fake_event_2", user=admin)
+    entity_types = [step["entity_type"] for step in trace["chain"]]
+    assert "event" in entity_types  # origin
+    assert "variation" in entity_types
+    assert "contract" in entity_types
+
+
+async def test_decision_trace_shows_payment_settles_payment_request():
+    admin = {"id": "km01_u3", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="KM01 Decision Trace Test", code="KM01DEC1")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1,
+        planned_percent=20, trigger="foundation complete")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+    pr = await commercial_engine.create_payment_request(
+        actor=admin, project_id=project["id"], milestone_id=ms["id"],
+        amount=ms["contract_value"], raised_date="2026-02-01", due_date="2026-02-15")
+    pay = await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=ms["contract_value"],
+        date="2026-02-10", method="bank_transfer")
+
+    trace = await knowledge_graph_engine.decision_trace("payment", pay["id"], user=admin)
+    evidence_relationships = [(e["entity_type"], e["relationship"]) for e in trace["evidence"]]
+    assert ("payment_request", "SETTLES") in evidence_relationships
+
+
+async def test_knowledge_graph_blocks_outsider():
+    admin = {"id": "km01_u4", "name": "Admin", "role": "management"}
+    outsider = {"id": "km01_outsider", "name": "Outsider", "role": "project_manager",
+               "scope_projects": True, "assigned_project_ids": []}
+    project = await memory_engine.insert_project(name="KM01 Security Test", code="KM01SEC1")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1,
+        planned_percent=20, trigger="t")
+    with pytest.raises(knowledge_graph_engine.KnowledgeGraphNotFoundError):
+        await knowledge_graph_engine.get_entity_relationships("milestone", ms["id"], user=outsider)
