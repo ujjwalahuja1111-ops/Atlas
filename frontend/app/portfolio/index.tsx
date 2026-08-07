@@ -132,7 +132,7 @@ export default function PortfolioControlCenterScreen() {
             </View>
           ) : (
             data.projects.map((row) => (
-              <ProjectRow key={row.project_id} row={row} onPress={() => router.push(`/projects/${row.project_id}`)} />
+              <ProjectRow key={row.project_id} row={row} onPress={() => router.push(`/workspace/${row.project_id}`)} />
             ))
           )}
         </ScrollView>

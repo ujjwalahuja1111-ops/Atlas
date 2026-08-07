@@ -125,6 +125,24 @@ export default function UnifiedWorkspace() {
   const openItem = (x: any) => router.push(x?.title !== undefined ? `/op/${x.id}` : `/workflow/${id}`);
   const openCommercial = () => router.push(`/commercial/${id}`);
 
+  // IN-01 — resolve an insight to the exact place work can be
+  // completed, not just the module. Reuses the specific record ID
+  // each rule already places in its own evidence (no new backend
+  // field) — falls back to generic Commercial navigation only for
+  // insights this mapping doesn't cover yet, never a regression.
+  const openForInsight = (insight: Insight) => {
+    const absenceId = insight.evidence?.absences?.[0]?.id as string | undefined;
+    if (insight.rule_id === 'commercial.milestone_ready_for_billing' && absenceId) {
+      router.push(`/commercial/${id}?action=raise-payment-request&milestoneId=${absenceId}`);
+      return;
+    }
+    if (insight.rule_id === 'commercial.variation_approved_needs_contract_review' && absenceId) {
+      router.push(`/commercial/${id}?action=view-variation&variationId=${absenceId}`);
+      return;
+    }
+    openCommercial();
+  };
+
   const setStage = async (stage: string) => {
     if (!id || stageChanging) return;
     setStageChanging(true);
@@ -209,7 +227,15 @@ export default function UnifiedWorkspace() {
         <StageFocus stage={currentProject?.lifecycle_stage || 'planning'} health={health} commercial={commercial}
           plannedCount={commercial?.milestones?.length ?? 0}
           readyCount={projectItems.highPriority.length}
-          lastMilestone={commercial?.milestones?.slice().sort((a, b) => b.sequence - a.sequence)[0] || null} />
+          lastMilestone={commercial?.milestones?.slice().sort((a, b) => b.sequence - a.sequence)[0] || null}
+          onPress={() => {
+            const stage = currentProject?.lifecycle_stage || 'planning';
+            if (stage === 'planning') {
+              if (!commercial?.contract) { router.push(`/commercial/${id}?action=create-contract`); return; }
+              if (!commercial?.budget) { router.push(`/commercial/${id}?action=create-budget`); return; }
+            }
+            openCommercial();
+          }} />
 
         {/* HEALTH STRIP — always visible, reuses ExplainedHealth's own
             dimensions plus Commercial's own cash_flow_signal. Two
@@ -244,10 +270,10 @@ export default function UnifiedWorkspace() {
               <Text style={[styles.pulseValue, { color: health ? HEALTH_COLOR[health.status] : theme.color.text }]}>{health?.status?.toUpperCase() || '—'}</Text>
               <Text style={styles.pulseLabel}>Schedule Health</Text>
             </View>
-            <View style={styles.pulseStat}>
+            <Pressable testID="pulse-cash-flow" onPress={openCommercial} style={styles.pulseStat}>
               <Text style={[styles.pulseValue, { color: commercial ? HEALTH_COLOR[commercial.cash_flow_signal] : theme.color.text }]}>{commercial?.cash_flow_signal?.toUpperCase() || '—'}</Text>
               <Text style={styles.pulseLabel}>Cash Flow</Text>
-            </View>
+            </Pressable>
           </View>
           <View style={styles.pulseRow}>
             <View style={styles.pulseStat}>
@@ -258,10 +284,10 @@ export default function UnifiedWorkspace() {
               <Text style={styles.pulseValue}>{health?.open_insights ?? insights.length}</Text>
               <Text style={styles.pulseLabel}>Open Risks</Text>
             </View>
-            <View style={styles.pulseStat}>
+            <Pressable testID="pulse-pending-decisions" onPress={openCommercial} style={styles.pulseStat}>
               <Text style={styles.pulseValue}>{commercial?.pending_variations_total ? formatInr(commercial.pending_variations_total) : '—'}</Text>
               <Text style={styles.pulseLabel}>Pending Decisions</Text>
-            </View>
+            </Pressable>
           </View>
         </View>
 
@@ -289,7 +315,7 @@ export default function UnifiedWorkspace() {
           <Text style={styles.emptyText}>No suggestions right now.</Text>
         ) : (
           suggestions.slice(0, 5).map((i) => (
-            <Pressable key={i.id} testID={`suggestion-${i.id}`} onPress={openCommercial} style={styles.suggestionRow}>
+            <Pressable key={i.id} testID={`suggestion-${i.id}`} onPress={() => openForInsight(i)} style={styles.suggestionRow}>
               <Ionicons name="bulb-outline" size={16} color={theme.color.brand} />
               <View style={{ flex: 1, marginLeft: 8 }}>
                 <Text style={styles.rowTitle}>{i.suggested_operational_action?.title}</Text>
@@ -340,9 +366,9 @@ export default function UnifiedWorkspace() {
   );
 }
 
-function StageFocus({ stage, health, commercial, plannedCount, readyCount, lastMilestone }: {
+function StageFocus({ stage, health, commercial, plannedCount, readyCount, lastMilestone, onPress }: {
   stage: string; health: ExplainedHealth | null; commercial: CommercialSummary;
-  plannedCount: number; readyCount: number; lastMilestone: any;
+  plannedCount: number; readyCount: number; lastMilestone: any; onPress: () => void;
 }) {
   let icon: any = 'compass';
   let title = 'Focus';
@@ -374,13 +400,14 @@ function StageFocus({ stage, health, commercial, plannedCount, readyCount, lastM
   }
 
   return (
-    <View style={styles.stageFocusCard} testID="stage-focus">
+    <Pressable onPress={onPress} style={styles.stageFocusCard} testID="stage-focus">
       <Ionicons name={icon} size={18} color={theme.color.brand} />
       <View style={{ flex: 1, marginLeft: 10 }}>
         <Text style={styles.stageFocusTitle}>{title}</Text>
         <Text style={styles.stageFocusBody}>{body}</Text>
       </View>
-    </View>
+      <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
+    </Pressable>
   );
 }
 

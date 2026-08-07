@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View, Text, StyleSheet, ScrollView, Pressable, ActivityIndicator,
   RefreshControl, Alert, Modal, TextInput, KeyboardAvoidingView, Platform,
@@ -58,7 +58,9 @@ type SectionKey = 'contract' | 'budget' | 'milestones' | 'billing' | 'variations
 
 export default function CommercialWorkspaceScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, action, milestoneId, paymentRequestId, variationId } = useLocalSearchParams<{
+    id: string; action?: string; milestoneId?: string; paymentRequestId?: string; variationId?: string;
+  }>();
   const [viewRole, setViewRole] = useState<ViewRole | null>(null);
   const [summary, setSummary] = useState<CommercialSummary>(null);
   const [events, setEvents] = useState<CommercialEvent[]>([]);
@@ -110,6 +112,66 @@ export default function CommercialWorkspaceScreen() {
     getViewRole().then(setViewRole);
     (async () => { setLoading(true); await load(); setLoading(false); })();
   }, [load]);
+
+  const deepLinkHandled = useRef(false);
+  useEffect(() => {
+    if (loading || !action || deepLinkHandled.current) return;
+    deepLinkHandled.current = true;
+
+    // create-contract deliberately runs even when summary is null —
+    // that IS the no-contract state this specific action exists for.
+    if (action === 'create-contract') {
+      setFormValues({});
+      setActiveForm({ kind: 'create-contract' });
+      return;
+    }
+    if (!summary) return;
+
+    if (action === 'raise-payment-request' && milestoneId) {
+      const m = summary.milestones.find((x) => x.id === milestoneId);
+      if (m) {
+        setFormValues({ amount: String(m.contract_value) });
+        setActiveForm({ kind: 'create-payment-request', milestoneId: m.id });
+        return;
+      }
+    }
+    if (action === 'record-payment' && paymentRequestId) {
+      const pr = summary.payment_requests.find((x) => x.id === paymentRequestId);
+      if (pr) {
+        setFormValues({ amount: String(pr.amount) });
+        setActiveForm({ kind: 'record-payment', paymentRequestId: pr.id });
+        return;
+      }
+    }
+    if (action === 'edit-milestone' && milestoneId) {
+      const m = summary.milestones.find((x) => x.id === milestoneId);
+      if (m) { openEditMilestone(m); return; }
+    }
+    if (action === 'view-variation' && variationId) {
+      // No dedicated variation detail screen exists — reusing the
+      // existing Variations section itself, expanded, is the correct
+      // "land inside the work" per this task's own "reuse existing
+      // navigation" rule rather than building a new detail screen.
+      setExpanded((e) => ({ ...e, variations: true }));
+      return;
+    }
+    if (action === 'edit-contract') {
+      openEditContract();
+      return;
+    }
+    if (action === 'edit-budget') {
+      openEditBudget();
+      return;
+    }
+    if (action === 'create-budget' && !summary.budget) {
+      setFormValues({});
+      setActiveForm({ kind: 'create-budget' });
+      return;
+    }
+    // Intentional run-once-via-ref pattern (deepLinkHandled); openEdit*
+    // are stable enough for this one-time resolution and are not memoized.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, summary, action, milestoneId, paymentRequestId, variationId]);
 
   const onRefresh = async () => {
     setRefreshing(true);
