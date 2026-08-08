@@ -3018,6 +3018,41 @@ _SINCE_LAST_VISIT_RULES: dict[str, Callable[[dict], tuple[str, str]]] = {
 }
 
 
+async def _causal_context_for_change(project_id: str, change: dict, *, user: dict) -> Optional[dict]:
+    """RC1-HARDENING H3 — for the three kinds of change this task
+    names explicitly, look up the Knowledge Graph's own relationships
+    for that entity and surface the causal link a PM would otherwise
+    have to go find themselves. Pure inference, no new storage — the
+    exact discipline KM-01 itself already established. Never allowed
+    to break the Since Last Visit response it enriches."""
+    try:
+        from engines import knowledge_graph_engine
+        if change["kind"] == "variation_approved":
+            rel = await knowledge_graph_engine.get_entity_relationships("variation", change["entity_id"], user=user)
+            cause = next((e for e in rel["incoming"] if e["relationship"] == "CAUSED"), None)
+            if cause:
+                return {"relation": "originating_observation", "entity_type": cause["entity_type"],
+                       "entity_id": cause["entity_id"], "label": cause["label"]}
+        elif change["kind"] == "payment_received":
+            pr_rel = await knowledge_graph_engine.get_entity_relationships("payment", change["entity_id"], user=user)
+            pr_edge = next((e for e in pr_rel["outgoing"] if e["relationship"] == "SETTLES"), None)
+            if pr_edge:
+                ms_rel = await knowledge_graph_engine.get_entity_relationships("payment_request", pr_edge["entity_id"], user=user)
+                ms_edge = next((e for e in ms_rel["outgoing"] if e["relationship"] == "GENERATED_BY"), None)
+                if ms_edge:
+                    return {"relation": "originating_milestone", "entity_type": ms_edge["entity_type"],
+                           "entity_id": ms_edge["entity_id"], "label": ms_edge["label"]}
+        elif change["kind"] in ("contract_status_changed", "contract_updated"):
+            rel = await knowledge_graph_engine.get_entity_relationships("contract", project_id, user=user)
+            cause = next((e for e in rel["incoming"] if e["relationship"] == "MODIFIED"), None)
+            if cause:
+                return {"relation": "approved_variation", "entity_type": cause["entity_type"],
+                       "entity_id": cause["entity_id"], "label": cause["label"]}
+    except knowledge_graph_engine.KnowledgeGraphError:
+        pass  # the entity this change refers to isn't KM-01-traceable — no causal context, not an error
+    return None
+
+
 async def get_since_last_visit(project_id: str, *, user: dict) -> dict:
     """The literal answer to "what changed since you were last here,"
     for one project, one user. Records this visit as having happened
@@ -3042,10 +3077,17 @@ async def get_since_last_visit(project_id: str, *, user: dict) -> dict:
         if not rule:
             continue
         what, why = rule(e)
-        changes.append({
+        change = {
             "event_id": e["id"], "kind": e["kind"], "entity_type": e["entity_type"],
             "entity_id": e["entity_id"], "what_changed": what, "why_it_matters": why,
             "actor_user_name": e["actor_user_name"], "created_at": e["created_at"],
-        })
+        }
+        # H3 — attach Knowledge Graph causal context when this is one
+        # of the three kinds of change this task names; absent for
+        # every other kind, by design, not by omission.
+        causal_context = await _causal_context_for_change(project_id, change, user=user)
+        if causal_context:
+            change["causal_context"] = causal_context
+        changes.append(change)
 
     return {"since": previous_visit, "is_first_visit": False, "changes": changes, "visit_recorded_at": new_visit}

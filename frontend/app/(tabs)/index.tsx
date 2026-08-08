@@ -88,6 +88,19 @@ function TimelineScreen() {
   // screen's existing "active site" convention (capture.tsx, etc.).
   const activeProjectId = sites.find((s) => s.id === activeSiteId)?.project_id || null;
 
+  // RC1-HARDENING H4 — Workspace-first navigation. Once a PM or Site
+  // Supervisor's active project resolves, Home redirects to that
+  // project's own Workspace (EX-01's intended primary destination)
+  // rather than rendering a second, competing per-project dashboard
+  // here. Management is deliberately excluded — Home genuinely serves
+  // them as a cross-project overview, matching this task's own "Home
+  // remains a cross-project overview" requirement.
+  useEffect(() => {
+    if ((viewRole === 'pm' || viewRole === 'supervisor') && activeProjectId) {
+      router.replace(`/workspace/${activeProjectId}`);
+    }
+  }, [viewRole, activeProjectId, router]);
+
   const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
   const fetchTimeline = useCallback(async (siteId: string) => {

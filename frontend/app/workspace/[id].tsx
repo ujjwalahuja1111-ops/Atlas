@@ -232,6 +232,9 @@ export default function UnifiedWorkspace() {
                 <View style={{ flex: 1 }}>
                   <Text style={styles.rowTitle}>{c.what_changed}</Text>
                   <Text style={styles.rowSubtext}>{c.why_it_matters}</Text>
+                  {c.causal_context && (
+                    <Text style={styles.rowSubtext}>↳ from: {c.causal_context.label}</Text>
+                  )}
                 </View>
                 <Text style={styles.resumeLink}>Resume</Text>
               </Pressable>

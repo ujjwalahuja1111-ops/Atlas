@@ -64,6 +64,7 @@ export async function apiExplainHealth(projectId: string): Promise<ExplainedHeal
 export type SinceLastVisitChange = {
   event_id: string; kind: string; entity_type: string; entity_id: string;
   what_changed: string; why_it_matters: string; actor_user_name: string; created_at: string;
+  causal_context?: { relation: string; entity_type: string; entity_id: string; label: string };
 };
 
 export type SinceLastVisit = {

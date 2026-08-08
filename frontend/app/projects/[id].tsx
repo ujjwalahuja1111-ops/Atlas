@@ -251,47 +251,38 @@ export default function ProjectDetail() {
             <Text style={styles.commercialEmpty}>Why this project's health is what it is, and what to do about it.</Text>
           </Pressable>
 
-          {/* CF-01 continuation — Commercial section now prefers the real
-              Commercial Foundation Engine summary when a project has one
-              (richer: real Paid/Outstanding, Milestone Completion, Budget
-              Variance — all genuinely computed, not fabricated). Falls
-              back to the lightweight commercial_reference layer,
-              unchanged, for any project without real Commercial Foundation
-              Engine data yet — extending, not breaking, this screen. */}
+          {/* RC1-HARDENING H1+H2 — Project Dashboard now shows only a
+              minimal commercial snapshot plus a single navigation
+              action (H1), and never silently presents the lightweight,
+              pre-CP-01 commercial_reference layer as if it were the
+              real Commercial Engine summary (H2). commercial_reference
+              itself is not dead code — it's actively seeded for
+              Reference Portfolio demo projects and correctly consumed
+              elsewhere (Portfolio Control Center's own financial
+              aggregation already distinguishes it from real Commercial
+              data) — the fix here is presentation honesty on this one
+              screen, not removal of a still-used backend layer. The
+              full commercial detail this block used to duplicate now
+              lives only in the Commercial Workspace (canonical) and
+              the Workspace's own Project Pulse (operational summary),
+              per H1's own consolidation plan. */}
           <View style={styles.workflowCard}>
             <Pressable onPress={() => router.push(`/commercial/${id}`)} style={styles.commercialHeaderRow} testID="commercial-open-workspace">
               <Text style={styles.sectionLabel}>COMMERCIAL</Text>
               <View style={styles.commercialHeaderLink}>
-                <Text style={styles.commercialHeaderLinkText}>Full Workspace</Text>
+                <Text style={styles.commercialHeaderLinkText}>Open Commercial Workspace</Text>
                 <Ionicons name="chevron-forward" size={16} color={theme.color.brand} />
               </View>
             </Pressable>
             {commercialSummary ? (
               <View style={styles.commercialGrid}>
                 <CommercialTile label="Current Contract" value={formatInr(commercialSummary.contract.current_contract_value)} />
-                <CommercialTile label="Budget" value={commercialSummary.budget ? formatInr(commercialSummary.budget.current_budget) : 'Not Available Yet'} unavailable={!commercialSummary.budget} />
-                <CommercialTile label="Forecast" value={commercialSummary.budget ? formatInr(commercialSummary.budget.forecast_cost) : 'Not Available Yet'} unavailable={!commercialSummary.budget} />
                 <CommercialTile label="Cash Flow Signal" value={commercialSummary.cash_flow_signal} />
-                <CommercialTile label="Approved Variations" value={formatInr(commercialSummary.approved_variations_total)} />
-                <CommercialTile label="Pending Variations" value={formatInr(commercialSummary.pending_variations_total)} />
-                <CommercialTile label="Paid" value={formatInr(commercialSummary.outstanding_payments.received)} />
-                <CommercialTile label="Outstanding" value={formatInr(commercialSummary.outstanding_payments.outstanding)} />
-                <CommercialTile label="Milestone Completion" value={`${commercialSummary.milestone_completion_percent}%`} />
-                {commercialSummary.budget ? (
-                  <CommercialTile label="Budget Variance" value={formatInr(commercialSummary.budget.variance)} />
-                ) : null}
               </View>
             ) : commercial ? (
-              <View style={styles.commercialGrid}>
-                <CommercialTile label="Current Contract" value={formatInr(commercial.contract_value)} />
-                <CommercialTile label="Budget" value={formatInr(commercial.budget)} />
-                <CommercialTile label="Forecast" value={formatInr(commercial.forecast)} />
-                <CommercialTile label="Cash Flow Signal" value={commercial.cash_flow_signal || 'Not Available Yet'} />
-                <CommercialTile label="Approved Variations" value={formatInr(commercial.approved_variations)} />
-                <CommercialTile label="Pending Variations" value={formatInr(commercial.pending_variations)} />
-                <CommercialTile label="Paid" value="Not Available Yet" unavailable />
-                <CommercialTile label="Outstanding" value="Not Available Yet" unavailable />
-              </View>
+              <Text style={styles.commercialEmpty} testID="commercial-reference-only-notice">
+                Reference data only — this project has no Contract yet. Open the Commercial Workspace to set one up.
+              </Text>
             ) : (
               <Text style={styles.commercialEmpty}>Not Available Yet — no commercial reference data for this project.</Text>
             )}
