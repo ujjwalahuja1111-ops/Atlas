@@ -127,6 +127,30 @@ async def _trigger_reasoning_pass(project_id: str, actor: dict) -> None:
         logger.exception(f"WF-01 reasoning trigger failed for project '{project_id}'; continuing")
 
 
+async def _notify_project_pms(*, project_id: str, title: str, body: str,
+                              entity_type: str, entity_id: str, exclude_user_id: str = None) -> None:
+    """P2-09 — projects have no direct PM-owner field (assigned_project_ids
+    lives on the user, not the project), so this queries the project's
+    own assigned management/PM users directly rather than adding a new
+    field. Never allowed to break the commercial mutation it's attached
+    to, matching _trigger_reasoning_pass's own resilience discipline."""
+    try:
+        from engines import notification_engine
+        recipients = await db.users.find(
+            {"assigned_project_ids": project_id, "role": {"$in": ["project_manager", "management"]}},
+            {"_id": 0, "id": 1},
+        ).to_list(50)
+        for u in recipients:
+            if exclude_user_id and u["id"] == exclude_user_id:
+                continue
+            await notification_engine.notify_commercial(
+                user_id=u["id"], title=title, body=body,
+                project_id=project_id, entity_type=entity_type, entity_id=entity_id,
+            )
+    except Exception:
+        logger.exception(f"P2-09 commercial notification failed for project '{project_id}'; continuing")
+
+
 async def append_commercial_event(*, project_id: str, kind: str, actor: dict,
                                    entity_type: str, entity_id: str,
                                    payload: Optional[dict] = None) -> dict:
@@ -463,6 +487,11 @@ async def create_payment_request(*, actor: dict, project_id: str, milestone_id: 
     await append_commercial_event(project_id=project_id, kind="payment_request_raised", actor=actor,
                                   entity_type="payment_request", entity_id=doc["id"],
                                   payload={"number": number, "amount": amount})
+    await _notify_project_pms(
+        project_id=project_id, title=f"Payment request {number} raised",
+        body=f"₹{amount:,.0f} requested against '{ms['name']}'.",
+        entity_type="payment_request", entity_id=doc["id"], exclude_user_id=actor["id"],
+    )
     return doc
 
 
@@ -532,6 +561,11 @@ async def record_payment(*, actor: dict, payment_request_id: str, amount: float,
             ms = await get_milestone(pr["milestone_id"])
             if ms and ms["status"] == "payment_requested":
                 await transition_milestone_status(pr["milestone_id"], "paid", actor=actor)
+    await _notify_project_pms(
+        project_id=pr["project_id"], title=f"Payment received against {pr['number']}",
+        body=f"₹{amount:,.0f} recorded.", entity_type="payment", entity_id=doc["id"],
+        exclude_user_id=actor["id"],
+    )
     return doc
 
 

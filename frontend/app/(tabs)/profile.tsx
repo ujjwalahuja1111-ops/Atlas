@@ -6,6 +6,7 @@ import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { clearAuth, loadAuth, saveAuth, apiUpdateMe, type User } from '@/src/api';
 import { clearViewRole, getViewRole, VIEW_ROLE_LABEL, ROLE_LABEL, type ViewRole } from '@/src/roles';
+import { apiUnreadNotificationCount } from '@/src/notifications_api';
 
 export default function ProfileScreen() {
   const router = useRouter();
@@ -13,6 +14,11 @@ export default function ProfileScreen() {
   const [viewRole, setVR] = useState<ViewRole>('supervisor');
   const [editingName, setEditingName] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    apiUnreadNotificationCount().then(setUnreadCount).catch(() => {});
+  }, []);
 
   useEffect(() => {
     (async () => {
@@ -90,6 +96,17 @@ export default function ProfileScreen() {
           <Row icon="globe" label="Voice languages" value="HI · PA · EN" />
           <Row icon="time" label="Member since" value={new Date(user.created_at).toLocaleDateString()} />
         </View>
+
+        <Pressable testID="open-notifications" onPress={() => router.push('/notifications')} style={styles.secondaryDestBtn}>
+          <Ionicons name="notifications-outline" size={20} color={theme.color.text} />
+          <Text style={styles.secondaryDestText}>Inbox</Text>
+          {unreadCount > 0 && (
+            <View style={styles.unreadBadge}>
+              <Text style={styles.unreadBadgeText}>{unreadCount > 99 ? '99+' : unreadCount}</Text>
+            </View>
+          )}
+          <Ionicons name="chevron-forward" size={18} color={theme.color.textDim} />
+        </Pressable>
 
         {viewRole === 'admin' && (
           <>
@@ -235,6 +252,11 @@ const styles = StyleSheet.create({
     borderRadius: theme.radius.sm, borderWidth: 1, borderColor: theme.color.border,
   },
   secondaryDestText: { flex: 1, color: theme.color.text, fontSize: 13, fontWeight: '600' },
+  unreadBadge: {
+    backgroundColor: theme.color.error, borderRadius: 10, minWidth: 20, height: 20,
+    alignItems: 'center', justifyContent: 'center', paddingHorizontal: 5,
+  },
+  unreadBadgeText: { color: '#fff', fontSize: 11, fontWeight: '800' },
   logoutBtn: {
     marginTop: theme.spacing.lg, marginHorizontal: theme.spacing.md, marginBottom: theme.spacing.lg,
     height: 72, borderRadius: theme.radius.md, borderWidth: 2, borderColor: theme.color.error,

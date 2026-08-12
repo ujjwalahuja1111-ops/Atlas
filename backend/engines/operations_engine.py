@@ -464,6 +464,17 @@ async def transition_status(*, item_id: str, to_status: str, actor: dict,
     item["last_derived_from_op_event_id"] = ev["id"]
     item["health"] = derive_health(item)
     await _save_item(item)
+    if item.get("assigned_to_user_id") and to_status in ("in_progress", "verified", "closed"):
+        try:
+            from engines import notification_engine
+            await notification_engine.notify_status_change(
+                user_id=item["assigned_to_user_id"],
+                item_title=item.get("title") or item.get("name") or "an item",
+                to_status=to_status, project_id=item["project_id"],
+                entity_type="operational_item", entity_id=item_id,
+            )
+        except Exception:
+            pass  # a notification failure must never block a real status transition
     return item
 
 
@@ -492,6 +503,16 @@ async def assign_item(*, item_id: str, assignee: dict, actor: dict,
     item["last_derived_from_op_event_id"] = ev["id"]
     item["health"] = derive_health(item)
     await _save_item(item)
+    try:
+        from engines import notification_engine
+        await notification_engine.notify_assignment(
+            assignee_user_id=assignee["id"], actor_name=actor["name"],
+            item_title=item.get("title") or item.get("name") or "an item",
+            project_id=item["project_id"], entity_type="operational_item", entity_id=item_id,
+            is_reassignment=prev_assignee_id is not None,
+        )
+    except Exception:
+        pass  # a notification failure must never block a real assignment
     return item
 
 
@@ -776,6 +797,16 @@ async def request_clarification(*, item_id: str, actor: dict, note: str) -> dict
     item["last_updated_at"] = _iso(_now())
     item["last_derived_from_op_event_id"] = ev["id"]
     await _save_item(item)
+    notify_user_id = item.get("assigned_to_user_id") or item.get("created_by_user_id")
+    if notify_user_id:
+        try:
+            from engines import notification_engine
+            await notification_engine.notify_clarification_requested(
+                user_id=notify_user_id, item_title=item.get("title") or item.get("name") or "an item",
+                note=note, project_id=item["project_id"], entity_type="operational_item", entity_id=item_id,
+            )
+        except Exception:
+            pass  # a notification failure must never block a real clarification request
     return item
 
 

@@ -55,7 +55,7 @@ const EVENT_KIND_ICON: Record<string, any> = {
   payment_received: 'cash', milestone_achieved: 'flag', budget_updated: 'wallet',
 };
 
-type SectionKey = 'contract' | 'budget' | 'milestones' | 'billing' | 'variations';
+type SectionKey = 'contract' | 'budget' | 'milestones' | 'billing' | 'variations' | 'breakdown';
 
 export default function CommercialWorkspaceScreen() {
   const router = useRouter();
@@ -69,7 +69,7 @@ export default function CommercialWorkspaceScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<SectionKey, boolean>>({
-    contract: true, budget: true, milestones: true, billing: false, variations: true,
+    contract: true, budget: true, milestones: true, billing: false, variations: true, breakdown: true,
   });
   const [billingView, setBillingView] = useState<'requests' | 'payments'>('requests');
   const [showHistory, setShowHistory] = useState(false);
@@ -430,6 +430,42 @@ export default function CommercialWorkspaceScreen() {
               ) : (
                 <Text style={styles.mutedText}>No upcoming payment due.</Text>
               )}
+            </Section>
+
+            {/* P2-06 — Commercial Breakdown: makes profitability
+                understandable from the UI alone, per this task's own
+                success criterion. Every figure below is read directly
+                from data this screen already loaded (summary.contract,
+                summary.budget, summary.approved_variations_total) —
+                no new calculation, only a source label naming which
+                existing engine each number actually comes from. */}
+            <Section title="COMMERCIAL BREAKDOWN" icon="calculator-outline" expanded={expanded.breakdown} onToggle={() => toggle('breakdown')} testID="section-breakdown">
+              {(() => {
+                const revenueTotal = summary.contract.current_contract_value;
+                const budget = summary.budget;
+                const forecastCost = budget?.forecast_cost ?? null;
+                const forecastProfit = forecastCost !== null ? revenueTotal - forecastCost : null;
+                const forecastMargin = forecastProfit !== null && revenueTotal > 0
+                  ? (forecastProfit / revenueTotal) * 100 : null;
+                return (
+                  <View>
+                    <BreakdownRow label="Contract Value" value={formatInr(summary.contract.original_contract_value)} source="Contract" />
+                    <BreakdownRow label="Approved Variations" value={formatInr(summary.approved_variations_total)} source="Variation Engine" />
+                    <BreakdownRow label="Revenue Total" value={formatInr(revenueTotal)} source="Contract" emphasis />
+                    <View style={styles.breakdownDivider} />
+                    <BreakdownRow label="Budget" value={budget ? formatInr(budget.current_budget) : 'Not Available Yet'} source="Budget Engine" unavailable={!budget} />
+                    <BreakdownRow label="Committed Cost" value={budget ? formatInr(budget.committed_cost) : 'Not Available Yet'} source="Expense Ledger" unavailable={!budget} />
+                    <BreakdownRow label="Actual Cost" value={budget ? formatInr(budget.actual_cost) : 'Not Available Yet'} source="Expense Ledger" unavailable={!budget} />
+                    <View style={styles.breakdownDivider} />
+                    <BreakdownRow label="Forecast Cost at Completion" value={forecastCost !== null ? formatInr(forecastCost) : 'Not Available Yet'} source="Forecast Calculation" unavailable={forecastCost === null} />
+                    <BreakdownRow label="Forecast Profit" value={forecastProfit !== null ? formatInr(forecastProfit) : 'Not Available Yet'} source="Forecast Calculation" unavailable={forecastProfit === null} emphasis />
+                    <BreakdownRow label="Forecast Margin" value={forecastMargin !== null ? `${forecastMargin.toFixed(1)}%` : 'Not Available Yet'} source="Forecast Calculation" unavailable={forecastMargin === null} emphasis />
+                    {!budget && (
+                      <Text style={styles.mutedText}>Cost figures need a Budget set up for this project — create one in the Budget section below.</Text>
+                    )}
+                  </View>
+                );
+              })()}
             </Section>
 
             {/* CONTRACT — stays highly visible, immediately after Cash Flow */}
@@ -833,6 +869,22 @@ function Tile({ label, value, negative }: { label: string; value: string; negati
   );
 }
 
+function BreakdownRow({ label, value, source, emphasis, unavailable }: {
+  label: string; value: string; source: string; emphasis?: boolean; unavailable?: boolean;
+}) {
+  return (
+    <View style={styles.breakdownRow} testID={`breakdown-${label.replace(/\s+/g, '-').toLowerCase()}`}>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.breakdownLabel, emphasis && styles.breakdownLabelEmphasis]}>{label}</Text>
+        <Text style={styles.breakdownSource}>{source}</Text>
+      </View>
+      <Text style={[styles.breakdownValue, emphasis && styles.breakdownValueEmphasis, unavailable && styles.breakdownValueUnavailable]}>
+        {value}
+      </Text>
+    </View>
+  );
+}
+
 function FilterRow({ options, value, onChange, testIDPrefix }: {
   options: [string, string][]; value: string; onChange: (v: string) => void; testIDPrefix: string;
 }) {
@@ -1106,6 +1158,14 @@ const styles = StyleSheet.create({
   sectionBody: { paddingHorizontal: theme.spacing.md, paddingBottom: theme.spacing.md, gap: 10 },
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   tile: { minWidth: '46%', backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, padding: 10 },
+  breakdownRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
+  breakdownLabel: { color: theme.color.text, fontSize: 14, fontWeight: '600' },
+  breakdownLabelEmphasis: { fontWeight: '800' },
+  breakdownSource: { color: theme.color.textDim, fontSize: 11, marginTop: 2 },
+  breakdownValue: { color: theme.color.text, fontSize: 14, fontWeight: '600' },
+  breakdownValueEmphasis: { fontSize: 16, fontWeight: '800', color: theme.color.brand },
+  breakdownValueUnavailable: { color: theme.color.textDim, fontStyle: 'italic', fontWeight: '400' },
+  breakdownDivider: { height: 1, backgroundColor: theme.color.border, marginVertical: 8 },
   tileLabel: { color: theme.color.textDim, fontSize: 10, fontWeight: '800', letterSpacing: 0.3 },
   tileValue: { color: theme.color.text, fontSize: 15, fontWeight: '800', marginTop: 2 },
   tileValueNegative: { color: theme.color.error },

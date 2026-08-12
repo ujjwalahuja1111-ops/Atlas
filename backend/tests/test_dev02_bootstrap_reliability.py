@@ -234,7 +234,7 @@ async def test_non_completion_transitions_unaffected(dependency_chain):
 # CRE's own existing rule evaluation compute health from it - never by
 # assigning a health value directly.
 # ==========================================================================
-from engines import reasoning_engine, commercial_engine, operations_engine, knowledge_graph_engine  # noqa: E402
+from engines import reasoning_engine, commercial_engine, operations_engine, knowledge_graph_engine, notification_engine  # noqa: E402
 reasoning_engine.db = _mock_db
 commercial_engine.db = _mock_db
 operations_engine.db = _mock_db
@@ -1760,3 +1760,75 @@ async def test_archived_project_sites_are_hidden_from_list_sites():
     # default, it doesn't delete or make the data unreachable.
     with_archived = await memory_engine.list_sites(include_archived=True)
     assert site["id"] in [s["id"] for s in with_archived]
+
+
+# ==========================================================================
+# PX-01A P2-09 — Notification Inbox Foundation. Matches the exact
+# scenarios manually verified through the live API before these
+# permanent tests were written.
+# ==========================================================================
+async def test_assignment_notification_reaches_the_assignee():
+    admin = {"id": "p209_u1", "name": "Admin", "role": "management"}
+    assignee = {"id": "p209_assignee1", "name": "Assignee", "role": "site_supervisor"}
+    project = await memory_engine.insert_project(name="P209 Assignment Test", code="P209ASN1")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await operations_engine.create_item(
+        site_id=site["id"], title="Fix crack", category="quality_observation", actor=admin)
+
+    before = await notification_engine.list_notifications(assignee["id"])
+    assert before == []
+
+    await operations_engine.assign_item(item_id=item["id"], assignee=assignee, actor=admin)
+
+    after = await notification_engine.list_notifications(assignee["id"])
+    assert len(after) == 1
+    assert after[0]["category"] == "assignment"
+    assert "Fix crack" in after[0]["title"]
+    assert after[0]["read"] is False
+
+
+async def test_payment_request_notification_reaches_project_management():
+    admin = {"id": "p209_u2", "name": "Admin", "role": "management"}
+    mgmt_user = await memory_engine.upsert_user(phone="9990300001", name="P209 Notif Mgmt", role="management")
+    project = await memory_engine.insert_project(name="P209 Commercial Notif Test", code="P209COM1")
+    await memory_engine.set_user_projects(mgmt_user["id"], [project["id"]])
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1,
+        planned_percent=20, trigger="t")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+
+    await commercial_engine.create_payment_request(
+        actor=admin, project_id=project["id"], milestone_id=ms["id"],
+        amount=ms["contract_value"], raised_date="2026-02-01", due_date="2026-02-15")
+
+    notifications = await notification_engine.list_notifications(mgmt_user["id"])
+    assert len(notifications) == 1
+    assert notifications[0]["category"] == "commercial"
+    assert "raised" in notifications[0]["title"].lower()
+
+
+async def test_mark_notification_read_updates_unread_count():
+    user_id = "p209_u3"
+    await notification_engine.create_notification(
+        user_id=user_id, category="assignment", title="Test", body="Test body")
+    notif = (await notification_engine.list_notifications(user_id))[0]
+
+    assert await notification_engine.unread_count(user_id) == 1
+    await notification_engine.mark_read(notif["id"], user_id=user_id)
+    assert await notification_engine.unread_count(user_id) == 0
+
+
+async def test_mark_read_is_scoped_to_the_correct_user():
+    """Marking someone else's notification read must be a no-op, not
+    an error or a cross-user leak."""
+    owner_id, other_id = "p209_owner", "p209_other"
+    await notification_engine.create_notification(
+        user_id=owner_id, category="assignment", title="Test", body="Test body")
+    notif = (await notification_engine.list_notifications(owner_id))[0]
+
+    await notification_engine.mark_read(notif["id"], user_id=other_id)
+    assert await notification_engine.unread_count(owner_id) == 1  # untouched
