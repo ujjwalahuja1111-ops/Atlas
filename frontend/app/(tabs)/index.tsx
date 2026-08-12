@@ -6,7 +6,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter, useFocusEffect } from 'expo-router';
+import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
 import { ManagementCreCards, PmCreCards, SupervisorCreCards } from '@/src/CreDashboard';
@@ -56,6 +56,7 @@ function timeAgo(iso: string) {
 // purpose-built dashboard for the client role. Every other role's Home
 // tab is completely unchanged below (TimelineScreen, untouched).
 export default function HomeScreen() {
+  const { stay } = useLocalSearchParams<{ stay?: string }>();
   const [viewRole, setViewRole] = useState<ViewRole | null>(null);
   useEffect(() => { getViewRole().then(setViewRole); }, []);
   if (viewRole === null) {
@@ -66,10 +67,10 @@ export default function HomeScreen() {
     );
   }
   if (viewRole === 'client') return <ClientDashboardScreen />;
-  return <TimelineScreen />;
+  return <TimelineScreen stayHere={stay === '1'} />;
 }
 
-function TimelineScreen() {
+function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
   const router = useRouter();
   const [sites, setSites] = useState<Site[]>([]);
   const [projectMap, setProjectMap] = useState<Record<string, Project>>({});
@@ -88,18 +89,22 @@ function TimelineScreen() {
   // screen's existing "active site" convention (capture.tsx, etc.).
   const activeProjectId = sites.find((s) => s.id === activeSiteId)?.project_id || null;
 
-  // RC1-HARDENING H4 — Workspace-first navigation. Once a PM or Site
-  // Supervisor's active project resolves, Home redirects to that
-  // project's own Workspace (EX-01's intended primary destination)
-  // rather than rendering a second, competing per-project dashboard
-  // here. Management is deliberately excluded — Home genuinely serves
-  // them as a cross-project overview, matching this task's own "Home
-  // remains a cross-project overview" requirement.
+  // RC1-HARDENING H4 + PILOT-02 P2-02 — role-based landing. Once a
+  // PM's or Site Supervisor's active project resolves, Home redirects
+  // to that project's own Workspace (EX-01's intended primary
+  // destination) rather than rendering a second, competing per-project
+  // dashboard here. Management redirects to Executive Hub — the
+  // portfolio-wide view this task names specifically as their own
+  // landing destination, distinct from the per-project Timeline this
+  // screen otherwise renders.
   useEffect(() => {
+    if (stayHere) return;
     if ((viewRole === 'pm' || viewRole === 'supervisor') && activeProjectId) {
       router.replace(`/workspace/${activeProjectId}`);
+    } else if (viewRole === 'admin') {
+      router.replace('/executive-hub');
     }
-  }, [viewRole, activeProjectId, router]);
+  }, [viewRole, activeProjectId, router, stayHere]);
 
   const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 

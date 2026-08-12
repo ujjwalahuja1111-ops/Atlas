@@ -558,7 +558,21 @@ async def list_sites(project_id: Optional[str] = None,
                 return []
         else:
             q["project_id"] = {"$in": list(allowed)}
-    return await db.sites.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    sites = await db.sites.find(q, {"_id": 0}).sort("created_at", -1).to_list(500)
+    if include_archived:
+        return sites
+    # PILOT-02 P2-01 — a site's own archived_at never cascaded from its
+    # parent project's archive state, so an archived project's sites
+    # stayed fully visible everywhere (Capture, Home) even though the
+    # project itself was correctly hidden. Excluded here at the source
+    # rather than patched in every caller.
+    project_ids = {s["project_id"] for s in sites}
+    archived_project_ids = {
+        p["id"] for p in await db.projects.find(
+            {"id": {"$in": list(project_ids)}, "archived_at": {"$ne": None}}, {"_id": 0, "id": 1}
+        ).to_list(500)
+    }
+    return [s for s in sites if s["project_id"] not in archived_project_ids]
 
 
 async def get_site(site_id: str) -> Optional[dict]:

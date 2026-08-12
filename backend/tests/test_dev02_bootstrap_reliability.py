@@ -1729,3 +1729,34 @@ async def test_knowledge_graph_blocks_outsider():
         planned_percent=20, trigger="t")
     with pytest.raises(knowledge_graph_engine.KnowledgeGraphNotFoundError):
         await knowledge_graph_engine.get_entity_relationships("milestone", ms["id"], user=outsider)
+
+
+# ==========================================================================
+# PILOT-02 P2-01 — Archive Isolation. A real bug found during this
+# package's own audit: archiving a project never cascaded to its
+# sites, and list_sites only checked a site's own archived_at, never
+# its parent project's - so an archived project's sites stayed fully
+# visible in Capture and Home's own site pickers.
+# ==========================================================================
+async def test_archived_project_sites_are_hidden_from_list_sites():
+    admin = {"id": "p201_u1", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="P201 Archive Test", code="P201ARCH1")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Test Site")
+
+    before = await memory_engine.list_sites()
+    assert site["id"] in [s["id"] for s in before]
+
+    await memory_engine.archive_project(project["id"])
+    after = await memory_engine.list_sites()
+    assert site["id"] not in [s["id"] for s in after]
+
+    # The site itself was never individually archived - confirming the
+    # fix works via the parent project's own archive state, not by
+    # also (incorrectly) archiving the site's own record.
+    site_doc = await core_db.db.sites.find_one({"id": site["id"]}, {"_id": 0})
+    assert site_doc.get("archived_at") is None
+
+    # include_archived=True must still surface it - the fix hides by
+    # default, it doesn't delete or make the data unreachable.
+    with_archived = await memory_engine.list_sites(include_archived=True)
+    assert site["id"] in [s["id"] for s in with_archived]

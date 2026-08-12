@@ -8,6 +8,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, type ViewRole } from '@/src/roles';
+import { DatePicker } from '@/src/DatePicker';
 import {
   apiGetCommercialSummary, apiListCommercialEvents, apiDecideVariation,
   apiCreateContract, apiUpdateContract, apiCreateBudget, apiReviseBudget,
@@ -628,7 +629,7 @@ export default function CommercialWorkspaceScreen() {
         title="Create Contract" testID="form-create-contract"
         fields={[
           { key: 'original_contract_value', label: 'Contract Value (₹)', keyboardType: 'numeric', placeholder: 'e.g. 3000000' },
-          { key: 'contract_date', label: 'Contract Date (YYYY-MM-DD)', placeholder: new Date().toISOString().slice(0, 10) },
+          { key: 'contract_date', label: 'Contract Date', type: 'date' },
           { key: 'duration_days', label: 'Duration (days)', keyboardType: 'numeric', placeholder: 'e.g. 180' },
           { key: 'retention_percent', label: 'Retention % (default 5)', keyboardType: 'numeric' },
           { key: 'advance_percent', label: 'Advance % (default 10)', keyboardType: 'numeric' },
@@ -674,7 +675,7 @@ export default function CommercialWorkspaceScreen() {
           { key: 'sequence', label: 'Sequence', keyboardType: 'numeric' },
           { key: 'planned_percent', label: 'Planned % of Contract Value', keyboardType: 'numeric' },
           { key: 'trigger', label: 'Completion Trigger', placeholder: 'e.g. foundation inspection passed' },
-          { key: 'planned_date', label: 'Planned Date (YYYY-MM-DD)' },
+          { key: 'planned_date', label: 'Planned Date', type: 'date' },
         ]}
         values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
       />
@@ -687,7 +688,7 @@ export default function CommercialWorkspaceScreen() {
           { key: 'sequence', label: 'Sequence', keyboardType: 'numeric' },
           { key: 'planned_percent', label: 'Planned % of Contract Value', keyboardType: 'numeric' },
           { key: 'trigger', label: 'Completion Trigger' },
-          { key: 'planned_date', label: 'Planned Date (YYYY-MM-DD)' },
+          { key: 'planned_date', label: 'Planned Date', type: 'date' },
         ]}
         values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
       />
@@ -710,8 +711,8 @@ export default function CommercialWorkspaceScreen() {
         title="Raise Payment Request" testID="form-create-payment-request"
         fields={[
           { key: 'amount', label: 'Amount (₹)', keyboardType: 'numeric' },
-          { key: 'raised_date', label: 'Raised Date (YYYY-MM-DD)', placeholder: new Date().toISOString().slice(0, 10) },
-          { key: 'due_date', label: 'Due Date (YYYY-MM-DD)' },
+          { key: 'raised_date', label: 'Raised Date', type: 'date' },
+          { key: 'due_date', label: 'Due Date', type: 'date' },
         ]}
         values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
       />
@@ -721,7 +722,7 @@ export default function CommercialWorkspaceScreen() {
         title="Record Payment" testID="form-record-payment"
         fields={[
           { key: 'amount', label: 'Amount (₹)', keyboardType: 'numeric' },
-          { key: 'date', label: 'Payment Date (YYYY-MM-DD)', placeholder: new Date().toISOString().slice(0, 10) },
+          { key: 'date', label: 'Payment Date', type: 'date' },
           { key: 'method', label: 'Method', placeholder: 'e.g. bank_transfer' },
           { key: 'reference', label: 'Reference (optional)', placeholder: 'e.g. cheque or UTR number' },
         ]}
@@ -746,7 +747,7 @@ function filterVariations(vs: Variation[], filter: string): Variation[] {
 }
 
 type FormFieldSpec = {
-  key: string; label: string; keyboardType?: 'default' | 'numeric'; placeholder?: string;
+  key: string; label: string; keyboardType?: 'default' | 'numeric'; placeholder?: string; type?: 'date';
 };
 
 function FormModal({ visible, title, fields, values, onChange, onSave, onCancel, saving, testID }: {
@@ -762,16 +763,28 @@ function FormModal({ visible, title, fields, values, onChange, onSave, onCancel,
           <ScrollView keyboardShouldPersistTaps="handled">
             {fields.map((f) => (
               <View key={f.key} style={styles.formFieldWrap}>
-                <Text style={styles.formFieldLabel}>{f.label}</Text>
-                <TextInput
-                  testID={`${testID}-${f.key}`}
-                  style={styles.formFieldInput}
-                  value={values[f.key] ?? ''}
-                  onChangeText={(t) => onChange(f.key, t)}
-                  keyboardType={f.keyboardType === 'numeric' ? 'decimal-pad' : 'default'}
-                  placeholder={f.placeholder}
-                  placeholderTextColor={theme.color.textDim}
-                />
+                {f.type === 'date' ? (
+                  <DatePicker
+                    label={f.label}
+                    testID={`${testID}-${f.key}`}
+                    value={values[f.key] || null}
+                    onChange={(iso) => onChange(f.key, iso || '')}
+                    placeholder={f.placeholder}
+                  />
+                ) : (
+                  <>
+                    <Text style={styles.formFieldLabel}>{f.label}</Text>
+                    <TextInput
+                      testID={`${testID}-${f.key}`}
+                      style={styles.formFieldInput}
+                      value={values[f.key] ?? ''}
+                      onChangeText={(t) => onChange(f.key, t)}
+                      keyboardType={f.keyboardType === 'numeric' ? 'decimal-pad' : 'default'}
+                      placeholder={f.placeholder}
+                      placeholderTextColor={theme.color.textDim}
+                    />
+                  </>
+                )}
               </View>
             ))}
           </ScrollView>

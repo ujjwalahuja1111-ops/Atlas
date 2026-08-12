@@ -77,7 +77,7 @@ export default function ProjectDetail() {
     if ((s as any).archived_at) return;
     await setActiveProject(id!);
     await setActiveSite(s.id);
-    router.replace('/(tabs)');
+    router.replace('/(tabs)?stay=1');
   };
 
   const onSave = async () => {
@@ -298,7 +298,7 @@ export default function ProjectDetail() {
               onPress={async () => {
                 await setActiveProject(project!.id);
                 await setActiveSite(sites[0].id);
-                router.push('/(tabs)');
+                router.push('/(tabs)?stay=1');
               }}
               style={styles.workflowBtn}>
               <Ionicons name="time-outline" size={20} color={theme.color.brand} />
