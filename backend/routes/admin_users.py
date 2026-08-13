@@ -22,6 +22,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional, Literal
 from core.auth import get_current_user
+from core.db import db
 from engines import memory_engine
 
 router = APIRouter(prefix="/api/admin", tags=["admin-users"])
@@ -89,10 +90,30 @@ async def assign_role(user_id: str, req: AssignRoleRequest, user: dict = Depends
 
 @router.post("/users/{user_id}/projects")
 async def assign_projects(user_id: str, req: AssignProjectsRequest, user: dict = Depends(get_current_user)):
-    _require_admin(user)
+    """PX-01B — relaxed from admin-only to (management, project_manager),
+    matching the exact role gate POST /projects (project creation
+    itself) already uses. Without this, a PM could create a project
+    but never assign a PM/Supervisor to it - a hard block on the
+    Project Creation Wizard's own Step 2 for any PM-initiated flow.
+    A PM may only set membership for a project_id they are themselves
+    already a member of, or a project that currently has no members at
+    all (the exact "I just created this project" case the wizard
+    needs) - never an unbounded ability to reassign arbitrary
+    projects. Management remains fully unrestricted, as before.
+    """
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can assign project membership")
     target = await memory_engine.get_user(user_id)
     if not target:
         raise HTTPException(status_code=404, detail="User not found")
+    if user["role"] == "project_manager":
+        for pid in req.project_ids:
+            already_has_members = await db.users.count_documents({"assigned_project_ids": pid}) > 0
+            caller_is_member = pid in (user.get("assigned_project_ids") or [])
+            if already_has_members and not caller_is_member:
+                raise HTTPException(status_code=403,
+                                    detail=f"Not permitted to assign membership for project '{pid}' — "
+                                           "you are not yourself a member of it.")
     return await memory_engine.set_user_projects(user_id, req.project_ids)
 
 

@@ -869,3 +869,93 @@ def test_invalid_lifecycle_stage_rejected(admin):
     r = requests.post(f"{API}/projects/{proj['id']}/lifecycle-stage", json={"stage": "not_a_real_stage"},
                       headers=admin["headers"], timeout=20)
     assert r.status_code == 400
+
+
+# ==========================================================================
+# PX-01B — Project Creation Wizard's own real backend blocker, found
+# during this package's mandatory pre-implementation audit: POST
+# /projects already allows (management, project_manager), but the
+# membership-assignment route was admin-only, meaning a PM could
+# create a project but never assign a PM/Supervisor to it. Relaxed to
+# match the same role gate, but only for a project_id the calling PM
+# is already a member of, or one with no members yet (the "I just
+# created this project" case the wizard needs) - never an unbounded
+# ability to reassign arbitrary projects.
+# ==========================================================================
+def test_pm_can_assign_membership_to_a_project_they_just_created(admin):
+    pm_user, pm_h = _login("project_manager", "9990000801", "PX01B Wizard PM")
+    sup_user, _ = _login("site_supervisor", "9990000802", "PX01B Wizard Sup")
+    proj = requests.post(f"{API}/projects", json={"name": "PX01B Wizard Test", "code": "PX01BWIZ1"},
+                         headers=pm_h, timeout=20).json()
+
+    r1 = requests.post(f"{API}/admin/users/{pm_user['id']}/projects", json={"project_ids": [proj["id"]]},
+                       headers=pm_h, timeout=20)
+    assert r1.status_code == 200
+
+    r2 = requests.post(f"{API}/admin/users/{sup_user['id']}/projects", json={"project_ids": [proj["id"]]},
+                       headers=pm_h, timeout=20)
+    assert r2.status_code == 200
+
+
+def test_pm_cannot_assign_membership_to_an_unrelated_project_with_existing_members(admin):
+    outsider_user, outsider_h = _login("project_manager", "9990000803", "PX01B Outsider PM")
+    proj = requests.post(f"{API}/projects", json={"name": "PX01B Unrelated Project", "code": "PX01BUNR1"},
+                         headers=admin["headers"], timeout=20).json()
+    another_user, _ = _login("site_supervisor", "9990000804", "PX01B Another Sup")
+    requests.post(f"{API}/admin/users/{another_user['id']}/projects", json={"project_ids": [proj["id"]]},
+                 headers=admin["headers"], timeout=20)
+
+    someone_else, _ = _login("site_supervisor", "9990000805", "PX01B Someone Else")
+    r = requests.post(f"{API}/admin/users/{someone_else['id']}/projects", json={"project_ids": [proj["id"]]},
+                      headers=outsider_h, timeout=20)
+    assert r.status_code == 403
+
+
+# ==========================================================================
+# PX-01B — Reality Capture Hardening. A real, confirmed gap: no
+# validation existed anywhere on client_created_at, meaning a direct
+# API call could backdate or future-date an event with no restriction.
+# ==========================================================================
+def test_normal_user_cannot_backdate_event_beyond_48_hours(admin):
+    sup_user, sup_h = _login("site_supervisor", "9990000806", "PX01B Date Sup")
+    proj = requests.post(f"{API}/projects", json={"name": "PX01B Date Test", "code": "PX01BDATE1"},
+                         headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{sup_user['id']}/projects", json={"project_ids": [proj["id"]]},
+                 headers=admin["headers"], timeout=20)
+    site = requests.post(f"{API}/sites", json={"project_id": proj["id"], "name": "PX01B Site"},
+                         headers=admin["headers"], timeout=20).json()
+
+    import datetime
+    ten_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=10)).isoformat()
+    r = requests.post(f"{API}/events", data={"site_id": site["id"], "text": "backdated test",
+                      "client_created_at": ten_days_ago}, headers=sup_h, timeout=20)
+    assert r.status_code == 400
+
+
+def test_normal_user_cannot_future_date_an_event(admin):
+    sup_user, sup_h = _login("site_supervisor", "9990000807", "PX01B Future Sup")
+    proj = requests.post(f"{API}/projects", json={"name": "PX01B Future Test", "code": "PX01BFUT1"},
+                         headers=admin["headers"], timeout=20).json()
+    requests.post(f"{API}/admin/users/{sup_user['id']}/projects", json={"project_ids": [proj["id"]]},
+                 headers=admin["headers"], timeout=20)
+    site = requests.post(f"{API}/sites", json={"project_id": proj["id"], "name": "PX01B Site 2"},
+                         headers=admin["headers"], timeout=20).json()
+
+    import datetime
+    five_days_ahead = (datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=5)).isoformat()
+    r = requests.post(f"{API}/events", data={"site_id": site["id"], "text": "future test",
+                      "client_created_at": five_days_ahead}, headers=sup_h, timeout=20)
+    assert r.status_code == 400
+
+
+def test_management_exempt_from_event_date_restriction(admin):
+    proj = requests.post(f"{API}/projects", json={"name": "PX01B Mgmt Date Test", "code": "PX01BMGMT1"},
+                         headers=admin["headers"], timeout=20).json()
+    site = requests.post(f"{API}/sites", json={"project_id": proj["id"], "name": "PX01B Site 3"},
+                         headers=admin["headers"], timeout=20).json()
+
+    import datetime
+    ten_days_ago = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=10)).isoformat()
+    r = requests.post(f"{API}/events", data={"site_id": site["id"], "text": "historical entry",
+                      "client_created_at": ten_days_ago}, headers=admin["headers"], timeout=20)
+    assert r.status_code == 201

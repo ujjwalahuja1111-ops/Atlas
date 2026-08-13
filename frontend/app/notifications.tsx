@@ -10,6 +10,7 @@ import {
   apiListNotifications, apiMarkNotificationRead, apiMarkAllNotificationsRead,
   type Notification,
 } from '@/src/notifications_api';
+import { apiListProjects, type Project } from '@/src/api';
 
 const CATEGORY_LABEL: Record<string, string> = {
   all: 'All', assignment: 'Assignments', approval: 'Approvals',
@@ -25,6 +26,7 @@ export default function NotificationInboxScreen() {
   const router = useRouter();
   const [filter, setFilter] = useState<'all' | 'assignment' | 'approval' | 'clarification' | 'commercial'>('all');
   const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [projectNames, setProjectNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -32,12 +34,26 @@ export default function NotificationInboxScreen() {
   const load = useCallback(async () => {
     setLoadError(null);
     try {
-      const list = await apiListNotifications(filter);
+      const [list, projects] = await Promise.all([
+        apiListNotifications(filter),
+        apiListProjects().catch(() => [] as Project[]),
+      ]);
       setNotifications(list);
+      if (projects.length) {
+        setProjectNames(Object.fromEntries(projects.map((p) => [p.id, p.name])));
+      }
     } catch {
       setLoadError('Could not load your inbox. Pull to retry.');
     }
   }, [filter]);
+
+  // Unread pinned above read; newest-first within each group — the
+  // backend already returns newest-first, so this sort only needs to
+  // move unread items ahead without disturbing that existing order.
+  const sortedNotifications = [...notifications].sort((a, b) => {
+    if (a.read !== b.read) return a.read ? 1 : -1;
+    return 0;
+  });
 
   useEffect(() => { (async () => { setLoading(true); await load(); setLoading(false); })(); }, [load]);
 
@@ -82,7 +98,7 @@ export default function NotificationInboxScreen() {
       </View>
 
       <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.filterRow} contentContainerStyle={{ paddingHorizontal: theme.spacing.md, gap: 8 }}>
-        {(['all', 'assignment', 'approval', 'commercial'] as const).map((c) => (
+        {(['all', 'assignment', 'approval', 'commercial', 'clarification'] as const).map((c) => (
           <Pressable key={c} testID={`inbox-filter-${c}`} onPress={() => setFilter(c)}
             style={[styles.filterChip, filter === c && styles.filterChipActive]}>
             <Text style={[styles.filterChipText, filter === c && styles.filterChipTextActive]}>{CATEGORY_LABEL[c]}</Text>
@@ -95,10 +111,10 @@ export default function NotificationInboxScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.color.brand} />}
       >
         {loadError && <Text style={styles.errorText}>{loadError}</Text>}
-        {notifications.length === 0 ? (
+        {sortedNotifications.length === 0 ? (
           <Text style={styles.emptyText}>Nothing here yet.</Text>
         ) : (
-          notifications.map((n) => (
+          sortedNotifications.map((n) => (
             <Pressable key={n.id} testID={`inbox-item-${n.id}`} onPress={() => onOpen(n)}
               style={[styles.row, !n.read && styles.rowUnread]}>
               {!n.read && <View style={styles.unreadDot} />}
@@ -106,7 +122,12 @@ export default function NotificationInboxScreen() {
               <View style={{ flex: 1, marginLeft: 10 }}>
                 <Text style={[styles.rowTitle, !n.read && styles.rowTitleUnread]}>{n.title}</Text>
                 <Text style={styles.rowBody} numberOfLines={2}>{n.body}</Text>
-                <Text style={styles.rowTime}>{new Date(n.created_at).toLocaleString()}</Text>
+                <View style={styles.rowMetaRow}>
+                  {n.project_id && projectNames[n.project_id] && (
+                    <Text style={styles.rowProject}>{projectNames[n.project_id]} · </Text>
+                  )}
+                  <Text style={styles.rowTime}>{new Date(n.created_at).toLocaleString()}</Text>
+                </View>
               </View>
             </Pressable>
           ))
@@ -147,5 +168,7 @@ const styles = StyleSheet.create({
   rowTitle: { color: theme.color.text, fontSize: 14, fontWeight: '600' },
   rowTitleUnread: { fontWeight: '800' },
   rowBody: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
-  rowTime: { color: theme.color.textDim, fontSize: 11, marginTop: 4 },
+  rowMetaRow: { flexDirection: 'row', alignItems: 'center', marginTop: 4 },
+  rowProject: { color: theme.color.brand, fontSize: 11, fontWeight: '700' },
+  rowTime: { color: theme.color.textDim, fontSize: 11 },
 });

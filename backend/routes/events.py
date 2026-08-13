@@ -40,6 +40,32 @@ async def create_event(
     if user.get("role") == "client":
         raise HTTPException(status_code=403, detail="Clients cannot capture events.")
 
+    # PX-01B — Reality Capture Hardening: client_created_at is
+    # offline-capture metadata (a device timestamp, never a manually
+    # chosen date in any current capture UI - confirmed by inspection),
+    # but nothing validated it against the server's own clock. A
+    # direct API call could set an arbitrary past or future date.
+    # Non-Management users get a generous 48-hour past tolerance (the
+    # legitimate offline-queue-then-sync case this field exists for)
+    # and zero future tolerance; Management is exempt, matching this
+    # task's own "only Management may edit historical dates if that
+    # capability already exists" rule, without inventing a new one.
+    if client_created_at and user.get("role") != "management":
+        from datetime import datetime, timezone, timedelta
+        try:
+            claimed = datetime.fromisoformat(client_created_at.replace("Z", "+00:00"))
+            if claimed.tzinfo is None:
+                claimed = claimed.replace(tzinfo=timezone.utc)
+        except (ValueError, AttributeError):
+            raise HTTPException(status_code=400, detail="client_created_at is not a valid ISO timestamp.")
+        now = datetime.now(timezone.utc)
+        if claimed > now + timedelta(minutes=5):
+            raise HTTPException(status_code=400, detail="Event date cannot be in the future.")
+        if claimed < now - timedelta(hours=48):
+            raise HTTPException(status_code=400,
+                                detail="Event date cannot be more than 48 hours in the past. "
+                                       "Only Management can record a more historical event.")
+
     site = await memory_engine.get_site(site_id)
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")

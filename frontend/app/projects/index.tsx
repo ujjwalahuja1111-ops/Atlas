@@ -123,7 +123,7 @@ export default function ProjectsScreen() {
           <Text style={styles.h2}>{showArchived ? 'All projects' : 'Active projects'}</Text>
         </View>
         {canManage && (
-          <Pressable testID="projects-new" onPress={() => setEditing({})} style={[styles.iconBtn, styles.primary]}>
+          <Pressable testID="projects-new" onPress={() => router.push('/projects/new')} style={[styles.iconBtn, styles.primary]}>
             <Ionicons name="add" size={26} color={theme.color.onBrand} />
           </Pressable>
         )}

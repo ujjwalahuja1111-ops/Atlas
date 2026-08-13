@@ -356,6 +356,15 @@ export async function apiDeleteProject(id: string): Promise<{ deleted: boolean; 
   return r.json();
 }
 
+export async function apiAssignProjects(userId: string, projectIds: string[]): Promise<void> {
+  const r = await apiFetch(`${BACKEND}/api/admin/users/${userId}/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ project_ids: projectIds }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+}
+
 export async function apiListSites(projectId?: string, includeArchived = false): Promise<Site[]> {
   const params = new URLSearchParams();
   if (projectId) params.set('project_id', projectId);
