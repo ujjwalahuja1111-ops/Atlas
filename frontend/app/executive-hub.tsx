@@ -8,6 +8,7 @@ import {
   apiPriorityEngine, apiCrossProjectIntelligence, apiCommercialIntelligence,
   type PriorityEngineResult, type CrossProjectIntelligence, type CommercialIntelligence,
 } from '@/src/cre_api';
+import { apiGetManagementDigest, type ManagementDigest } from '@/src/inbox_intelligence_api';
 
 function formatInrShort(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
@@ -21,6 +22,7 @@ function formatInrShort(n: number | null | undefined): string {
 export default function ExecutiveHubScreen() {
   const router = useRouter();
   const [priorities, setPriorities] = useState<PriorityEngineResult | null>(null);
+  const [managementDigest, setManagementDigest] = useState<ManagementDigest | null>(null);
   const [crossProject, setCrossProject] = useState<CrossProjectIntelligence | null>(null);
   const [commercial, setCommercial] = useState<CommercialIntelligence | null>(null);
   const [loading, setLoading] = useState(true);
@@ -30,10 +32,10 @@ export default function ExecutiveHubScreen() {
   const load = useCallback(async () => {
     setError(null);
     try {
-      const [p, c, m] = await Promise.all([
-        apiPriorityEngine(), apiCrossProjectIntelligence(), apiCommercialIntelligence(),
+      const [p, c, m, digest] = await Promise.all([
+        apiPriorityEngine(), apiCrossProjectIntelligence(), apiCommercialIntelligence(), apiGetManagementDigest(),
       ]);
-      setPriorities(p); setCrossProject(c); setCommercial(m);
+      setPriorities(p); setCrossProject(c); setCommercial(m); setManagementDigest(digest);
     } catch {
       setError('Could not load the Executive Hub.');
     }
@@ -93,6 +95,43 @@ export default function ExecutiveHubScreen() {
             )}
           </View>
         </Pressable>
+
+        {/* PX-02 Phase 4 Section 8 — Management Attention Digest: a
+            portfolio-level synthesis (declining-health project count,
+            escalated blocker count, payment requests awaiting
+            approval), not a raw notification list, per this task's
+            own explicit distinction. */}
+        <View style={styles.section} testID="exec-hub-management-digest">
+          <View style={styles.sectionHeader}>
+            <Ionicons name="alert-circle" size={16} color={theme.color.brand} />
+            <Text style={styles.sectionTitle}>NEEDS ATTENTION TODAY</Text>
+          </View>
+          <View style={styles.sectionBody}>
+            {!managementDigest ? (
+              <Text style={styles.mutedText}>Loading…</Text>
+            ) : (
+              managementDigest.needs_attention_projects.length === 0
+                && managementDigest.escalated_blockers_count === 0
+                && managementDigest.payment_requests_awaiting_approval === 0 ? (
+                <Text style={styles.mutedText}>Nothing needs attention right now.</Text>
+              ) : (
+                <>
+                  {managementDigest.needs_attention_projects.map((p) => (
+                    <Text key={p.project_id} style={styles.rowText} numberOfLines={1}>
+                      • {p.project_name} — health {p.health_status}
+                    </Text>
+                  ))}
+                  {managementDigest.escalated_blockers_count > 0 && (
+                    <Text style={styles.rowText}>• {managementDigest.escalated_blockers_count} escalated blocker{managementDigest.escalated_blockers_count !== 1 ? 's' : ''}</Text>
+                  )}
+                  {managementDigest.payment_requests_awaiting_approval > 0 && (
+                    <Text style={styles.rowText}>• {managementDigest.payment_requests_awaiting_approval} payment request{managementDigest.payment_requests_awaiting_approval !== 1 ? 's' : ''} awaiting approval</Text>
+                  )}
+                </>
+              )
+            )}
+          </View>
+        </View>
 
         {/* Portfolio Control Center link */}
         <Pressable style={styles.section} onPress={() => router.push('/portfolio')} testID="exec-hub-portfolio">

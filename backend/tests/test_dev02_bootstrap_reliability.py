@@ -237,6 +237,7 @@ async def test_non_completion_transitions_unaffected(dependency_chain):
 # ==========================================================================
 from engines import reasoning_engine, commercial_engine, operations_engine, knowledge_graph_engine, notification_engine  # noqa: E402
 from services import daily_site_report_service  # noqa: E402
+from services import inbox_intelligence_service  # noqa: E402
 reasoning_engine.db = _mock_db
 commercial_engine.db = _mock_db
 operations_engine.db = _mock_db
@@ -1958,3 +1959,126 @@ async def test_daily_report_markdown_export_formatting():
     assert "## Blockers & Risks" in markdown
     assert "## AI Forecast Impact" in markdown
     assert "Test capture" in markdown
+
+
+# ==========================================================================
+# PX-02 Phase 4 — Inbox Intelligence & Waiting-State Coordination.
+# Matches the exact scenarios manually verified live through the real
+# API before being written as permanent tests.
+# ==========================================================================
+async def _setup_coordination_project(name_suffix: str):
+    pm = {"id": f"p4_pm_{name_suffix}", "name": "PM", "role": "project_manager"}
+    sup = await memory_engine.upsert_user(phone=f"90{name_suffix}0001", name="Sup", role="site_supervisor")
+    project = await memory_engine.insert_project(name=f"P4 Coordination {name_suffix}", code=f"P4C{name_suffix}")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    return pm, sup, project, site
+
+
+async def test_waiting_state_classification_action_required_for_assignee():
+    pm, sup, project, site = await _setup_coordination_project("wsclass")
+    item = await operations_engine.create_item(site_id=site["id"], title="Fix crack", category="quality_observation", actor=pm)
+    await operations_engine.assign_item(item_id=item["id"], assignee=sup, actor=pm)
+
+    inbox = await inbox_intelligence_service.build_coordination_inbox(sup)
+
+    assert len(inbox["action_required"]) == 1
+    assert "Fix crack" in inbox["action_required"][0]["latest_title"]
+
+
+async def test_waiting_state_classification_waiting_for_others_for_initiator():
+    pm, sup, project, site = await _setup_coordination_project("wsother")
+    item = await operations_engine.create_item(site_id=site["id"], title="Approve tile selection", category="client_approval", actor=pm)
+
+    inbox = await inbox_intelligence_service.build_coordination_inbox(pm)
+
+    assert len(inbox["waiting_for_others"]) == 1
+    assert inbox["waiting_for_others"][0]["latest_title"] == "Approve tile selection"
+
+
+async def test_notification_grouping_collapses_same_entity():
+    pm, sup, project, site = await _setup_coordination_project("group")
+    item = await operations_engine.create_item(site_id=site["id"], title="Grouped item", category="general", actor=pm)
+    # Three separate assignment notifications on the same entity
+    for _ in range(3):
+        await notification_engine.notify_assignment(
+            assignee_user_id=sup["id"], actor_name="PM", item_title="Grouped item",
+            project_id=project["id"], entity_type="operational_item", entity_id=item["id"],
+        )
+
+    inbox = await inbox_intelligence_service.build_coordination_inbox(sup)
+
+    assert len(inbox["action_required"]) == 1  # collapsed into one card
+    assert inbox["action_required"][0]["count"] == 3
+
+
+async def test_escalation_threshold_calculation():
+    from datetime import timedelta
+    fresh_ts = datetime.now(timezone.utc).isoformat()
+    assert inbox_intelligence_service._aging_signal("clarification", fresh_ts) == "green"
+    warning_ts = (datetime.now(timezone.utc) - timedelta(hours=13)).isoformat()
+    assert inbox_intelligence_service._aging_signal("clarification", warning_ts) == "amber"
+    escalated_ts = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+    assert inbox_intelligence_service._aging_signal("clarification", escalated_ts) == "red"
+
+
+async def test_deep_link_phase_routing_matrix():
+    assert inbox_intelligence_service._target_phase("operational_item") == "execute"
+    assert inbox_intelligence_service._target_phase("payment_request") == "bill"
+    assert inbox_intelligence_service._target_phase("variation") == "plan"
+    assert inbox_intelligence_service._target_phase(None) == "execute"  # safe default, never crashes
+
+
+async def test_project_scoped_filtering():
+    pm, sup, project_a, site_a = await _setup_coordination_project("scopeA")
+    _, _, project_b, site_b = await _setup_coordination_project("scopeB")
+    item_a = await operations_engine.create_item(site_id=site_a["id"], title="Item A", category="general", actor=pm)
+    await operations_engine.assign_item(item_id=item_a["id"], assignee=sup, actor=pm)
+    item_b = await operations_engine.create_item(site_id=site_b["id"], title="Item B", category="general", actor=pm)
+    await operations_engine.assign_item(item_id=item_b["id"], assignee=sup, actor=pm)
+
+    all_inbox = await inbox_intelligence_service.build_coordination_inbox(sup)
+    scoped_inbox = await inbox_intelligence_service.build_coordination_inbox(sup, project_id=project_a["id"])
+
+    assert len(all_inbox["action_required"]) == 2
+    assert len(scoped_inbox["action_required"]) == 1
+    assert scoped_inbox["action_required"][0]["project_id"] == project_a["id"]
+
+
+async def test_unread_count_accuracy_after_grouping():
+    pm, sup, project, site = await _setup_coordination_project("unread")
+    item = await operations_engine.create_item(site_id=site["id"], title="Unread test", category="general", actor=pm)
+    await notification_engine.notify_assignment(
+        assignee_user_id=sup["id"], actor_name="PM", item_title="Unread test",
+        project_id=project["id"], entity_type="operational_item", entity_id=item["id"],
+    )
+    await notification_engine.notify_assignment(
+        assignee_user_id=sup["id"], actor_name="PM", item_title="Unread test",
+        project_id=project["id"], entity_type="operational_item", entity_id=item["id"], is_reassignment=True,
+    )
+
+    inbox = await inbox_intelligence_service.build_coordination_inbox(sup)
+    card = inbox["action_required"][0]
+    assert card["count"] == 2
+    assert card["read"] is False  # grouped card is unread if ANY underlying notification is unread
+
+    # Mark both underlying notifications read, confirm the grouped card reflects it
+    for nid in card["notification_ids"]:
+        await notification_engine.mark_read(nid, user_id=sup["id"])
+    inbox_after = await inbox_intelligence_service.build_coordination_inbox(sup)
+    assert inbox_after["action_required"][0]["read"] is True
+    assert await notification_engine.unread_count(sup["id"]) == 0
+
+
+async def test_client_visibility_restriction_via_per_user_scoping():
+    """A client never sees a PM/Supervisor's own assignment
+    notifications - structurally, via the same per-user scoping every
+    other role relies on, not a client-specific filter."""
+    pm, sup, project, site = await _setup_coordination_project("clientvis")
+    item = await operations_engine.create_item(site_id=site["id"], title="Internal item", category="general", actor=pm)
+    await operations_engine.assign_item(item_id=item["id"], assignee=sup, actor=pm)
+
+    client = await memory_engine.upsert_user(phone="90clientvis0002", name="Client", role="client")
+    client_inbox = await inbox_intelligence_service.build_coordination_inbox(client)
+
+    assert client_inbox["action_required"] == []
+    assert client_inbox["waiting_for_others"] == []
