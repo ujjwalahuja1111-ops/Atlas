@@ -444,9 +444,10 @@ def milestone_completion_percent(milestones: list[dict]) -> float:
 # module docstring's reconciliation note)
 # ---------------------------------------------------------------------------
 
-PAYMENT_REQUEST_STATUSES = ("draft", "raised", "sent", "partially_paid", "paid", "overdue", "cancelled")
+PAYMENT_REQUEST_STATUSES = ("draft", "under_review", "raised", "sent", "partially_paid", "paid", "overdue", "cancelled")
 PAYMENT_REQUEST_TRANSITIONS = {
-    "draft": {"raised", "cancelled"},
+    "draft": {"under_review", "cancelled"},
+    "under_review": {"raised", "draft", "cancelled"},  # approve -> raised; return-for-revision -> draft; reject -> cancelled
     "raised": {"sent", "cancelled"},
     "sent": {"partially_paid", "paid", "overdue", "cancelled"},
     "partially_paid": {"paid", "overdue"},
@@ -479,6 +480,8 @@ async def create_payment_request(*, actor: dict, project_id: str, milestone_id: 
         "due_date": due_date,
         "status": "draft",
         "notes": notes,
+        "raised_by_user_id": actor["id"],
+        "raised_by_user_name": actor["name"],
         "created_at": now,
         "updated_at": now,
     }
@@ -517,6 +520,32 @@ async def transition_payment_request_status(payment_request_id: str, to_status: 
     await append_commercial_event(project_id=pr["project_id"], kind="payment_request_status_changed", actor=actor,
                                   entity_type="payment_request", entity_id=payment_request_id,
                                   payload={"from": cur, "to": to_status})
+    # PX-03 Phase 1 Section 5 — role-specific Inbox integration,
+    # addressing pilot feedback #5 ("commercial actions not
+    # integrated with Inbox/approvals") directly. Never allowed to
+    # break the transition itself.
+    try:
+        from engines import notification_engine
+        if cur == "draft" and to_status == "under_review":
+            recipients = await db.users.find(
+                {"assigned_project_ids": pr["project_id"], "role": "management"}, {"_id": 0, "id": 1},
+            ).to_list(50)
+            for u in recipients:
+                await notification_engine.notify_commercial(
+                    user_id=u["id"], title=f"Payment Request {pr['number']} submitted for review",
+                    body=f"₹{pr['amount']:,.0f} awaiting your approval.",
+                    project_id=pr["project_id"], entity_type="payment_request", entity_id=payment_request_id,
+                )
+        elif cur == "under_review" and to_status == "raised":
+            raised_by = pr.get("raised_by_user_id")
+            if raised_by:
+                await notification_engine.notify_commercial(
+                    user_id=raised_by, title="Payment Request Approved",
+                    body=f"Payment Request {pr['number']} was approved.",
+                    project_id=pr["project_id"], entity_type="payment_request", entity_id=payment_request_id,
+                )
+    except Exception:
+        logger.exception(f"PX-03 payment request notification failed for '{payment_request_id}'; continuing")
     return await get_payment_request(payment_request_id)
 
 

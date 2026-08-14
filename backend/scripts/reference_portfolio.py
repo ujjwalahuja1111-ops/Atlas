@@ -424,6 +424,7 @@ async def migrate_rp001_to_commercial_engine(*, close_when_done: bool = True) ->
                     actor=admin, project_id=pid, milestone_id=ms["id"], amount=ms["contract_value"],
                     raised_date=planned, due_date=planned, notes=f"RA Bill for {name}",
                 )
+                await ce.transition_payment_request_status(pr["id"], "under_review", actor=admin)
                 await ce.transition_payment_request_status(pr["id"], "raised", actor=admin)
                 await ce.transition_payment_request_status(pr["id"], "sent", actor=admin)
                 await ce.record_payment(actor=client or admin, payment_request_id=pr["id"],
@@ -573,6 +574,7 @@ async def migrate_rp002_to_commercial_engine() -> dict:
                 raised_date=planned, due_date=planned, notes=f"RA Bill for {name}",
             )
             if target_pr_state in ("sent", "paid"):
+                await ce.transition_payment_request_status(pr["id"], "under_review", actor=admin)
                 await ce.transition_payment_request_status(pr["id"], "raised", actor=admin)
                 await ce.transition_payment_request_status(pr["id"], "sent", actor=admin)
             if target_pr_state == "paid":

@@ -34,6 +34,7 @@ from routes import knowledge_graph as knowledge_graph_routes
 from routes import notifications as notifications_routes
 from routes import daily_report as daily_report_routes
 from routes import inbox_intelligence as inbox_intelligence_routes
+from routes import commercial_workflow as commercial_workflow_routes
 
 
 logging.basicConfig(
@@ -91,6 +92,7 @@ app.include_router(knowledge_graph_routes.router)
 app.include_router(notifications_routes.router)
 app.include_router(daily_report_routes.router)
 app.include_router(inbox_intelligence_routes.router)
+app.include_router(commercial_workflow_routes.router)
 
 
 @app.get("/api/")
