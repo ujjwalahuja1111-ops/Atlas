@@ -70,6 +70,30 @@ export default function HomeScreen() {
   return <TimelineScreen stayHere={stay === '1'} />;
 }
 
+// PX-02 Phase 2 Section 1 — "Continue Working" (PM) and "Capture Site
+// Update" (Supervisor), the two explicitly-named primary CTAs. Both
+// navigate to the canonical Phase 1 Workspace shell
+// (/projects/[id]/workspace), which already defaults a PM to Execute
+// per Phase 1's own role-aware default-phase logic — no phase param
+// needs passing here.
+function ContinueWorkingCta({ projectId, router }: { projectId: string; router: ReturnType<typeof useRouter> }) {
+  return (
+    <Pressable testID="home-continue-working" onPress={() => router.push(`/projects/${projectId}/workspace`)} style={styles.ctaBanner}>
+      <Ionicons name="play-circle" size={22} color={theme.color.onBrand} />
+      <Text style={styles.ctaBannerText}>Continue Working</Text>
+    </Pressable>
+  );
+}
+
+function CaptureSiteUpdateCta({ router }: { router: ReturnType<typeof useRouter> }) {
+  return (
+    <Pressable testID="home-capture-site-update" onPress={() => router.push('/(tabs)/capture')} style={styles.ctaBanner}>
+      <Ionicons name="mic" size={22} color={theme.color.onBrand} />
+      <Text style={styles.ctaBannerText}>Capture Site Update</Text>
+    </Pressable>
+  );
+}
+
 function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
   const router = useRouter();
   const [sites, setSites] = useState<Site[]>([]);
@@ -97,14 +121,22 @@ function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
   // portfolio-wide view this task names specifically as their own
   // landing destination, distinct from the per-project Timeline this
   // screen otherwise renders.
+  // PX-02 Phase 2 Section 1 — Management still redirects straight to
+  // Executive Hub (its own content list here is already what
+  // Executive Hub shows). PM/Supervisor no longer auto-redirect: this
+  // task explicitly asks Home to become a real dashboard for them
+  // (active projects, today's assignments, blockers, a "Continue
+  // Working"/"Capture Site Update" CTA below) rather than an instant
+  // bounce-away — a deliberate change from RC1-HARDENING/PX-01B's own
+  // earlier "redirect immediately" design, made because this task's
+  // own Section 1 explicitly specifies dashboard content and a CTA
+  // button, not an instant navigation.
   useEffect(() => {
     if (stayHere) return;
-    if ((viewRole === 'pm' || viewRole === 'supervisor') && activeProjectId) {
-      router.replace(`/workspace/${activeProjectId}`);
-    } else if (viewRole === 'admin') {
+    if (viewRole === 'admin') {
       router.replace('/executive-hub');
     }
-  }, [viewRole, activeProjectId, router, stayHere]);
+  }, [viewRole, router, stayHere]);
 
   const stopPolling = () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; } };
 
@@ -261,8 +293,8 @@ function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
           keyExtractor={(i) => i.event.id}
           ListHeaderComponent={
             viewRole === 'admin' ? <><PortfolioSummaryWidget /><MyDaySection viewRole="admin" /><ManagementCreCards projectId={activeProjectId} /></> :
-            viewRole === 'pm' ? <><MyDaySection viewRole="pm" /><PmCreCards projectId={activeProjectId} /></> :
-            viewRole === 'supervisor' ? <><MyDaySection viewRole="supervisor" /><SupervisorCreCards projectId={activeProjectId} /></> :
+            viewRole === 'pm' ? <>{activeProjectId && <ContinueWorkingCta projectId={activeProjectId} router={router} />}<MyDaySection viewRole="pm" /><PmCreCards projectId={activeProjectId} /></> :
+            viewRole === 'supervisor' ? <><CaptureSiteUpdateCta router={router} /><MyDaySection viewRole="supervisor" /><SupervisorCreCards projectId={activeProjectId} /></> :
             null
           }
           renderItem={({ item, index }) => (
@@ -862,6 +894,12 @@ const badge = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
+  ctaBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
+    backgroundColor: theme.color.brand, borderRadius: theme.radius.md,
+    paddingVertical: 14, marginHorizontal: theme.spacing.lg, marginTop: theme.spacing.md,
+  },
+  ctaBannerText: { color: theme.color.onBrand, fontSize: 15, fontWeight: '800' },
   safe: { flex: 1, backgroundColor: theme.color.surface },
   header: { flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: theme.spacing.lg, paddingTop: theme.spacing.md, paddingBottom: theme.spacing.sm },
   h1: { color: theme.color.text, fontSize: 32, fontWeight: '900', letterSpacing: 2 },

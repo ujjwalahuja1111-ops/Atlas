@@ -5,6 +5,7 @@ import { View, StyleSheet, ActivityIndicator } from 'react-native';
 import { theme } from '@/src/theme';
 import { TABS_FOR, getViewRole, completeLoginRouting, type TabDef, type ViewRole } from '@/src/roles';
 import { loadAuth, saveAuth, apiGetMe } from '@/src/api';
+import { apiUnreadNotificationCount } from '@/src/notifications_api';
 
 /** Sprint-3: role-based tab bar.
  * A single Tabs.Screen list is declared for every possible screen, but each
@@ -12,6 +13,18 @@ import { loadAuth, saveAuth, apiGetMe } from '@/src/api';
  * current role's tab spec. No screens are duplicated. */
 export default function TabLayout() {
   const [role, setRole] = useState<ViewRole | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  // PX-02 Phase 2 Section 4/9 — Inbox tab badge. Polled rather than
+  // pushed (Atlas has no real-time socket layer, and this task's own
+  // constraints explicitly forbid adding one here), matching every
+  // other "unread count" surface already built in PX-01A/B.
+  useEffect(() => {
+    const fetchUnread = () => apiUnreadNotificationCount().then(setUnreadCount).catch(() => {});
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   useEffect(() => {
     getViewRole().then(setRole);
@@ -83,11 +96,11 @@ export default function TabLayout() {
           ),
         } : hidden
       } />
-      <Tabs.Screen name="ops" options={
-        byName.ops ? {
-          title: byName.ops.label,
+      <Tabs.Screen name="projects" options={
+        byName.projects ? {
+          title: byName.projects.label,
           tabBarIcon: ({ color, focused }) => (
-            <Ionicons name={renderIcon(byName.ops!.icon, focused)} size={26} color={color} />
+            <Ionicons name={renderIcon(byName.projects!.icon, focused)} size={26} color={color} />
           ),
         } : hidden
       } />
@@ -101,6 +114,15 @@ export default function TabLayout() {
           ),
         } : hidden
       } />
+      <Tabs.Screen name="notifications" options={
+        byName.notifications ? {
+          title: byName.notifications.label,
+          tabBarIcon: ({ color, focused }) => (
+            <Ionicons name={renderIcon(byName.notifications!.icon, focused)} size={26} color={color} />
+          ),
+          tabBarBadge: unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : undefined,
+        } : hidden
+      } />
       <Tabs.Screen name="profile" options={
         byName.profile ? {
           title: byName.profile.label,
@@ -109,6 +131,15 @@ export default function TabLayout() {
           ),
         } : hidden
       } />
+      {/* PX-02 Phase 2 Section 7 — Ops removed as a visible top-level
+          tab (its own content already lives inside the Workspace
+          shell's own Execute phase, per PX-02 Phase 1). The route
+          itself is untouched and stays fully reachable via direct
+          navigation, matching Section 6's own "do not remove legacy
+          routes" rule — this hidden entry is the same pattern this
+          file already used for every role/tab combination that
+          doesn't apply, not a new mechanism. */}
+      <Tabs.Screen name="ops" options={hidden} />
     </Tabs>
   );
 }

@@ -364,6 +364,13 @@ export default function CommercialWorkspaceScreen() {
         </Pressable>
       ) : null}
 
+      {id && (
+        <Pressable testID="legacy-open-full-workspace" onPress={() => router.push(`/projects/${id}/workspace`)} style={styles.legacyBanner}>
+          <Text style={styles.legacyBannerText}>Bill Phase • Open Full Workspace</Text>
+          <Ionicons name="arrow-forward" size={14} color={theme.color.brand} />
+        </Pressable>
+      )}
+
       <ScrollView
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.color.brand} />}
@@ -1146,6 +1153,13 @@ const styles = StyleSheet.create({
     padding: 10, borderRadius: theme.radius.sm, backgroundColor: theme.color.surface2,
   },
   errorBannerText: { color: theme.color.error, fontSize: 13, flex: 1 },
+  legacyBanner: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6,
+    marginHorizontal: theme.spacing.lg, marginTop: 6, paddingVertical: 8,
+    borderRadius: theme.radius.sm, backgroundColor: theme.color.surface2,
+    borderWidth: 1, borderColor: theme.color.border, borderStyle: 'dashed',
+  },
+  legacyBannerText: { color: theme.color.brand, fontSize: 12, fontWeight: '700' },
   emptyState: { alignItems: 'center', gap: 10, paddingVertical: 60 },
   emptyStateText: { color: theme.color.textDim, fontSize: 14 },
   section: { backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, overflow: 'hidden' },

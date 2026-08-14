@@ -133,29 +133,34 @@ export const VIEW_PERMS: Record<ViewRole, ViewPerms> = {
 };
 
 /** Tab bar definition per role. Tabs not listed here are hidden via href:null. */
-export type TabDef = { name: 'index' | 'ops' | 'capture' | 'profile'; label: string; icon: string };
+export type TabDef = { name: 'index' | 'projects' | 'capture' | 'notifications' | 'profile'; label: string; icon: string };
 export const TABS_FOR: Record<ViewRole, TabDef[]> = {
   client:      [
-    { name: 'index',   label: 'HOME',      icon: 'home' },
-    { name: 'profile', label: 'PROFILE',   icon: 'person' },
+    { name: 'index',         label: 'HOME',     icon: 'home' },
+    { name: 'projects',      label: 'PROJECTS', icon: 'briefcase' },
+    { name: 'notifications', label: 'INBOX',    icon: 'notifications' },
+    { name: 'profile',       label: 'MORE',     icon: 'ellipsis-horizontal' },
   ],
   supervisor:  [
-    { name: 'index',   label: 'TODAY',   icon: 'today' },
-    { name: 'capture', label: 'CAPTURE', icon: 'mic' },
-    { name: 'ops',     label: 'ISSUES',  icon: 'warning' },
-    { name: 'profile', label: 'PROFILE', icon: 'person' },
+    { name: 'index',         label: 'HOME',     icon: 'home' },
+    { name: 'projects',      label: 'PROJECTS', icon: 'briefcase' },
+    { name: 'capture',       label: 'CAPTURE',  icon: 'mic' },
+    { name: 'notifications', label: 'INBOX',    icon: 'notifications' },
+    { name: 'profile',       label: 'MORE',     icon: 'ellipsis-horizontal' },
   ],
   pm:          [
-    { name: 'index',   label: 'DASHBOARD',  icon: 'grid' },
-    { name: 'capture', label: 'CAPTURE',    icon: 'mic' },
-    { name: 'ops',     label: 'OPERATIONS', icon: 'list-circle' },
-    { name: 'profile', label: 'PROFILE',    icon: 'person' },
+    { name: 'index',         label: 'HOME',     icon: 'home' },
+    { name: 'projects',      label: 'PROJECTS', icon: 'briefcase' },
+    { name: 'capture',       label: 'CAPTURE',  icon: 'mic' },
+    { name: 'notifications', label: 'INBOX',    icon: 'notifications' },
+    { name: 'profile',       label: 'MORE',     icon: 'ellipsis-horizontal' },
   ],
   admin:       [
-    { name: 'index',   label: 'DASHBOARD',  icon: 'grid' },
-    { name: 'capture', label: 'CAPTURE',    icon: 'mic' },
-    { name: 'ops',     label: 'OPERATIONS', icon: 'list-circle' },
-    { name: 'profile', label: 'PROFILE',    icon: 'person' },
+    { name: 'index',         label: 'HOME',     icon: 'home' },
+    { name: 'projects',      label: 'PROJECTS', icon: 'briefcase' },
+    { name: 'capture',       label: 'CAPTURE',  icon: 'mic' },
+    { name: 'notifications', label: 'INBOX',    icon: 'notifications' },
+    { name: 'profile',       label: 'MORE',     icon: 'ellipsis-horizontal' },
   ],
 };
 
