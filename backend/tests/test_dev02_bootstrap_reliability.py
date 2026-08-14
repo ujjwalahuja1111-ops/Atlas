@@ -21,6 +21,7 @@ Run from backend/:  python -m pytest tests/test_dev02_bootstrap_reliability.py -
 import os
 import asyncio
 import pytest
+from datetime import datetime, timezone
 
 mongomock_motor = pytest.importorskip("mongomock_motor")
 
@@ -235,6 +236,7 @@ async def test_non_completion_transitions_unaffected(dependency_chain):
 # assigning a health value directly.
 # ==========================================================================
 from engines import reasoning_engine, commercial_engine, operations_engine, knowledge_graph_engine, notification_engine  # noqa: E402
+from services import daily_site_report_service  # noqa: E402
 reasoning_engine.db = _mock_db
 commercial_engine.db = _mock_db
 operations_engine.db = _mock_db
@@ -1832,3 +1834,127 @@ async def test_mark_read_is_scoped_to_the_correct_user():
 
     await notification_engine.mark_read(notif["id"], user_id=other_id)
     assert await notification_engine.unread_count(owner_id) == 1  # untouched
+
+
+# ==========================================================================
+# PX-02 Phase 3 — AI Daily Site Report Generator. Matches the exact
+# scenarios manually verified live through the real API before being
+# written as permanent tests.
+# ==========================================================================
+async def _setup_report_project(name_suffix: str):
+    admin = {"id": f"p3_admin_{name_suffix}", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name=f"P3 Report Test {name_suffix}", code=f"P3RPT{name_suffix}")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    return admin, project, site
+
+
+async def test_daily_report_with_no_activity():
+    admin, project, site = await _setup_report_project("empty")
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    report = await daily_site_report_service.generate_daily_report(project["id"], today, user=admin)
+
+    assert report["site_activity_snapshot"]["new_capture_events"] == 0
+    assert report["work_completed_today"] == []
+    assert report["blockers_and_risks"] == []
+    assert "no new capture events" in report["executive_summary"]
+    assert report["ai_forecast_impact"]["confidence"] == "High confidence"
+
+
+async def test_daily_report_with_capture_events_only():
+    admin, project, site = await _setup_report_project("capture")
+    today = datetime.now(timezone.utc).date().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await core_db.db.events.insert_one({
+        "id": "evt_p3test1", "site_id": site["id"], "project_id": project["id"],
+        "text_input": "Reinforcement work completed for footing F-12",
+        "photo_asset_ids": ["asset_1"], "server_created_at": now_iso, "kind": "text",
+    })
+
+    report = await daily_site_report_service.generate_daily_report(project["id"], today, user=admin)
+
+    assert report["site_activity_snapshot"]["new_capture_events"] == 1
+    assert report["site_activity_snapshot"]["photos_attached"] == 1
+    assert "Reinforcement work completed for footing F-12" in report["work_completed_today"]
+
+
+async def test_daily_report_with_blockers_and_approvals():
+    admin, project, site = await _setup_report_project("blockers")
+    today = datetime.now(timezone.utc).date().isoformat()
+
+    item = await operations_engine.create_item(
+        site_id=site["id"], title="Steel delivery delayed", category="material_requirement", actor=admin)
+    await operations_engine.set_blocker(item_id=item["id"], actor=admin, category="material", note="Pending procurement")
+    approval = await operations_engine.create_item(
+        site_id=site["id"], title="Approve tile selection", category="client_approval", actor=admin)
+
+    report = await daily_site_report_service.generate_daily_report(project["id"], today, user=admin)
+
+    assert len(report["blockers_and_risks"]) == 1
+    assert report["blockers_and_risks"][0]["title"] == "Steel delivery delayed"
+    assert report["blockers_and_risks"][0]["impact_category"] == "schedule"
+    assert len(report["client_decisions_pending"]) == 1
+    assert report["client_decisions_pending"][0]["title"] == "Approve tile selection"
+    assert "1 open blocker" in report["ai_forecast_impact"]["statement"]
+    assert "remains unresolved" in report["ai_forecast_impact"]["statement"]  # singular agreement
+
+
+async def test_client_safe_transformation_removes_restricted_fields():
+    admin, project, site = await _setup_report_project("clientsafe")
+    today = datetime.now(timezone.utc).date().isoformat()
+    item = await operations_engine.create_item(
+        site_id=site["id"], title="Blocked item", category="material_requirement", actor=admin)
+    await operations_engine.set_blocker(item_id=item["id"], actor=admin, category="material", note="test")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    await commercial_engine.create_budget(actor=admin, project_id=project["id"], original_budget=800000)
+    await commercial_engine.record_actual_cost(project["id"], 50000, actor=admin, reason="test expense")
+
+    internal = await daily_site_report_service.generate_daily_report(project["id"], today, user=admin)
+    assert "owner" in internal["blockers_and_risks"][0]
+    assert len(internal["commercial_attention"]) >= 1
+
+    safe = daily_site_report_service.to_client_safe(internal)
+    assert safe["client_safe"] is True
+    assert "owner" not in safe["blockers_and_risks"][0]
+    assert safe["commercial_attention"] == []
+    # the underlying title/impact data must still be present - client-safe
+    # removes specific restricted fields, it doesn't hide the blocker's own existence
+    assert safe["blockers_and_risks"][0]["title"] == "Blocked item"
+
+
+async def test_daily_report_metrics_are_deterministic_across_repeated_calls():
+    admin, project, site = await _setup_report_project("determinism")
+    today = datetime.now(timezone.utc).date().isoformat()
+    item = await operations_engine.create_item(
+        site_id=site["id"], title="Test item", category="general", actor=admin)
+    await operations_engine.set_blocker(item_id=item["id"], actor=admin, category="other", note="test")
+
+    report_a = await daily_site_report_service.generate_daily_report(project["id"], today, user=admin)
+    report_b = await daily_site_report_service.generate_daily_report(project["id"], today, user=admin)
+
+    assert report_a["site_activity_snapshot"] == report_b["site_activity_snapshot"]
+    assert report_a["blockers_and_risks"] == report_b["blockers_and_risks"]
+
+
+async def test_daily_report_markdown_export_formatting():
+    admin, project, site = await _setup_report_project("export")
+    today = datetime.now(timezone.utc).date().isoformat()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    await core_db.db.events.insert_one({
+        "id": "evt_p3test2", "site_id": site["id"], "project_id": project["id"],
+        "text_input": "Test capture", "photo_asset_ids": [], "server_created_at": now_iso, "kind": "text",
+    })
+
+    report = await daily_site_report_service.generate_daily_report(project["id"], today, user=admin)
+    markdown = daily_site_report_service.render_markdown(report)
+
+    assert markdown.startswith("# Atlas Daily Site Report")
+    assert f"**Project:** {report['project_name']}" in markdown
+    assert "## Executive Summary" in markdown
+    assert "## Site Activity Snapshot" in markdown
+    assert "| New capture events |" in markdown
+    assert "## Blockers & Risks" in markdown
+    assert "## AI Forecast Impact" in markdown
+    assert "Test capture" in markdown

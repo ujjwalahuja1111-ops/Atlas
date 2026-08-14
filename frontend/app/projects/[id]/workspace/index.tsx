@@ -137,7 +137,7 @@ export default function ProjectWorkspaceShell() {
         {phase === 'setup' && id && <SetupPhase projectId={id} project={project} sites={sites} summary={summary} onProjectChanged={load} />}
         {phase === 'plan' && <PlanPhase summary={summary} />}
         {phase === 'execute' && <UnifiedWorkspace />}
-        {phase === 'review' && <ReviewPhase health={health} insights={insights} sinceLastVisit={sinceLastVisit} viewRole={viewRole} />}
+        {phase === 'review' && id && <ReviewPhase projectId={id} health={health} insights={insights} sinceLastVisit={sinceLastVisit} viewRole={viewRole} />}
         {phase === 'bill' && <CommercialWorkspaceScreen />}
         {phase === 'close' && id && <ClosePhase projectId={id} project={project} onArchived={() => router.replace('/projects')} />}
       </View>

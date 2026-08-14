@@ -32,6 +32,7 @@ from routes import reasoning as reasoning_routes
 from routes import commercial as commercial_routes
 from routes import knowledge_graph as knowledge_graph_routes
 from routes import notifications as notifications_routes
+from routes import daily_report as daily_report_routes
 
 
 logging.basicConfig(
@@ -87,6 +88,7 @@ app.include_router(reasoning_routes.router)
 app.include_router(commercial_routes.router)
 app.include_router(knowledge_graph_routes.router)
 app.include_router(notifications_routes.router)
+app.include_router(daily_report_routes.router)
 
 
 @app.get("/api/")
