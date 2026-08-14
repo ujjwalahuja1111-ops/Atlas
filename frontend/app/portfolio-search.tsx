@@ -61,9 +61,9 @@ export default function PortfolioSearchScreen() {
         ) : (
           <>
             <ResultSection title="PROJECTS" items={result.projects}
-              labelFor={(x) => x.name} onPress={(x) => router.push(`/projects/${x.id}`)} />
+              labelFor={(x) => x.name} onPress={(x) => router.push(`/projects/${x.id}/workspace`)} />
             <ResultSection title="SITES" items={result.sites}
-              labelFor={(x) => x.name} onPress={(x) => router.push(`/projects/${x.project_id}`)} />
+              labelFor={(x) => x.name} onPress={(x) => router.push(`/projects/${x.project_id}/workspace`)} />
             <ResultSection title="WORKFLOW ACTIVITIES" items={result.activities}
               labelFor={(x) => x.name} onPress={(x) => router.push(`/workflow/${x.project_id}`)} />
             <ResultSection title="OPERATIONAL ITEMS" items={result.operational_items}

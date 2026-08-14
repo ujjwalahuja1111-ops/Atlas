@@ -58,7 +58,7 @@ export default function ProjectsScreen() {
     if ((p as any).archived_at) return;
     // Sprint 2: navigate into project workspace (sites + summary) instead of
     // silently defaulting to the first site.
-    router.push(`/projects/${p.id}`);
+    router.push(`/projects/${p.id}/workspace`);
   };
 
   const onSave = async () => {
