@@ -14,10 +14,15 @@ import {
   apiCreateContract, apiUpdateContract, apiCreateBudget, apiReviseBudget,
   apiCreateMilestone, apiUpdateMilestone,
   apiCreateVariation, apiSubmitVariation, apiSendVariationForClientReview,
-  apiCreatePaymentRequest, apiRecordPayment,
+  apiCreatePaymentRequest, apiRecordPayment, apiSetPaymentRequestStatus,
   type CommercialSummary, type CommercialEvent, type Milestone, type PaymentRequest,
   type Payment, type Variation,
 } from '@/src/commercial_api';
+import {
+  apiGetProfitabilityPanel, apiGetCommercialHealth, apiGetBillingCollections, apiGetCashFlowTimeline,
+  type ProfitabilityPanel, type CommercialHealth as CommercialHealthType, type KpiValue,
+  type BillingCollections, type CashFlowTimelineItem,
+} from '@/src/commercial_workflow_api';
 
 function formatInr(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
@@ -46,6 +51,7 @@ const EVENT_KIND_LABEL: Record<string, string> = {
   payment_received: 'Payment received', milestone_achieved: 'Milestone completed',
   milestone_created: 'Milestone created', milestone_updated: 'Milestone updated',
   budget_revised: 'Budget revised', budget_created: 'Budget created',
+  payment_request_raised: 'Payment request raised', payment_follow_up_due: 'Payment follow-up due',
 };
 
 const EVENT_KIND_ICON: Record<string, any> = {
@@ -55,7 +61,7 @@ const EVENT_KIND_ICON: Record<string, any> = {
   payment_received: 'cash', milestone_achieved: 'flag', budget_updated: 'wallet',
 };
 
-type SectionKey = 'contract' | 'budget' | 'milestones' | 'billing' | 'variations' | 'breakdown';
+type SectionKey = 'contract' | 'budget' | 'milestones' | 'billing' | 'variations' | 'breakdown' | 'cashflow_summary' | 'billing_collections' | 'cash_flow_timeline';
 
 export default function CommercialWorkspaceScreen() {
   const router = useRouter();
@@ -65,11 +71,17 @@ export default function CommercialWorkspaceScreen() {
   const [viewRole, setViewRole] = useState<ViewRole | null>(null);
   const [summary, setSummary] = useState<CommercialSummary>(null);
   const [events, setEvents] = useState<CommercialEvent[]>([]);
+  const [profitabilityPanel, setProfitabilityPanel] = useState<ProfitabilityPanel | null>(null);
+  const [commercialHealth, setCommercialHealth] = useState<CommercialHealthType | null>(null);
+  const [billingCollections, setBillingCollections] = useState<BillingCollections | null>(null);
+  const [cashFlowTimeline, setCashFlowTimeline] = useState<CashFlowTimelineItem[]>([]);
+  const [viewCalculation, setViewCalculation] = useState<{ label: string; kpi: KpiValue } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Record<SectionKey, boolean>>({
-    contract: true, budget: true, milestones: true, billing: false, variations: true, breakdown: true,
+    contract: true, budget: true, milestones: true, billing: false, variations: true, breakdown: true, cashflow_summary: true,
+    billing_collections: true, cash_flow_timeline: false,
   });
   const [billingView, setBillingView] = useState<'requests' | 'payments'>('requests');
   const [showHistory, setShowHistory] = useState(false);
@@ -94,16 +106,33 @@ export default function CommercialWorkspaceScreen() {
   const setField = (key: string, value: string) => setFormValues((v) => ({ ...v, [key]: value }));
   const closeForm = () => { setActiveForm(null); setFormValues({}); };
 
+  const onPaymentRequestStatusChange = async (paymentRequestId: string, status: string) => {
+    try {
+      await apiSetPaymentRequestStatus(paymentRequestId, status);
+      await load();
+    } catch {
+      setLoadError('Could not update the payment request status.');
+    }
+  };
+
   const load = useCallback(async () => {
     if (!id) return;
     setLoadError(null);
     try {
-      const [s, e] = await Promise.all([
+      const [s, e, p, h, bc, tl] = await Promise.all([
         apiGetCommercialSummary(id),
         apiListCommercialEvents(id).catch(() => []),
+        apiGetProfitabilityPanel(id).catch(() => null),
+        apiGetCommercialHealth(id).catch(() => null),
+        apiGetBillingCollections(id).catch(() => null),
+        apiGetCashFlowTimeline(id).catch(() => null),
       ]);
       setSummary(s);
       setEvents(e);
+      setProfitabilityPanel(p);
+      setCommercialHealth(h);
+      setBillingCollections(bc);
+      setCashFlowTimeline(tl || []);
     } catch {
       setLoadError('Could not load commercial data.');
     }
@@ -393,6 +422,28 @@ export default function CommercialWorkspaceScreen() {
                 (healthy/attention/critical) plus budget variance when
                 a budget exists. No new computation, no AI. */}
             {(() => {
+              if (commercialHealth) {
+                const statusMeta = {
+                  healthy: { emoji: '🟢', style: styles.healthBannerGood, label: 'Healthy' },
+                  attention: { emoji: '🟡', style: styles.healthBannerAttention, label: 'Attention' },
+                  risk: { emoji: '🔴', style: styles.healthBannerRisk, label: 'Risk' },
+                }[commercialHealth.status];
+                return (
+                  <View style={[styles.healthBanner, statusMeta.style]} testID="commercial-health-banner">
+                    <Text style={styles.healthBannerEmoji}>{statusMeta.emoji}</Text>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.healthBannerTitle}>Commercial Health — {statusMeta.label}</Text>
+                      {commercialHealth.reasons.length > 0 ? (
+                        commercialHealth.reasons.map((r) => (
+                          <Text key={r} style={styles.healthBannerSubtitle}>• {r.replace(/_/g, ' ')}</Text>
+                        ))
+                      ) : (
+                        <Text style={styles.healthBannerSubtitle}>No commercial attention items right now.</Text>
+                      )}
+                    </View>
+                  </View>
+                );
+              }
               const cashCritical = summary.cash_flow_signal === 'critical';
               const cashAttention = summary.cash_flow_signal === 'attention';
               const budgetOver = !!summary.budget && summary.budget.variance < 0;
@@ -454,26 +505,78 @@ export default function CommercialWorkspaceScreen() {
                 const forecastProfit = forecastCost !== null ? revenueTotal - forecastCost : null;
                 const forecastMargin = forecastProfit !== null && revenueTotal > 0
                   ? (forecastProfit / revenueTotal) * 100 : null;
+                const kpis = profitabilityPanel?.kpis;
+                const vc = (label: string, key: keyof NonNullable<typeof kpis>) =>
+                  kpis ? () => setViewCalculation({ label, kpi: kpis[key] }) : undefined;
                 return (
                   <View>
-                    <BreakdownRow label="Contract Value" value={formatInr(summary.contract.original_contract_value)} source="Contract" />
-                    <BreakdownRow label="Approved Variations" value={formatInr(summary.approved_variations_total)} source="Variation Engine" />
-                    <BreakdownRow label="Revenue Total" value={formatInr(revenueTotal)} source="Contract" emphasis />
+                    <BreakdownRow label="Contract Value" value={formatInr(summary.contract.original_contract_value)} source="Contract" onViewCalculation={vc('Contract Value', 'contract_value')} />
+                    <BreakdownRow label="Approved Variations" value={formatInr(summary.approved_variations_total)} source="Variation Engine" onViewCalculation={vc('Approved Variations', 'approved_variations')} />
+                    <BreakdownRow label="Revenue Total" value={formatInr(revenueTotal)} source="Contract" emphasis onViewCalculation={vc('Current Revenue Potential', 'current_revenue_potential')} />
                     <View style={styles.breakdownDivider} />
-                    <BreakdownRow label="Budget" value={budget ? formatInr(budget.current_budget) : 'Not Available Yet'} source="Budget Engine" unavailable={!budget} />
-                    <BreakdownRow label="Committed Cost" value={budget ? formatInr(budget.committed_cost) : 'Not Available Yet'} source="Expense Ledger" unavailable={!budget} />
-                    <BreakdownRow label="Actual Cost" value={budget ? formatInr(budget.actual_cost) : 'Not Available Yet'} source="Expense Ledger" unavailable={!budget} />
+                    <BreakdownRow label="Budget" value={budget ? formatInr(budget.current_budget) : 'Not Available Yet'} source="Budget Engine" unavailable={!budget} onViewCalculation={vc('Budget', 'budget')} />
+                    <BreakdownRow label="Committed Cost" value={budget ? formatInr(budget.committed_cost) : 'Not Available Yet'} source="Expense Ledger" unavailable={!budget} onViewCalculation={vc('Committed Cost', 'committed_cost')} />
+                    <BreakdownRow label="Actual Cost" value={budget ? formatInr(budget.actual_cost) : 'Not Available Yet'} source="Expense Ledger" unavailable={!budget} onViewCalculation={vc('Actual Expenses', 'actual_expenses')} />
+                    <BreakdownRow label="Remaining Budget" value={budget && kpis ? formatInr(kpis.remaining_budget.value ?? 0) : 'Not Available Yet'} source="Budget - Committed Cost" unavailable={!budget} onViewCalculation={vc('Remaining Budget', 'remaining_budget')} />
                     <View style={styles.breakdownDivider} />
                     <BreakdownRow label="Forecast Cost at Completion" value={forecastCost !== null ? formatInr(forecastCost) : 'Not Available Yet'} source="Forecast Calculation" unavailable={forecastCost === null} />
-                    <BreakdownRow label="Forecast Profit" value={forecastProfit !== null ? formatInr(forecastProfit) : 'Not Available Yet'} source="Forecast Calculation" unavailable={forecastProfit === null} emphasis />
-                    <BreakdownRow label="Forecast Margin" value={forecastMargin !== null ? `${forecastMargin.toFixed(1)}%` : 'Not Available Yet'} source="Forecast Calculation" unavailable={forecastMargin === null} emphasis />
+                    <BreakdownRow label="Forecast Profit" value={forecastProfit !== null ? formatInr(forecastProfit) : 'Not Available Yet'} source="Forecast Calculation" unavailable={forecastProfit === null} emphasis onViewCalculation={vc('Forecast Profit', 'forecast_profit')} />
+                    <BreakdownRow label="Forecast Margin" value={forecastMargin !== null ? `${forecastMargin.toFixed(1)}%` : 'Not Available Yet'} source="Forecast Calculation" unavailable={forecastMargin === null} emphasis onViewCalculation={vc('Forecast Margin %', 'forecast_margin_percent')} />
                     {!budget && (
                       <Text style={styles.mutedText}>Cost figures need a Budget set up for this project — create one in the Budget section below.</Text>
+                    )}
+                    {!kpis && (
+                      <Text style={styles.mutedText}>Calculation breakdowns are only available to Management and Project Managers.</Text>
                     )}
                   </View>
                 );
               })()}
             </Section>
+
+            {/* PX-03 Phase 2 Section 2 — Billing & Collections. Reuses
+                the existing billing-collections endpoint directly, no
+                new receivables calculation. null for Site Supervisor
+                (403), rendered for everyone else including Client
+                (this task's own Section 6 explicitly names billed/
+                received/outstanding as client-safe). */}
+            {billingCollections && (
+              <Section title="BILLING & COLLECTIONS" icon="cash-outline" expanded={expanded.billing_collections ?? true} onToggle={() => toggle('billing_collections')} testID="section-billing-collections">
+                <View style={styles.commercialGrid}>
+                  <Tile label="Billed to Date" value={formatInr(billingCollections.billed_to_date.value ?? 0)} />
+                  <Tile label="Received to Date" value={formatInr(billingCollections.received_to_date.value ?? 0)} />
+                  <Tile label="Outstanding" value={formatInr(billingCollections.outstanding_receivables.value ?? 0)}
+                    negative={(billingCollections.outstanding_receivables.value ?? 0) > 0} />
+                  <Tile label="Collection Efficiency"
+                    value={billingCollections.collection_efficiency_percent.value !== null
+                      ? `${billingCollections.collection_efficiency_percent.value.toFixed(1)}%` : 'Not Available Yet'} />
+                </View>
+                {summary.payment_requests.filter((pr) => pr.status === 'overdue').length > 0 && (
+                  <View style={styles.overdueBanner} testID="overdue-payment-requests-banner">
+                    <Ionicons name="alert-circle" size={16} color="#fff" />
+                    <Text style={styles.overdueBannerText}>
+                      {summary.payment_requests.filter((pr) => pr.status === 'overdue').length} payment request(s) overdue
+                    </Text>
+                  </View>
+                )}
+              </Section>
+            )}
+
+            {/* PX-03 Phase 2 Section 4 — Cash-Flow Timeline. Reuses
+                the existing cash-flow-timeline endpoint directly, a
+                lightweight coordination view, never a forecasting
+                engine, per this task's own explicit rule. */}
+            {cashFlowTimeline.length > 0 && (
+              <Section title="CASH-FLOW TIMELINE" icon="time-outline" expanded={expanded.cash_flow_timeline ?? false} onToggle={() => toggle('cash_flow_timeline')} testID="section-cash-flow-timeline">
+                {cashFlowTimeline.map((item, i) => (
+                  <View key={i} style={styles.row}>
+                    <Text style={styles.rowTitle}>{formatDate(item.date)} — {EVENT_KIND_LABEL[item.kind] || item.kind}</Text>
+                    {item.payload?.amount !== undefined && (
+                      <Text style={styles.rowSubtext}>{formatInr(item.payload.amount)}{item.payload.number ? ` — ${item.payload.number}` : ''}</Text>
+                    )}
+                  </View>
+                ))}
+              </Section>
+            )}
 
             {/* CONTRACT — stays highly visible, immediately after Cash Flow */}
             <Section title="CONTRACT" icon="document-text" expanded={expanded.contract} onToggle={() => toggle('contract')} testID="section-contract"
@@ -617,8 +720,9 @@ export default function CommercialWorkspaceScreen() {
                     filterPaymentRequests(summary.payment_requests, prFilter).map((pr) => (
                       <PaymentRequestRow key={pr.id} pr={pr} payments={summary.payments}
                         milestone={summary.milestones.find((m) => m.id === pr.milestone_id) || null}
-                        canRecord={canDecide}
-                        onRecordPayment={() => { setFormValues({ amount: String(pr.amount) }); setActiveForm({ kind: 'record-payment', paymentRequestId: pr.id }); }} />
+                        canRecord={canDecide} viewRole={viewRole}
+                        onRecordPayment={() => { setFormValues({ amount: String(pr.amount) }); setActiveForm({ kind: 'record-payment', paymentRequestId: pr.id }); }}
+                        onStatusChange={onPaymentRequestStatusChange} />
                     ))
                   )}
                 </>
@@ -771,6 +875,40 @@ export default function CommercialWorkspaceScreen() {
         ]}
         values={formValues} onChange={setField} onSave={onSaveForm} onCancel={closeForm} saving={formSaving}
       />
+      <Modal visible={!!viewCalculation} animationType="slide" transparent onRequestClose={() => setViewCalculation(null)} testID="view-calculation-modal">
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            {viewCalculation && (
+              <>
+                <Text style={styles.calcModalTitle}>{viewCalculation.label}</Text>
+                <Text style={styles.calcModalFormula}>{viewCalculation.kpi.calculation.formula}</Text>
+                {viewCalculation.kpi.calculation.inputs && (
+                  <View style={{ marginTop: 12 }}>
+                    {Object.entries(viewCalculation.kpi.calculation.inputs).map(([k, v]) => (
+                      <View key={k} style={styles.calcModalInputRow}>
+                        <Text style={styles.calcModalInputLabel}>{k.replace(/_/g, ' ')}</Text>
+                        <Text style={styles.calcModalInputValue}>{v === null ? 'Not Available Yet' : formatInr(v)}</Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+                <View style={styles.calcModalDivider} />
+                <View style={styles.calcModalInputRow}>
+                  <Text style={styles.calcModalResultLabel}>{viewCalculation.label}</Text>
+                  <Text style={styles.calcModalResultValue}>
+                    {viewCalculation.kpi.value === null ? 'Not Available Yet'
+                      : viewCalculation.label.includes('Margin') ? `${viewCalculation.kpi.value.toFixed(1)}%`
+                      : formatInr(viewCalculation.kpi.value)}
+                  </Text>
+                </View>
+                <Pressable testID="view-calculation-close" onPress={() => setViewCalculation(null)} style={styles.calcModalCloseBtn}>
+                  <Text style={styles.calcModalCloseBtnText}>Close</Text>
+                </Pressable>
+              </>
+            )}
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -876,11 +1014,17 @@ function Tile({ label, value, negative }: { label: string; value: string; negati
   );
 }
 
-function BreakdownRow({ label, value, source, emphasis, unavailable }: {
+function BreakdownRow({ label, value, source, emphasis, unavailable, onViewCalculation }: {
   label: string; value: string; source: string; emphasis?: boolean; unavailable?: boolean;
+  onViewCalculation?: () => void;
 }) {
+  const Wrapper = onViewCalculation ? Pressable : View;
   return (
-    <View style={styles.breakdownRow} testID={`breakdown-${label.replace(/\s+/g, '-').toLowerCase()}`}>
+    <Wrapper
+      style={styles.breakdownRow}
+      testID={`breakdown-${label.replace(/\s+/g, '-').toLowerCase()}`}
+      {...(onViewCalculation ? { onPress: onViewCalculation } : {})}
+    >
       <View style={{ flex: 1 }}>
         <Text style={[styles.breakdownLabel, emphasis && styles.breakdownLabelEmphasis]}>{label}</Text>
         <Text style={styles.breakdownSource}>{source}</Text>
@@ -888,7 +1032,8 @@ function BreakdownRow({ label, value, source, emphasis, unavailable }: {
       <Text style={[styles.breakdownValue, emphasis && styles.breakdownValueEmphasis, unavailable && styles.breakdownValueUnavailable]}>
         {value}
       </Text>
-    </View>
+      {onViewCalculation && <Ionicons name="information-circle-outline" size={16} color={theme.color.textDim} style={{ marginLeft: 6 }} />}
+    </Wrapper>
   );
 }
 
@@ -950,14 +1095,20 @@ function MilestoneRow({ milestone, linkedPr, canEdit, onEdit, canRaisePr, onRais
   );
 }
 
-function PaymentRequestRow({ pr, payments, milestone, canRecord, onRecordPayment }: {
+function PaymentRequestRow({ pr, payments, milestone, canRecord, viewRole, onRecordPayment, onStatusChange }: {
   pr: PaymentRequest; payments: Payment[]; milestone: Milestone | null;
-  canRecord?: boolean; onRecordPayment?: () => void;
+  canRecord?: boolean; viewRole?: ViewRole | null; onRecordPayment?: () => void; onStatusChange?: (id: string, status: string) => void;
 }) {
   const router = useRouter();
   const paidAmount = payments.filter((p) => p.payment_request_id === pr.id).reduce((s, p) => s + p.amount, 0);
   const remaining = pr.amount - paidAmount;
-  const canPay = canRecord && remaining > 0 && !['cancelled', 'draft'].includes(pr.status);
+  const canPay = canRecord && remaining > 0 && ['sent', 'partially_paid', 'overdue'].includes(pr.status);
+  // PX-03 Phase 2 Section 5 — PM submits their own draft; only
+  // Management approves/returns another user's request for review.
+  // A PM cannot approve their own request, matching this task's own
+  // "Cannot approve their own payment requests" rule.
+  const canSubmit = canRecord && pr.status === 'draft';
+  const canApprove = viewRole === 'admin' && pr.status === 'under_review';
   return (
     <View style={styles.row} testID={`payment-request-${pr.id}`}>
       <View style={{ flex: 1 }}>
@@ -970,6 +1121,21 @@ function PaymentRequestRow({ pr, payments, milestone, canRecord, onRecordPayment
           <Pressable testID={`record-payment-${pr.id}`} onPress={onRecordPayment} style={styles.recordPaymentLink}>
             <Text style={styles.recordPaymentLinkText}>Record Payment</Text>
           </Pressable>
+        )}
+        {canSubmit && (
+          <Pressable testID={`submit-for-review-${pr.id}`} onPress={() => onStatusChange?.(pr.id, 'under_review')} style={styles.recordPaymentLink}>
+            <Text style={styles.recordPaymentLinkText}>Submit for Review</Text>
+          </Pressable>
+        )}
+        {canApprove && (
+          <View style={{ flexDirection: 'row', gap: 12, marginTop: 4 }}>
+            <Pressable testID={`approve-payment-request-${pr.id}`} onPress={() => onStatusChange?.(pr.id, 'raised')} style={styles.recordPaymentLink}>
+              <Text style={styles.recordPaymentLinkText}>Approve</Text>
+            </Pressable>
+            <Pressable testID={`return-for-revision-${pr.id}`} onPress={() => onStatusChange?.(pr.id, 'draft')} style={styles.recordPaymentLink}>
+              <Text style={[styles.recordPaymentLinkText, { color: theme.color.warning }]}>Return for Revision</Text>
+            </Pressable>
+          </View>
         )}
       </View>
       <Pressable testID={`explain-payment-request-${pr.id}`}
@@ -1080,6 +1246,16 @@ const styles = StyleSheet.create({
     borderTopRightRadius: theme.radius.lg, padding: theme.spacing.lg, maxHeight: '80%',
   },
   modalTitle: { color: theme.color.text, fontSize: 17, fontWeight: '800', marginBottom: theme.spacing.md },
+  calcModalTitle: { color: theme.color.text, fontSize: 17, fontWeight: '800' },
+  calcModalFormula: { color: theme.color.textDim, fontSize: 13, fontStyle: 'italic', marginTop: 6 },
+  calcModalInputRow: { flexDirection: 'row', justifyContent: 'space-between', paddingVertical: 6 },
+  calcModalInputLabel: { color: theme.color.textDim, fontSize: 13, textTransform: 'capitalize' },
+  calcModalInputValue: { color: theme.color.text, fontSize: 13, fontWeight: '600' },
+  calcModalDivider: { height: 1, backgroundColor: theme.color.border, marginVertical: 10 },
+  calcModalResultLabel: { color: theme.color.text, fontSize: 14, fontWeight: '800' },
+  calcModalResultValue: { color: theme.color.brand, fontSize: 16, fontWeight: '800' },
+  calcModalCloseBtn: { backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, paddingVertical: 12, alignItems: 'center', marginTop: theme.spacing.lg },
+  calcModalCloseBtnText: { color: theme.color.text, fontSize: 14, fontWeight: '700' },
   formFieldWrap: { marginBottom: theme.spacing.md },
   formFieldLabel: { color: theme.color.textDim, fontSize: 12, fontWeight: '700', marginBottom: 4 },
   formFieldInput: {
@@ -1131,6 +1307,7 @@ const styles = StyleSheet.create({
   },
   healthBannerGood: { backgroundColor: 'rgba(34,197,94,0.1)', borderColor: theme.color.success },
   healthBannerAttention: { backgroundColor: 'rgba(234,179,8,0.1)', borderColor: theme.color.warning },
+  healthBannerRisk: { backgroundColor: 'rgba(239,68,68,0.1)', borderColor: theme.color.error },
   healthBannerEmoji: { fontSize: 24 },
   healthBannerTitle: { color: theme.color.text, fontSize: 14, fontWeight: '800' },
   healthBannerSubtitle: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
@@ -1172,6 +1349,12 @@ const styles = StyleSheet.create({
   sectionBody: { paddingHorizontal: theme.spacing.md, paddingBottom: theme.spacing.md, gap: 10 },
   tileGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
   tile: { minWidth: '46%', backgroundColor: theme.color.surface3, borderRadius: theme.radius.sm, padding: 10 },
+  commercialGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
+  overdueBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 10, padding: 10,
+    borderRadius: theme.radius.sm, backgroundColor: theme.color.error,
+  },
+  overdueBannerText: { color: '#fff', fontSize: 13, fontWeight: '700' },
   breakdownRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 8 },
   breakdownLabel: { color: theme.color.text, fontSize: 14, fontWeight: '600' },
   breakdownLabelEmphasis: { fontWeight: '800' },

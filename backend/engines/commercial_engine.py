@@ -544,6 +544,14 @@ async def transition_payment_request_status(payment_request_id: str, to_status: 
                     body=f"Payment Request {pr['number']} was approved.",
                     project_id=pr["project_id"], entity_type="payment_request", entity_id=payment_request_id,
                 )
+        elif cur == "under_review" and to_status == "draft":
+            raised_by = pr.get("raised_by_user_id")
+            if raised_by:
+                await notification_engine.notify_commercial(
+                    user_id=raised_by, title="Payment Request Returned for Revision",
+                    body=f"Payment Request {pr['number']} needs changes before it can be approved.",
+                    project_id=pr["project_id"], entity_type="payment_request", entity_id=payment_request_id,
+                )
     except Exception:
         logger.exception(f"PX-03 payment request notification failed for '{payment_request_id}'; continuing")
     return await get_payment_request(payment_request_id)
@@ -564,6 +572,10 @@ async def record_payment(*, actor: dict, payment_request_id: str, amount: float,
     await assert_project_visible(pr["project_id"], actor)
     if pr["status"] == "cancelled":
         raise CommercialError("Cannot record a payment against a cancelled Payment Request.")
+    if pr["status"] not in ("sent", "partially_paid", "paid", "overdue"):
+        raise CommercialError(
+            f"Cannot record a payment against a Payment Request that has not been sent yet "
+            f"(currently '{pr['status']}'). It must reach 'sent' status first.")
     now = _iso(_now())
     doc = {
         "id": _new_id("pay_"),

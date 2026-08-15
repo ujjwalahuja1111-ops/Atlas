@@ -79,7 +79,7 @@ export default function ExecutiveHubScreen() {
         <Pressable style={styles.section} onPress={() => router.push('/priorities')} testID="exec-hub-priorities">
           <View style={styles.sectionHeader}>
             <Ionicons name="flag" size={16} color={theme.color.brand} />
-            <Text style={styles.sectionTitle}>TODAY'S PRIORITIES</Text>
+            <Text style={styles.sectionTitle}>TODAY&apos;S PRIORITIES</Text>
             <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
           </View>
           <View style={styles.sectionBody}>
@@ -141,7 +141,7 @@ export default function ExecutiveHubScreen() {
             <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
           </View>
           <View style={styles.sectionBody}>
-            <Text style={styles.mutedText}>Every project's own health, schedule, and financials — one row each.</Text>
+            <Text style={styles.mutedText}>Every project&apos;s own health, schedule, and financials — one row each.</Text>
           </View>
         </Pressable>
 

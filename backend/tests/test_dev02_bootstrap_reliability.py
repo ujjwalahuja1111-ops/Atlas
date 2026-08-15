@@ -1055,6 +1055,9 @@ async def test_portfolio_search_payments_scoped_to_visibility(seeded_rp001):
     pr = await commercial_engine.create_payment_request(
         actor=admin, project_id=project["id"], milestone_id=ms["id"],
         amount=1000, raised_date="2026-01-15", due_date="2026-02-15")
+    await commercial_engine.transition_payment_request_status(pr["id"], "under_review", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr["id"], "raised", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr["id"], "sent", actor=admin)
     await commercial_engine.record_payment(
         actor=admin, payment_request_id=pr["id"], amount=1000, date="2026-01-20",
         method="bank_transfer", reference="BETA06-SECURITY-TEST-REF")
@@ -1711,6 +1714,9 @@ async def test_decision_trace_shows_payment_settles_payment_request():
     pr = await commercial_engine.create_payment_request(
         actor=admin, project_id=project["id"], milestone_id=ms["id"],
         amount=ms["contract_value"], raised_date="2026-02-01", due_date="2026-02-15")
+    await commercial_engine.transition_payment_request_status(pr["id"], "under_review", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr["id"], "raised", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr["id"], "sent", actor=admin)
     pay = await commercial_engine.record_payment(
         actor=admin, payment_request_id=pr["id"], amount=ms["contract_value"],
         date="2026-02-10", method="bank_transfer")
@@ -2291,3 +2297,115 @@ async def test_payment_request_status_change_creates_timeline_event():
     status_change_events = [e for e in events if e["kind"] == "payment_request_status_changed"]
     assert len(status_change_events) >= 1
     assert status_change_events[0]["payload"]["to"] == "under_review"
+
+
+# ==========================================================================
+# PX-03 Phase 2 — Commercial Workspace UI Completion & Client-Safe
+# Billing. Matches the exact scenarios manually verified live through
+# the real API before being written as permanent tests.
+# ==========================================================================
+async def test_client_cannot_retrieve_internal_profitability_fields():
+    """The high-priority security fix this phase exists for.
+    Confirmed live before this test was written: a Client legitimately
+    assigned to a project (the normal case) must not receive
+    margin/budget/forecast data."""
+    admin, project = await _setup_commercial_project("client_profit_block")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    client = await memory_engine.upsert_user(phone="90p32client0001", name="Sec Client", role="client")
+    await memory_engine.set_user_projects(client["id"], [project["id"]])
+    client = await memory_engine.get_user_by_phone("90p32client0001")
+
+    with pytest.raises(commercial_workflow_service.CommercialPermissionError):
+        await commercial_workflow_service.build_profitability_panel(project["id"], user=client)
+    with pytest.raises(commercial_workflow_service.CommercialPermissionError):
+        await commercial_workflow_service.commercial_health(project["id"], user=client)
+    with pytest.raises(commercial_workflow_service.CommercialPermissionError):
+        await commercial_workflow_service.cash_flow_timeline(project["id"], user=client)
+
+
+async def test_client_safe_bill_summary_never_contains_internal_fields():
+    admin, project = await _setup_commercial_project("client_safe_shape")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    await commercial_engine.create_budget(actor=admin, project_id=project["id"], original_budget=800000)
+    client = await memory_engine.upsert_user(phone="90p32client0002", name="Sec Client 2", role="client")
+    await memory_engine.set_user_projects(client["id"], [project["id"]])
+    client = await memory_engine.get_user_by_phone("90p32client0002")
+
+    summary = await commercial_workflow_service.build_client_safe_bill_summary(project["id"], user=client)
+    forbidden_keys = ("forecast_profit", "forecast_margin_percent", "budget", "actual_expenses",
+                      "committed_cost", "remaining_budget", "kpis", "reasons")
+    for key in forbidden_keys:
+        assert key not in summary, f"'{key}' leaked into the client-safe response"
+    assert summary["approved_contract_amount"] == 1000000
+
+
+async def test_supervisor_cannot_retrieve_detailed_commercial_fields():
+    admin, project = await _setup_commercial_project("supervisor_block")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    supervisor = await memory_engine.upsert_user(phone="90p32sup0001", name="Sec Sup", role="site_supervisor")
+    await memory_engine.set_user_projects(supervisor["id"], [project["id"]])
+    supervisor = await memory_engine.get_user_by_phone("90p32sup0001")
+
+    with pytest.raises(commercial_workflow_service.CommercialPermissionError):
+        await commercial_workflow_service.build_profitability_panel(project["id"], user=supervisor)
+    with pytest.raises(commercial_workflow_service.CommercialPermissionError):
+        await commercial_workflow_service.build_billing_and_collections(project["id"], user=supervisor)
+
+
+async def test_management_and_pm_retain_full_internal_access():
+    """The security fix must not have collaterally broken the two
+    roles that legitimately need this data - confirmed explicitly,
+    not just assumed from the regression suite passing."""
+    admin, project = await _setup_commercial_project("internal_access_preserved")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    pm = await memory_engine.upsert_user(phone="90p32pm0001", name="Preserved PM", role="project_manager")
+    await memory_engine.set_user_projects(pm["id"], [project["id"]])
+    pm = await memory_engine.get_user_by_phone("90p32pm0001")
+
+    panel = await commercial_workflow_service.build_profitability_panel(project["id"], user=pm)
+    assert panel is not None
+    panel_admin = await commercial_workflow_service.build_profitability_panel(project["id"], user=admin)
+    assert panel_admin is not None
+
+
+async def test_record_payment_rejects_unsent_payment_request():
+    """A real, genuine defect found while auditing the payment flow
+    for the new approval gate: record_payment previously only blocked
+    'cancelled' status, meaning a payment could be recorded against a
+    request still in draft or under_review - before it had ever
+    reached the client."""
+    admin, project = await _setup_commercial_project("unsent_payment_block")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1, planned_percent=20, trigger="t")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+    pr = await commercial_engine.create_payment_request(
+        actor=admin, project_id=project["id"], milestone_id=ms["id"],
+        amount=100000, raised_date="2026-08-01", due_date="2026-08-15")
+
+    with pytest.raises(commercial_engine.CommercialError):
+        await commercial_engine.record_payment(
+            actor=admin, payment_request_id=pr["id"], amount=100000, date="2026-08-05", method="bank_transfer")
+
+    await commercial_engine.transition_payment_request_status(pr["id"], "under_review", actor=admin)
+    with pytest.raises(commercial_engine.CommercialError):
+        await commercial_engine.record_payment(
+            actor=admin, payment_request_id=pr["id"], amount=100000, date="2026-08-05", method="bank_transfer")
+
+    await commercial_engine.transition_payment_request_status(pr["id"], "raised", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr["id"], "sent", actor=admin)
+    # now genuinely allowed
+    pay = await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=100000, date="2026-08-05", method="bank_transfer")
+    assert pay["amount"] == 100000

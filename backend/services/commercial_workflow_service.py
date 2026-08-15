@@ -1,4 +1,5 @@
-"""Atlas Commercial Workflow Service (PX-03 Phase 1).
+"""Atlas Commercial Workflow Service (PX-03 Phase 1, extended PX-03
+Phase 2).
 
 Pure composition over the existing commercial_engine — every KPI here
 is computed from fields that already exist (Contract, Budget,
@@ -11,10 +12,38 @@ calculation" breakdown (the exact inputs used) in the same call,
 because this task's own Mandatory Transparency Rule requires both to
 always be available together, not the number alone with a breakdown
 computed separately (which would risk the two drifting apart).
+
+PX-03 Phase 2 Section 6/7 — role-safe access. Before this phase,
+assert_project_visible only checked project membership, never role.
+A Client or Supervisor legitimately assigned to their own project (the
+normal case, not an edge case) received the exact same unrestricted
+profitability/health/timeline data Management/PM get. Fixed at the
+service layer — the same layer every calculation already lives in —
+not by hiding components in React, per this task's own explicit "the
+backend response itself must be role-safe" instruction.
 """
 from __future__ import annotations
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 from engines import commercial_engine as ce
+
+INTERNAL_COMMERCIAL_ROLES = ("management", "project_manager")
+
+
+class CommercialPermissionError(ce.CommercialError):
+    """Raised when a role without internal-commercial access requests
+    an endpoint that has no safe client-shaped subset — margin,
+    budget, and forecast data are inherently internal, so denial is
+    the correct response here, not a reshaped response, matching this
+    task's own explicit 'a safe client-shaped response, OR a
+    permission denial' framing for endpoints where no safe subset
+    exists."""
+
+
+def _require_internal_commercial_access(user: dict) -> None:
+    if user.get("role") not in INTERNAL_COMMERCIAL_ROLES:
+        raise CommercialPermissionError(
+            "Only Project Managers/management can view internal commercial detail.")
 
 
 def _round2(n: float) -> float:
@@ -23,7 +52,10 @@ def _round2(n: float) -> float:
 
 async def build_profitability_panel(project_id: str, *, user: dict) -> Optional[dict]:
     """Section 2 — the KPI table, exactly as this task's own formula
-    table specifies, each with a 'View Calculation' breakdown."""
+    table specifies, each with a 'View Calculation' breakdown.
+    Internal-only (PX-03 Phase 2 Section 6/7) — every field here is
+    margin, budget, or cost data with no safe client-facing subset."""
+    _require_internal_commercial_access(user)
     await ce.assert_project_visible(project_id, user)
     summary = await ce.get_project_commercial_summary(project_id)
     if not summary:
@@ -114,7 +146,11 @@ async def build_billing_and_collections(project_id: str, *, user: dict) -> Optio
     """Section 6 — receivables metrics, reusing the existing
     payment_requests/payments data (already exactly the "receipt"
     fields this task asks for: amount, date, reference) rather than
-    a new collection."""
+    a new collection. Client-safe by this task's own explicit Section
+    6 list (billed/received/outstanding amounts); Supervisor is still
+    excluded (Section 7's own "no detailed commercial values" rule)."""
+    if user.get("role") == "site_supervisor":
+        raise CommercialPermissionError("Site Supervisors do not have access to detailed commercial values.")
     await ce.assert_project_visible(project_id, user)
     summary = await ce.get_project_commercial_summary(project_id)
     if not summary:
@@ -136,7 +172,12 @@ async def build_billing_and_collections(project_id: str, *, user: dict) -> Optio
 
 async def commercial_health(project_id: str, *, user: dict) -> dict:
     """Section 7 — a lightweight, independent signal, deterministic
-    thresholds only, never combined with operational health."""
+    thresholds only, never combined with operational health.
+    Internal-only (PX-03 Phase 2) — its own reasons
+    (negative_forecast_margin, etc.) directly reveal internal
+    profitability state, with no safe client-facing subset named
+    anywhere in this task's own Section 6 list."""
+    _require_internal_commercial_access(user)
     panel = await build_profitability_panel(project_id, user=user)
     billing = await build_billing_and_collections(project_id, user=user)
     if not panel or not billing:
@@ -166,10 +207,51 @@ async def commercial_health(project_id: str, *, user: dict) -> dict:
     return {"status": "healthy", "reasons": []}
 
 
+async def build_client_safe_bill_summary(project_id: str, *, user: dict) -> Optional[dict]:
+    """PX-03 Phase 2 Section 6 — the dedicated client-safe response,
+    composing exactly this task's own named client-safe field list.
+    Never reuses or reshapes build_profitability_panel's own output —
+    that endpoint has no safe subset (every field is margin/budget/
+    cost). This function only ever reads contract_value, approved
+    variations, and payment-request/payment amounts and statuses -
+    nothing internal is computed here to redact later."""
+    await ce.assert_project_visible(project_id, user)
+    summary = await ce.get_project_commercial_summary(project_id)
+    if not summary:
+        return None
+
+    contract = summary["contract"]
+    payment_requests = [
+        {
+            "number": pr["number"], "amount": pr["amount"], "status": pr["status"],
+            "due_date": pr.get("due_date"), "raised_date": pr.get("raised_date"),
+        }
+        for pr in summary["payment_requests"] if pr["status"] != "draft"  # a draft PR isn't yet a real client-facing request
+    ]
+    billed_statuses = ("raised", "sent", "partially_paid", "paid", "overdue")
+    billed_to_date = _round2(sum(pr["amount"] for pr in summary["payment_requests"] if pr["status"] in billed_statuses))
+    received_to_date = _round2(sum(p["amount"] for p in summary["payments"] if p["status"] == "recorded"))
+
+    return {
+        "project_id": project_id,
+        "approved_contract_amount": contract["original_contract_value"],
+        "approved_variations_total": summary["approved_variations_total"],
+        "payment_requests": payment_requests,
+        "billed_to_date": billed_to_date,
+        "received_to_date": received_to_date,
+        "outstanding_amount": _round2(billed_to_date - received_to_date),
+    }
+
+
 async def cash_flow_timeline(project_id: str, *, user: dict, limit: int = 20) -> list[dict]:
     """Section 4 — a lightweight coordination view, reusing the
     existing commercial_events ledger and payment request due dates.
-    Never a forecasting engine, per this task's own explicit rule."""
+    Never a forecasting engine, per this task's own explicit rule.
+    Internal-only (PX-03 Phase 2) — mixes safe event kinds
+    (payment_request_raised, payment_received) with internal-only ones
+    (budget_revised); restricted wholesale rather than partially
+    filtered, to avoid an oversight leaking an internal kind through."""
+    _require_internal_commercial_access(user)
     await ce.assert_project_visible(project_id, user)
     events = await ce.list_commercial_events(project_id, limit=100)
     summary = await ce.get_project_commercial_summary(project_id)
