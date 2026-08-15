@@ -44,6 +44,7 @@ explicitly, once, here — not silently reversed without explanation.
 """
 from __future__ import annotations
 import uuid
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -204,6 +205,7 @@ async def create_contract(*, actor: dict, project_id: str, client_id: Optional[s
                           original_contract_value: float, contract_date: str,
                           duration_days: int, retention_percent: float = 5.0,
                           advance_percent: float = 10.0, gst_percent: float = 18.0) -> dict:
+    await assert_project_visible(project_id, actor, require_active=True)
     existing = await db.contracts.find_one({"project_id": project_id}, {"_id": 0})
     if existing:
         raise CommercialError(f"Project '{project_id}' already has a Contract.")
@@ -243,6 +245,7 @@ async def update_contract(project_id: str, *, actor: dict,
     versioning (CO-01 §2, Phase 2) remains a later package's scope —
     this reuses the existing commercial_events ledger for its own
     audit trail rather than introducing a new one."""
+    await assert_project_visible(project_id, actor, require_active=True)
     contract = await db.contracts.find_one({"project_id": project_id}, {"_id": 0})
     if not contract:
         raise CommercialNotFoundError(f"No Contract for project '{project_id}'.")
@@ -328,6 +331,7 @@ async def create_milestone(*, actor: dict, project_id: str, name: str, sequence:
     billing value shouldn't silently drift every time a later,
     unrelated variation changes the contract total), not a live
     computation like Contract's own current_contract_value is."""
+    await assert_project_visible(project_id, actor, require_active=True)
     if contract_value is None:
         contract = await get_contract(project_id)
         if not contract:
@@ -382,6 +386,7 @@ async def update_milestone(milestone_id: str, *, actor: dict,
     milestone = await get_milestone(milestone_id)
     if not milestone:
         raise CommercialNotFoundError(f"Milestone '{milestone_id}' not found.")
+    await assert_project_visible(milestone["project_id"], actor, require_active=True)
     if milestone["status"] != "pending":
         raise CommercialError(
             f"Milestone terms can only be edited while status is 'pending' (currently '{milestone['status']}').")
@@ -418,7 +423,7 @@ async def transition_milestone_status(milestone_id: str, to_status: str, *, acto
     ms = await get_milestone(milestone_id)
     if not ms:
         raise CommercialNotFoundError(f"Milestone '{milestone_id}' not found.")
-    await assert_project_visible(ms["project_id"], actor)
+    await assert_project_visible(ms["project_id"], actor, require_active=True)
     cur = ms["status"]
     if to_status not in MILESTONE_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Milestone transition: '{cur}' -> '{to_status}'.")
@@ -584,17 +589,47 @@ async def transition_payment_request_status(payment_request_id: str, to_status: 
 
 async def record_payment(*, actor: dict, payment_request_id: str, amount: float,
                          date: str, method: str, reference: str = "",
-                         is_adjustment: bool = False) -> dict:
+                         is_adjustment: bool = False, idempotency_key: Optional[str] = None) -> dict:
     pr = await get_payment_request(payment_request_id)
     if not pr:
         raise CommercialNotFoundError(f"Payment Request '{payment_request_id}' not found.")
     await assert_project_visible(pr["project_id"], actor, require_active=True)
+    # PX-03 Phase 4 Section 2 — application-level idempotency. If the
+    # caller supplies a key and a payment already exists for this
+    # exact (payment_request_id, idempotency_key) pair, return that
+    # existing payment as-is rather than recording a duplicate — safe
+    # for double-tap, frontend retry, and network retry. Omitting the
+    # key (every pre-existing caller) skips this check entirely, so
+    # nothing already calling this function changes behavior.
+    if idempotency_key:
+        existing = await db.payments.find_one(
+            {"payment_request_id": payment_request_id, "idempotency_key": idempotency_key}, {"_id": 0})
+        if existing:
+            return existing
+    if amount <= 0:
+        raise CommercialError("Payment amount must be greater than zero.")
     if pr["status"] == "cancelled":
         raise CommercialError("Cannot record a payment against a cancelled Payment Request.")
-    if pr["status"] not in ("sent", "partially_paid", "paid", "overdue"):
+    if pr["status"] not in ("sent", "partially_paid", "overdue"):
+        if pr["status"] == "paid":
+            raise CommercialError(
+                f"Payment Request '{pr['number']}' is already fully paid; no further payment can be recorded against it.")
         raise CommercialError(
             f"Cannot record a payment against a Payment Request that has not been sent yet "
             f"(currently '{pr['status']}'). It must reach 'sent' status first.")
+    # PX-03 Phase 4 Section 1 — the remaining balance uses the exact
+    # same formula (no status filter) as this function's own existing
+    # total_received calculation below, which already drives the
+    # paid/partially_paid transition. Using a different filter here
+    # would let this new ceiling check and the existing status logic
+    # disagree about the same request's own remaining balance.
+    existing_payments = await list_payments_for_request(payment_request_id)
+    already_received = sum(p["amount"] for p in existing_payments)
+    remaining = pr["amount"] - already_received
+    if amount > remaining:
+        raise CommercialError(
+            f"Payment of {amount:,.2f} exceeds the remaining balance of {remaining:,.2f} "
+            f"on Payment Request '{pr['number']}'.")
     now = _iso(_now())
     doc = {
         "id": _new_id("pay_"),
@@ -605,6 +640,7 @@ async def record_payment(*, actor: dict, payment_request_id: str, amount: float,
         "method": method,
         "reference": reference,
         "status": "adjustment" if is_adjustment else "recorded",
+        "idempotency_key": idempotency_key,
         "created_at": now,
     }
     await _insert(db.payments, doc)
@@ -688,42 +724,104 @@ async def check_and_escalate_overdue_payment_requests(project_id: Optional[str] 
     newly_overdue = []
     for pr in await db.payment_requests.find(q, {"_id": 0}).to_list(500):
         if pr.get("due_date") and pr["due_date"] < today.isoformat():
-            await transition_payment_request_status(pr["id"], "overdue", actor=actor)
-            newly_overdue.append(pr["id"])
+            try:
+                await transition_payment_request_status(pr["id"], "overdue", actor=actor)
+                newly_overdue.append(pr["id"])
+            except CommercialError:
+                # PX-03 Phase 4 — a project can become archived between
+                # this query and the transition attempt (require_active
+                # now enforced inside transition_payment_request_status
+                # itself). One project's failure must never abort
+                # escalation checking for every other, unrelated
+                # project in the same portfolio-wide batch.
+                logger.exception(f"overdue transition skipped for payment request '{pr['id']}' (project likely archived)")
 
     q2: dict = {"status": "overdue"}
     if project_id:
         q2["project_id"] = project_id
     escalated = []
     for pr in await db.payment_requests.find(q2, {"_id": 0}).to_list(500):
-        if not pr.get("due_date"):
-            continue
-        days_overdue = (today - datetime.fromisoformat(pr["due_date"]).date()).days
-        if days_overdue < OVERDUE_ESCALATION_DAYS:
-            continue
-        already_escalated = await db.notifications.find_one({
-            "entity_type": "payment_request", "entity_id": pr["id"], "category": "commercial",
-            "title": {"$regex": "^Payment Request .* is severely overdue"},
-        })
-        if already_escalated:
-            continue
-        raised_by = pr.get("raised_by_user_id")
-        recipients = set()
-        if raised_by:
-            recipients.add(raised_by)
-        mgmt_users = await db.users.find(
-            {"assigned_project_ids": pr["project_id"], "role": "management"}, {"_id": 0, "id": 1},
-        ).to_list(50)
-        recipients.update(u["id"] for u in mgmt_users)
-        for user_id in recipients:
-            await notification_engine.notify_commercial(
-                user_id=user_id, title=f"Payment Request {pr['number']} is severely overdue",
-                body=f"₹{pr['amount']:,.0f} has been overdue for {days_overdue} days.",
-                project_id=pr["project_id"], entity_type="payment_request", entity_id=pr["id"],
-            )
-        escalated.append(pr["id"])
+        try:
+            if not pr.get("due_date"):
+                continue
+            days_overdue = (today - datetime.fromisoformat(pr["due_date"]).date()).days
+            if days_overdue < OVERDUE_ESCALATION_DAYS:
+                continue
+            already_escalated = await db.notifications.find_one({
+                "entity_type": "payment_request", "entity_id": pr["id"], "category": "commercial",
+                "title": {"$regex": "^Payment Request .* is severely overdue"},
+            })
+            if already_escalated:
+                continue
+            raised_by = pr.get("raised_by_user_id")
+            recipients = set()
+            if raised_by:
+                recipients.add(raised_by)
+            mgmt_users = await db.users.find(
+                {"assigned_project_ids": pr["project_id"], "role": "management"}, {"_id": 0, "id": 1},
+            ).to_list(50)
+            recipients.update(u["id"] for u in mgmt_users)
+            for user_id in recipients:
+                await notification_engine.notify_commercial(
+                    user_id=user_id, title=f"Payment Request {pr['number']} is severely overdue",
+                    body=f"₹{pr['amount']:,.0f} has been overdue for {days_overdue} days.",
+                    project_id=pr["project_id"], entity_type="payment_request", entity_id=pr["id"],
+                )
+            escalated.append(pr["id"])
+        except Exception:
+            logger.exception(f"overdue escalation skipped for payment request '{pr['id']}'")
 
     return {"newly_overdue": newly_overdue, "escalated": escalated}
+
+
+_overdue_escalation_task: Optional[asyncio.Task] = None
+OVERDUE_ESCALATION_INTERVAL_SECONDS = 6 * 60 * 60  # every 6 hours
+
+
+async def _overdue_escalation_loop() -> None:
+    """PX-03 Phase 4 Section 4 — the smallest reliable execution
+    mechanism appropriate to this backend's actual architecture, not
+    an invented one. Mirrors the exact, already-established pattern
+    intelligence_engine.py uses for its own background worker
+    (asyncio.create_task tied to the app's lifespan, cancelled
+    cleanly on shutdown) — Atlas already runs one in-process
+    background loop this way; this is the second, not a new kind of
+    infrastructure. No Redis/Celery/Kafka, per this task's own
+    explicit instruction.
+
+    Deliberately dumb: this loop contains zero business logic. It
+    only sleeps and calls the existing, independently-tested,
+    idempotent domain function. If the interval or trigger mechanism
+    ever needs to change, the domain function itself never has to.
+    """
+    logger.info(f"Overdue escalation worker started (every {OVERDUE_ESCALATION_INTERVAL_SECONDS}s)")
+    system_actor = {"id": "system-overdue-escalation", "name": "Atlas Overdue Escalation", "role": "management"}
+    while True:
+        try:
+            await asyncio.sleep(OVERDUE_ESCALATION_INTERVAL_SECONDS)
+            result = await check_and_escalate_overdue_payment_requests(actor=system_actor)
+            if result["newly_overdue"] or result["escalated"]:
+                logger.info(f"Overdue escalation run: {result}")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("overdue escalation worker loop error")
+
+
+async def start_overdue_escalation_worker() -> None:
+    global _overdue_escalation_task
+    _overdue_escalation_task = asyncio.create_task(_overdue_escalation_loop())
+
+
+async def stop_overdue_escalation_worker() -> None:
+    global _overdue_escalation_task
+    if _overdue_escalation_task:
+        _overdue_escalation_task.cancel()
+        try:
+            await _overdue_escalation_task
+        except asyncio.CancelledError:
+            pass
+        _overdue_escalation_task = None
 
 
 async def list_payments_for_request(payment_request_id: str) -> list[dict]:
@@ -765,6 +863,7 @@ async def create_variation(*, actor: dict, project_id: str, title: str, descript
                            linked_drawing_ids: Optional[list[str]] = None,
                            linked_photo_ids: Optional[list[str]] = None,
                            linked_quotation_ids: Optional[list[str]] = None) -> dict:
+    await assert_project_visible(project_id, actor, require_active=True)
     now = _iso(_now())
     doc = {
         "id": _new_id("var_"),
@@ -843,7 +942,7 @@ async def decide_variation(variation_id: str, decision: str, *, actor: dict,
     variation = await get_variation(variation_id)
     if not variation:
         raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
-    await assert_project_visible(variation["project_id"], actor)
+    await assert_project_visible(variation["project_id"], actor, require_active=True)
     cur = variation["status"]
     if decision not in VARIATION_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Variation transition: '{cur}' -> '{decision}'.")
@@ -876,7 +975,7 @@ async def submit_variation(variation_id: str, *, actor: dict) -> dict:
     variation = await get_variation(variation_id)
     if not variation:
         raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
-    await assert_project_visible(variation["project_id"], actor)
+    await assert_project_visible(variation["project_id"], actor, require_active=True)
     cur = variation["status"]
     if "submitted" not in VARIATION_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Variation transition: '{cur}' -> 'submitted'.")
@@ -890,7 +989,7 @@ async def send_variation_to_client_review(variation_id: str, *, actor: dict) -> 
     variation = await get_variation(variation_id)
     if not variation:
         raise CommercialNotFoundError(f"Variation '{variation_id}' not found.")
-    await assert_project_visible(variation["project_id"], actor)
+    await assert_project_visible(variation["project_id"], actor, require_active=True)
     cur = variation["status"]
     if "client_review" not in VARIATION_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Variation transition: '{cur}' -> 'client_review'.")
@@ -905,6 +1004,7 @@ async def send_variation_to_client_review(variation_id: str, *, actor: dict) -> 
 # ---------------------------------------------------------------------------
 
 async def create_budget(*, actor: dict, project_id: str, original_budget: float) -> dict:
+    await assert_project_visible(project_id, actor, require_active=True)
     existing = await db.budgets.find_one({"project_id": project_id}, {"_id": 0})
     if existing:
         raise CommercialError(f"Project '{project_id}' already has a Budget.")
@@ -937,6 +1037,7 @@ async def get_budget(project_id: str) -> Optional[dict]:
 
 
 async def revise_budget(project_id: str, new_current_budget: float, *, actor: dict, reason: str = "") -> dict:
+    await assert_project_visible(project_id, actor, require_active=True)
     budget = await db.budgets.find_one({"project_id": project_id}, {"_id": 0})
     if not budget:
         raise CommercialNotFoundError(f"No Budget for project '{project_id}'.")
@@ -949,6 +1050,7 @@ async def revise_budget(project_id: str, new_current_budget: float, *, actor: di
 
 
 async def commit_cost(project_id: str, amount_delta: float, *, actor: dict, reason: str = "") -> dict:
+    await assert_project_visible(project_id, actor, require_active=True)
     budget = await db.budgets.find_one({"project_id": project_id}, {"_id": 0})
     if not budget:
         raise CommercialNotFoundError(f"No Budget for project '{project_id}'.")
@@ -962,6 +1064,7 @@ async def commit_cost(project_id: str, amount_delta: float, *, actor: dict, reas
 
 
 async def record_actual_cost(project_id: str, amount_delta: float, *, actor: dict, reason: str = "") -> dict:
+    await assert_project_visible(project_id, actor, require_active=True)
     budget = await db.budgets.find_one({"project_id": project_id}, {"_id": 0})
     if not budget:
         raise CommercialNotFoundError(f"No Budget for project '{project_id}'.")

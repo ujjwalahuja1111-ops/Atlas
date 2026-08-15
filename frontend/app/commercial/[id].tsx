@@ -144,6 +144,13 @@ export default function CommercialWorkspaceScreen() {
   }, [load]);
 
   const deepLinkHandled = useRef(false);
+  // PX-03 Phase 4 Section 2 — a stable idempotency key for the current
+  // open record-payment form. Generated once per form open (see
+  // openForm/setActiveForm call sites below), reused across any retry
+  // of that same submission attempt (double-tap, network retry), so
+  // the backend's own idempotency check actually protects real users,
+  // not just the API in isolation.
+  const paymentIdempotencyKey = useRef<string | null>(null);
   useEffect(() => {
     if (loading || !action || deepLinkHandled.current) return;
     deepLinkHandled.current = true;
@@ -169,6 +176,7 @@ export default function CommercialWorkspaceScreen() {
       const pr = summary.payment_requests.find((x) => x.id === paymentRequestId);
       if (pr) {
         setFormValues({ amount: String(pr.amount) });
+        paymentIdempotencyKey.current = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
         setActiveForm({ kind: 'record-payment', paymentRequestId: pr.id });
         return;
       }
@@ -331,6 +339,7 @@ export default function CommercialWorkspaceScreen() {
             date: formValues.date || new Date().toISOString().slice(0, 10),
             method: formValues.method || 'bank_transfer',
             reference: formValues.reference || '',
+            idempotency_key: paymentIdempotencyKey.current || undefined,
           });
           break;
       }
@@ -721,7 +730,7 @@ export default function CommercialWorkspaceScreen() {
                       <PaymentRequestRow key={pr.id} pr={pr} payments={summary.payments}
                         milestone={summary.milestones.find((m) => m.id === pr.milestone_id) || null}
                         canRecord={canDecide} viewRole={viewRole}
-                        onRecordPayment={() => { setFormValues({ amount: String(pr.amount) }); setActiveForm({ kind: 'record-payment', paymentRequestId: pr.id }); }}
+                        onRecordPayment={() => { setFormValues({ amount: String(pr.amount) }); paymentIdempotencyKey.current = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`; setActiveForm({ kind: 'record-payment', paymentRequestId: pr.id }); }}
                         onStatusChange={onPaymentRequestStatusChange} />
                     ))
                   )}

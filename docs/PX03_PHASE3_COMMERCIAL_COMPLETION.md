@@ -108,7 +108,7 @@ Every notification and state-transition finding above was verified through the r
 
 Stated directly, not implied solved:
 
-- No scheduler exists to invoke the overdue-escalation check automatically. This is the most significant limitation from this phase - the rule is correct and idempotent, but dormant without external invocation.
-- Payment amount is not capped against the remaining balance, and duplicate payment recording is not prevented - both real, found during this audit, both left unfixed as out of this pass's own primary focus.
-- Archive-isolation (require_active) was only applied to the three core Payment Request mutations, not the full set of commercial write functions.
-- Frontend was not touched this phase - no UI exists yet for triggering the overdue-check endpoint or seeing the new notification types beyond what the existing Inbox screen already renders generically.
+- ~~No scheduler exists to invoke the overdue-escalation check automatically.~~ **RESOLVED in PX-03 Phase 4** — see docs/PX03_PHASE4_FINALIZATION.md Section 4. A genuine, live-verified background worker now invokes this automatically every 6 hours, following the exact pattern Atlas's own intelligence_engine worker already established.
+- ~~Payment amount is not capped against the remaining balance, and duplicate payment recording is not prevented.~~ **RESOLVED in PX-03 Phase 4** — see Sections 1 and 2 of that document.
+- ~~Archive-isolation (require_active) was only applied to the three core Payment Request mutations, not the full set of commercial write functions.~~ **RESOLVED in PX-03 Phase 4** — see Section 3 of that document; every commercial write function this task family names is now covered.
+- Frontend was not touched this phase - no UI exists yet for triggering the overdue-check endpoint or seeing the new notification types beyond what the existing Inbox screen already renders generically. **PARTIALLY RESOLVED in PX-03 Phase 4**: the frontend now generates and sends the idempotency key described above, and the Inbox's own Escalations section was fixed to correctly surface commercial escalations. No dedicated UI for manually triggering the overdue-check endpoint was built (the automatic worker makes this less necessary), and this remains true.

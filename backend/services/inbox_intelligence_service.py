@@ -78,6 +78,21 @@ def _target_phase(entity_type: Optional[str]) -> str:
     return ENTITY_TYPE_TO_PHASE.get(entity_type or "", "execute")
 
 
+def _is_severe_escalation_title(title: str) -> bool:
+    """PX-03 Phase 4 Section 5 — an escalation notification's title
+    already encodes that the underlying request has been overdue for
+    OVERDUE_ESCALATION_DAYS+ (per commercial_engine's own generation
+    logic) - true from the moment it's created, not something that
+    should have to age into red over the following 48-96 hours."""
+    return title.startswith("Payment Request") and "is severely overdue" in title
+
+
+def _card_aging_signal(category: str, title: str, created_at: str) -> str:
+    if _is_severe_escalation_title(title):
+        return "red"
+    return _aging_signal(_category_to_aging_kind(category), created_at)
+
+
 def _group_notifications(notifs: list[dict]) -> list[dict]:
     """PX-02 Phase 4 Section 3 — Same Entity Grouping. Collapses
     multiple notifications on the same (entity_type, entity_id) into
@@ -102,7 +117,7 @@ def _group_notifications(notifs: list[dict]) -> list[dict]:
             "created_at": latest["created_at"], "read": all(n["read"] for n in items),
             "notification_ids": [n["id"] for n in items],
             "target_phase": _target_phase(entity_type), "project_id": latest.get("project_id"),
-            "aging_signal": _aging_signal(_category_to_aging_kind(latest["category"]), latest["created_at"]),
+            "aging_signal": _card_aging_signal(latest["category"], latest["title"], latest["created_at"]),
         })
     for n in ungrouped:
         grouped_cards.append({
@@ -110,7 +125,7 @@ def _group_notifications(notifs: list[dict]) -> list[dict]:
             "count": 1, "latest_title": n["title"], "latest_body": n["body"],
             "created_at": n["created_at"], "read": n["read"], "notification_ids": [n["id"]],
             "target_phase": _target_phase(n.get("entity_type")), "project_id": n.get("project_id"),
-            "aging_signal": _aging_signal(_category_to_aging_kind(n["category"]), n["created_at"]),
+            "aging_signal": _card_aging_signal(n["category"], n["title"], n["created_at"]),
         })
     grouped_cards.sort(key=lambda c: c["created_at"], reverse=True)
     return grouped_cards
@@ -143,12 +158,26 @@ async def build_coordination_inbox(user: dict, *, project_id: Optional[str] = No
     waiting_for_others = await _derive_waiting_for_others(user, project_id)
 
     # PX-02 Phase 4 Section 4 — Escalations: anything in Action
-    # Required or Waiting For You whose own aging signal has crossed
-    # into red, surfaced separately so it can't be missed inside a
-    # longer list.
+    # Required, Waiting For You, or Commercial Attention whose own
+    # aging signal has crossed into red, surfaced separately so it
+    # can't be missed inside a longer list. PX-03 Phase 4 — extended
+    # to include Commercial Attention: the 7-day overdue escalation
+    # notification is the single most urgent commercial notification
+    # type, and it would otherwise never surface here.
+    #
+    # A deeper issue than just "which sections to scan": aging_signal
+    # computes age from the notification's own created_at, not the
+    # underlying Payment Request's due_date. A freshly-created "is
+    # severely overdue" escalation notification would incorrectly
+    # show green for its first 48 hours, even though the request it
+    # describes has already been overdue for 7+ days by definition.
+    # Detected by title prefix instead (matching this file's own
+    # established pattern for Clarification needed/answered) and
+    # always classified red immediately, regardless of the
+    # notification's own age.
     escalations = [
-        n for n in (action_required + waiting_for_you)
-        if _aging_signal(_category_to_aging_kind(n["category"]) or "clarification", n["created_at"]) == "red"
+        n for n in (action_required + waiting_for_you + commercial_attention)
+        if _card_aging_signal(n["category"], n["title"], n["created_at"]) == "red"
     ]
 
     return {

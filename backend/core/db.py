@@ -67,6 +67,15 @@ async def ensure_indexes() -> None:
     # Sprint 5 — Construction Workflow Engine
     await db.workflow_activities.create_index([("project_id", 1), ("order", 1)])
     await db.workflow_activities.create_index("knowledge_activity_id")
+    # PX-03 Phase 4 Section 2 — payment idempotency, backing the
+    # application-level check in record_payment() with a database-
+    # level guarantee. Partial: only applies when idempotency_key is
+    # actually set, so payments without one (every pre-existing
+    # caller) are entirely unaffected.
+    await db.payments.create_index(
+        [("payment_request_id", 1), ("idempotency_key", 1)], unique=True,
+        partialFilterExpression={"idempotency_key": {"$type": "string"}},
+    )
 
 
 async def close_client() -> None:

@@ -2641,3 +2641,132 @@ async def test_notification_failure_does_not_block_the_underlying_mutation():
     assert pay["amount"] == 100000
     updated_pr = await commercial_engine.get_payment_request(pr["id"])
     assert updated_pr["status"] == "partially_paid"
+
+
+# ==========================================================================
+# PX-03 Phase 4 — Commercial Workflow Finalization. Matches the exact
+# scenarios manually verified live before being written as permanent
+# tests.
+# ==========================================================================
+async def test_overpayment_rejected():
+    admin, project, pr = await _setup_sent_payment_request("overpay")
+    with pytest.raises(commercial_engine.CommercialError, match="exceeds the remaining balance"):
+        await commercial_engine.record_payment(
+            actor=admin, payment_request_id=pr["id"], amount=pr["amount"] + 1, date="2026-08-05", method="bank_transfer")
+
+
+async def test_zero_payment_rejected():
+    admin, project, pr = await _setup_sent_payment_request("zero_pay")
+    with pytest.raises(commercial_engine.CommercialError, match="greater than zero"):
+        await commercial_engine.record_payment(
+            actor=admin, payment_request_id=pr["id"], amount=0, date="2026-08-05", method="bank_transfer")
+
+
+async def test_negative_payment_rejected():
+    admin, project, pr = await _setup_sent_payment_request("negative_pay")
+    with pytest.raises(commercial_engine.CommercialError, match="greater than zero"):
+        await commercial_engine.record_payment(
+            actor=admin, payment_request_id=pr["id"], amount=-100, date="2026-08-05", method="bank_transfer")
+
+
+async def test_exact_remaining_amount_accepted():
+    admin, project, pr = await _setup_sent_payment_request("exact_remaining")
+    pay = await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=pr["amount"], date="2026-08-05", method="bank_transfer")
+    assert pay["amount"] == pr["amount"]
+    updated = await commercial_engine.get_payment_request(pr["id"])
+    assert updated["status"] == "paid"
+
+
+async def test_payment_against_fully_paid_request_rejected():
+    admin, project, pr = await _setup_sent_payment_request("already_paid")
+    await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=pr["amount"], date="2026-08-05", method="bank_transfer")
+    with pytest.raises(commercial_engine.CommercialError, match="already fully paid"):
+        await commercial_engine.record_payment(
+            actor=admin, payment_request_id=pr["id"], amount=1, date="2026-08-06", method="bank_transfer")
+
+
+async def test_duplicate_payment_prevented_by_idempotency_key():
+    """Same submission twice -> exactly one payment, per this task's
+    own explicit requirement."""
+    admin, project, pr = await _setup_sent_payment_request("idempotent_payment")
+    key = "client-generated-key-001"
+    pay1 = await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=100000, date="2026-08-05",
+        method="bank_transfer", idempotency_key=key)
+    pay2 = await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=100000, date="2026-08-05",
+        method="bank_transfer", idempotency_key=key)
+    assert pay1["id"] == pay2["id"]  # the second call returned the existing payment, not a new one
+
+    all_payments = await commercial_engine.list_payments_for_request(pr["id"])
+    assert len(all_payments) == 1
+
+
+async def test_legitimate_second_payment_with_different_key_accepted():
+    """Different legitimate payments -> both are recorded, per this
+    task's own explicit requirement."""
+    admin, project, pr = await _setup_sent_payment_request("legitimate_second_payment")
+    pay1 = await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=100000, date="2026-08-05",
+        method="bank_transfer", idempotency_key="key-one")
+    pay2 = await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr["id"], amount=50000, date="2026-08-06",
+        method="bank_transfer", idempotency_key="key-two")
+    assert pay1["id"] != pay2["id"]
+    all_payments = await commercial_engine.list_payments_for_request(pr["id"])
+    assert len(all_payments) == 2
+
+
+async def test_archived_project_rejects_variation_and_budget_mutations():
+    """Expanded archive coverage this phase - beyond just the Payment
+    Request functions Phase 3 protected."""
+    admin, project = await _setup_commercial_project("archive_expanded")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    await commercial_engine.create_budget(actor=admin, project_id=project["id"], original_budget=800000)
+
+    await memory_engine.archive_project(project["id"])
+
+    with pytest.raises(commercial_engine.CommercialError):
+        await commercial_engine.create_variation(
+            actor=admin, project_id=project["id"], title="Extra scope", description="d",
+            original_cost=0, proposed_cost=100000)
+    with pytest.raises(commercial_engine.CommercialError):
+        await commercial_engine.revise_budget(project["id"], 900000, actor=admin, reason="test")
+    with pytest.raises(commercial_engine.CommercialError):
+        await commercial_engine.record_actual_cost(project["id"], 50000, actor=admin, reason="test")
+
+
+async def test_overdue_escalation_worker_starts_and_stops_cleanly():
+    """The scheduler mechanism itself - confirms the worker task is a
+    real, cancellable asyncio task tied to the same lifecycle pattern
+    intelligence_engine's own worker already uses."""
+    await commercial_engine.start_overdue_escalation_worker()
+    assert commercial_engine._overdue_escalation_task is not None
+    assert not commercial_engine._overdue_escalation_task.done()
+    await commercial_engine.stop_overdue_escalation_worker()
+    assert commercial_engine._overdue_escalation_task is None
+
+
+async def test_escalation_notification_immediately_red_and_in_escalations_section():
+    """PX-03 Phase 4 Section 5 - a real UX bug found and fixed: a
+    freshly-created 'severely overdue' escalation notification was
+    previously excluded from the Escalations section entirely (it
+    only ever scanned action_required/waiting_for_you, never
+    commercial_attention), and even after including it, its own
+    aging_signal was computed from the notification's own created_at
+    rather than reflecting that the underlying request has already
+    been overdue for 7+ days by definition."""
+    from datetime import timedelta
+    admin, project, pr = await _setup_sent_payment_request(
+        "escalation_ux", due_date=(datetime.now(timezone.utc).date() - timedelta(days=10)).isoformat())
+    await commercial_engine.check_and_escalate_overdue_payment_requests(project["id"], actor=admin)
+
+    inbox = await inbox_intelligence_service.build_coordination_inbox(admin)
+    assert len(inbox["escalations"]) == 1
+    card = inbox["escalations"][0]
+    assert "severely overdue" in card["latest_title"]
+    assert card["aging_signal"] == "red"  # immediately, not aged into it

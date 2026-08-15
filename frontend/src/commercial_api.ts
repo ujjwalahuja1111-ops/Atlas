@@ -295,7 +295,7 @@ export async function apiSetPaymentRequestStatus(paymentRequestId: string, statu
 
 export type PaymentRecordInput = {
   payment_request_id: string; amount: number; date: string; method: string;
-  reference?: string; is_adjustment?: boolean;
+  reference?: string; is_adjustment?: boolean; idempotency_key?: string;
 };
 
 export async function apiRecordPayment(input: PaymentRecordInput): Promise<Payment> {

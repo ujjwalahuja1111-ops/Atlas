@@ -15,7 +15,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from core.db import ensure_indexes, close_client
 from core.settings import PROJECT_NAME, APP_VERSION
-from engines import intelligence_engine, memory_engine
+from engines import intelligence_engine, memory_engine, commercial_engine
 from routes import auth as auth_routes
 from routes import projects as projects_routes
 from routes import events as events_routes
@@ -58,8 +58,10 @@ async def lifespan(app: FastAPI):
     if unscoped_count:
         logger.info(f"FAC-OPS-05 migration: unscoped {unscoped_count} approved account(s) with zero assigned projects")
     await intelligence_engine.start_worker()
+    await commercial_engine.start_overdue_escalation_worker()
     logger.info(f"{PROJECT_NAME} {APP_VERSION} ready")
     yield
+    await commercial_engine.stop_overdue_escalation_worker()
     await intelligence_engine.stop_worker()
     await close_client()
 

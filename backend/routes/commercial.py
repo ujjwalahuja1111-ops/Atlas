@@ -255,6 +255,7 @@ class PaymentCreate(BaseModel):
     method: str
     reference: str = ""
     is_adjustment: bool = False
+    idempotency_key: Optional[str] = None
 
 
 @router.post("/commercial/payments", status_code=201)
