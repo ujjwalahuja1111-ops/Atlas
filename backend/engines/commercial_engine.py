@@ -84,7 +84,7 @@ class CommercialNotFoundError(CommercialError):
     pass
 
 
-async def assert_project_visible(project_id: str, user: dict) -> dict:
+async def assert_project_visible(project_id: str, user: dict, *, require_active: bool = False) -> dict:
     """RC-01 fix — every project-scoped read in routes/commercial.py
     must call this before returning data. Out-of-scope projects behave
     as if they do not exist (404, not 403), matching the exact same
@@ -94,13 +94,25 @@ async def assert_project_visible(project_id: str, user: dict) -> dict:
     call it directly without touching a private function — the same
     architecture boundary the VV-01 sprint's own guard test enforces
     platform-wide: a route may call a public engine function, never an
-    engine's private internals."""
+    engine's private internals.
+
+    PX-03 Phase 3 Section 9 — require_active, a genuine audit finding:
+    this function previously had no archive awareness at all, meaning
+    new commercial activity (a Payment Request, a payment, a status
+    transition) could be created against an archived project.
+    Deliberately opt-in, not the default — "ARCHIVED != DELETED,
+    historical data may remain accessible" (this task's own explicit
+    rule) means reads must continue working against an archived
+    project's own historical commercial data; only mutation call sites
+    pass require_active=True."""
     project = await memory_engine.get_project(project_id)
     if not project:
         raise CommercialNotFoundError(f"Project '{project_id}' not found")
     if memory_engine._is_project_scoped(user):
         if project_id not in (user.get("assigned_project_ids") or []):
             raise CommercialNotFoundError(f"Project '{project_id}' not found")
+    if require_active and project.get("archived_at"):
+        raise CommercialError(f"Project '{project_id}' is archived; new commercial activity is not permitted.")
     return project
 
 
@@ -460,6 +472,13 @@ PAYMENT_REQUEST_TRANSITIONS = {
 async def create_payment_request(*, actor: dict, project_id: str, milestone_id: str,
                                  amount: float, raised_date: str, due_date: str,
                                  notes: str = "") -> dict:
+    # PX-03 Phase 3 Section 9 — a real inconsistency found by testing
+    # this function directly: it never called assert_project_visible
+    # at all, relying entirely on the route layer for both visibility
+    # and archive checks. Added here so the engine layer is
+    # authoritative on its own, matching transition_payment_request_status
+    # and record_payment's own established pattern.
+    await assert_project_visible(project_id, actor, require_active=True)
     ms = await get_milestone(milestone_id)
     if not ms:
         raise CommercialNotFoundError(f"Milestone '{milestone_id}' not found.")
@@ -511,7 +530,7 @@ async def transition_payment_request_status(payment_request_id: str, to_status: 
     pr = await get_payment_request(payment_request_id)
     if not pr:
         raise CommercialNotFoundError(f"Payment Request '{payment_request_id}' not found.")
-    await assert_project_visible(pr["project_id"], actor)
+    await assert_project_visible(pr["project_id"], actor, require_active=True)
     cur = pr["status"]
     if to_status not in PAYMENT_REQUEST_TRANSITIONS.get(cur, set()):
         raise CommercialError(f"Illegal Payment Request transition: '{cur}' -> '{to_status}'.")
@@ -569,7 +588,7 @@ async def record_payment(*, actor: dict, payment_request_id: str, amount: float,
     pr = await get_payment_request(payment_request_id)
     if not pr:
         raise CommercialNotFoundError(f"Payment Request '{payment_request_id}' not found.")
-    await assert_project_visible(pr["project_id"], actor)
+    await assert_project_visible(pr["project_id"], actor, require_active=True)
     if pr["status"] == "cancelled":
         raise CommercialError("Cannot record a payment against a cancelled Payment Request.")
     if pr["status"] not in ("sent", "partially_paid", "paid", "overdue"):
@@ -607,7 +626,104 @@ async def record_payment(*, actor: dict, payment_request_id: str, amount: float,
         body=f"₹{amount:,.0f} recorded.", entity_type="payment", entity_id=doc["id"],
         exclude_user_id=actor["id"],
     )
+    # PX-03 Phase 3 Section 2 — a targeted notification to whoever
+    # actually raised this request, differentiated by the real,
+    # now-known outcome (full vs partial), per this task's own
+    # explicit "determine the correct recipient from the existing
+    # domain relationships" rule. Additive to _notify_project_pms
+    # above, not a replacement — that call already correctly serves
+    # broader team awareness and predates this phase.
+    try:
+        from engines import notification_engine
+        raised_by = pr.get("raised_by_user_id")
+        if raised_by and raised_by != actor["id"]:
+            is_full = new_pr_status == "paid" or (is_adjustment is False and total_received >= pr["amount"])
+            title = f"Payment Request {pr['number']} fully paid" if is_full else f"Partial payment received for {pr['number']}"
+            await notification_engine.notify_commercial(
+                user_id=raised_by, title=title,
+                body=f"₹{amount:,.0f} recorded. Total received: ₹{total_received:,.0f} of ₹{pr['amount']:,.0f}.",
+                project_id=pr["project_id"], entity_type="payment_request", entity_id=payment_request_id,
+            )
+    except Exception:
+        logger.exception(f"PX-03 Phase 3 payment-received notification failed for '{payment_request_id}'; continuing")
     return doc
+
+
+OVERDUE_ESCALATION_DAYS = 7
+
+
+async def check_and_escalate_overdue_payment_requests(project_id: Optional[str] = None, *, actor: dict) -> dict:
+    """PX-03 Phase 3 Section 3 — the 7-day overdue escalation rule.
+
+    A genuine, honest finding precedes this function: no scheduler,
+    cron, or background-job mechanism exists anywhere in this backend
+    (confirmed by searching the codebase before writing this, not
+    assumed). Per this task's own explicit instruction for exactly
+    this situation, this function implements the deterministic domain
+    logic and is exposed as a callable check path (both directly and
+    via a new route) — it does NOT run on its own. Without an external
+    scheduler invoking this endpoint periodically (e.g., a cron job
+    hitting POST /api/commercial/overdue-check, which does not exist
+    in this environment and is not fabricated here), overdue
+    transitions and 7-day escalations only happen when something
+    calls this function. This limitation is documented directly in
+    PX03_PHASE3_COMMERCIAL_COMPLETION.md, not silently implied to be
+    "automatic."
+
+    Two responsibilities, both idempotent:
+    1. Transition any 'sent' request past its own due_date to 'overdue'
+       (a state the machine already supports) — safe to re-run, since
+       a request already 'overdue' or beyond is simply skipped.
+    2. For any request 'overdue' for >= OVERDUE_ESCALATION_DAYS, fire
+       exactly one escalation notification — idempotency achieved by
+       checking the existing notifications collection for an already-
+       sent escalation on this entity, not a new tracking field.
+    """
+    from engines import notification_engine
+    today = datetime.now(timezone.utc).date()
+
+    q: dict = {"status": "sent"}
+    if project_id:
+        q["project_id"] = project_id
+    newly_overdue = []
+    for pr in await db.payment_requests.find(q, {"_id": 0}).to_list(500):
+        if pr.get("due_date") and pr["due_date"] < today.isoformat():
+            await transition_payment_request_status(pr["id"], "overdue", actor=actor)
+            newly_overdue.append(pr["id"])
+
+    q2: dict = {"status": "overdue"}
+    if project_id:
+        q2["project_id"] = project_id
+    escalated = []
+    for pr in await db.payment_requests.find(q2, {"_id": 0}).to_list(500):
+        if not pr.get("due_date"):
+            continue
+        days_overdue = (today - datetime.fromisoformat(pr["due_date"]).date()).days
+        if days_overdue < OVERDUE_ESCALATION_DAYS:
+            continue
+        already_escalated = await db.notifications.find_one({
+            "entity_type": "payment_request", "entity_id": pr["id"], "category": "commercial",
+            "title": {"$regex": "^Payment Request .* is severely overdue"},
+        })
+        if already_escalated:
+            continue
+        raised_by = pr.get("raised_by_user_id")
+        recipients = set()
+        if raised_by:
+            recipients.add(raised_by)
+        mgmt_users = await db.users.find(
+            {"assigned_project_ids": pr["project_id"], "role": "management"}, {"_id": 0, "id": 1},
+        ).to_list(50)
+        recipients.update(u["id"] for u in mgmt_users)
+        for user_id in recipients:
+            await notification_engine.notify_commercial(
+                user_id=user_id, title=f"Payment Request {pr['number']} is severely overdue",
+                body=f"₹{pr['amount']:,.0f} has been overdue for {days_overdue} days.",
+                project_id=pr["project_id"], entity_type="payment_request", entity_id=pr["id"],
+            )
+        escalated.append(pr["id"])
+
+    return {"newly_overdue": newly_overdue, "escalated": escalated}
 
 
 async def list_payments_for_request(payment_request_id: str) -> list[dict]:

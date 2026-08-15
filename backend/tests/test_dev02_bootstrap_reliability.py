@@ -2409,3 +2409,235 @@ async def test_record_payment_rejects_unsent_payment_request():
     pay = await commercial_engine.record_payment(
         actor=admin, payment_request_id=pr["id"], amount=100000, date="2026-08-05", method="bank_transfer")
     assert pay["amount"] == 100000
+
+
+# ==========================================================================
+# PX-03 Phase 3 — Commercial Workflow Completion, Notifications & Final
+# Pilot Hardening. Matches the exact scenarios manually verified live
+# through the real API before being written as permanent tests.
+# ==========================================================================
+async def _setup_sent_payment_request(name_suffix: str, due_date: str = "2026-08-15"):
+    admin, project = await _setup_commercial_project(name_suffix)
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1, planned_percent=20, trigger="t")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+    pr = await commercial_engine.create_payment_request(
+        actor=admin, project_id=project["id"], milestone_id=ms["id"],
+        amount=300000, raised_date="2026-08-01", due_date=due_date)
+    await commercial_engine.transition_payment_request_status(pr["id"], "under_review", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr["id"], "raised", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr["id"], "sent", actor=admin)
+    return admin, project, pr
+
+
+async def test_partial_payment_notification_targets_raiser():
+    pm = await memory_engine.upsert_user(phone="90p33partial0001", name="Partial PM", role="project_manager")
+    admin, project, pr = await _setup_sent_payment_request("partial_notif")
+    # re-raise with the real PM as the actor so raised_by_user_id differs from the recorder
+    await memory_engine.set_user_projects(pm["id"], [project["id"]])
+    ms2 = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Structure", sequence=2, planned_percent=20, trigger="t")
+    await commercial_engine.transition_milestone_status(ms2["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms2["id"], "achieved", actor=admin)
+    pr2 = await commercial_engine.create_payment_request(
+        actor=pm, project_id=project["id"], milestone_id=ms2["id"],
+        amount=300000, raised_date="2026-08-01", due_date="2026-08-15")
+    await commercial_engine.transition_payment_request_status(pr2["id"], "under_review", actor=pm)
+    await commercial_engine.transition_payment_request_status(pr2["id"], "raised", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr2["id"], "sent", actor=admin)
+
+    await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr2["id"], amount=100000, date="2026-08-10", method="bank_transfer")
+
+    inbox = await inbox_intelligence_service.build_coordination_inbox(pm)
+    all_cards = inbox["action_required"] + inbox["commercial_attention"] + inbox["activity_feed"]
+    partial_card = next((c for c in all_cards if "Partial payment" in c["latest_title"]), None)
+    assert partial_card is not None
+    assert "100,000" in partial_card["latest_body"]
+
+
+async def test_full_payment_notification_differs_from_partial():
+    pm = await memory_engine.upsert_user(phone="90p33full0001", name="Full PM", role="project_manager")
+    admin, project, pr = await _setup_sent_payment_request("full_notif")
+    await memory_engine.set_user_projects(pm["id"], [project["id"]])
+    ms2 = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Structure", sequence=2, planned_percent=20, trigger="t")
+    await commercial_engine.transition_milestone_status(ms2["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms2["id"], "achieved", actor=admin)
+    pr2 = await commercial_engine.create_payment_request(
+        actor=pm, project_id=project["id"], milestone_id=ms2["id"],
+        amount=300000, raised_date="2026-08-01", due_date="2026-08-15")
+    await commercial_engine.transition_payment_request_status(pr2["id"], "under_review", actor=pm)
+    await commercial_engine.transition_payment_request_status(pr2["id"], "raised", actor=admin)
+    await commercial_engine.transition_payment_request_status(pr2["id"], "sent", actor=admin)
+
+    await commercial_engine.record_payment(
+        actor=admin, payment_request_id=pr2["id"], amount=300000, date="2026-08-10", method="bank_transfer")
+
+    inbox = await inbox_intelligence_service.build_coordination_inbox(pm)
+    all_cards = inbox["action_required"] + inbox["commercial_attention"] + inbox["activity_feed"]
+    full_card = next((c for c in all_cards if "fully paid" in c["latest_title"]), None)
+    assert full_card is not None
+
+
+async def test_overdue_transition_and_escalation():
+    from datetime import timedelta
+    admin, project, pr = await _setup_sent_payment_request(
+        "overdue_escalation", due_date=(datetime.now(timezone.utc).date() - timedelta(days=10)).isoformat())
+
+    result = await commercial_engine.check_and_escalate_overdue_payment_requests(project["id"], actor=admin)
+    assert pr["id"] in result["newly_overdue"]
+    assert pr["id"] in result["escalated"]
+
+    updated = await commercial_engine.get_payment_request(pr["id"])
+    assert updated["status"] == "overdue"
+
+    inbox = await inbox_intelligence_service.build_coordination_inbox(admin)
+    all_cards = inbox["action_required"] + inbox["commercial_attention"] + inbox["activity_feed"]
+    escalation_card = next((c for c in all_cards if "severely overdue" in c["latest_title"]), None)
+    assert escalation_card is not None
+
+
+async def test_overdue_escalation_is_idempotent():
+    from datetime import timedelta
+    admin, project, pr = await _setup_sent_payment_request(
+        "idempotent_escalation", due_date=(datetime.now(timezone.utc).date() - timedelta(days=10)).isoformat())
+
+    result1 = await commercial_engine.check_and_escalate_overdue_payment_requests(project["id"], actor=admin)
+    assert len(result1["escalated"]) == 1
+
+    result2 = await commercial_engine.check_and_escalate_overdue_payment_requests(project["id"], actor=admin)
+    assert result2["newly_overdue"] == []
+    assert result2["escalated"] == []  # must not duplicate on re-run
+
+    notifs = await notification_engine.list_notifications(admin["id"], limit=100)
+    escalation_notifs = [n for n in notifs if "severely overdue" in n["title"]]
+    assert len(escalation_notifs) == 1
+
+
+async def test_recently_overdue_not_yet_escalated():
+    """Only past the OVERDUE_ESCALATION_DAYS threshold should escalate
+    - a request 2 days overdue should transition to 'overdue' but not
+    yet trigger an escalation notification."""
+    from datetime import timedelta
+    admin, project, pr = await _setup_sent_payment_request(
+        "recently_overdue", due_date=(datetime.now(timezone.utc).date() - timedelta(days=2)).isoformat())
+
+    result = await commercial_engine.check_and_escalate_overdue_payment_requests(project["id"], actor=admin)
+    assert pr["id"] in result["newly_overdue"]
+    assert pr["id"] not in result["escalated"]
+
+
+async def test_commercial_events_route_blocked_for_client_and_supervisor():
+    """A real security leak found this phase: list_commercial_events
+    had zero role gating, exposing exact internal budget/cost figures
+    (budget_revised's from/to values) to any Client or Supervisor with
+    project access."""
+    admin, project = await _setup_commercial_project("events_leak")
+    await commercial_engine.create_budget(actor=admin, project_id=project["id"], original_budget=1000000)
+    await commercial_engine.revise_budget(project["id"], 1200000, actor=admin, reason="scope change")
+
+    client = await memory_engine.upsert_user(phone="90p33eventsleak0001", name="Events Client", role="client")
+    await memory_engine.set_user_projects(client["id"], [project["id"]])
+    client = await memory_engine.get_user_by_phone("90p33eventsleak0001")
+    supervisor = await memory_engine.upsert_user(phone="90p33eventsleak0002", name="Events Sup", role="site_supervisor")
+    await memory_engine.set_user_projects(supervisor["id"], [project["id"]])
+    supervisor = await memory_engine.get_user_by_phone("90p33eventsleak0002")
+
+    # The service layer itself has no role check on list_commercial_events -
+    # the fix lives at the route layer (routes/commercial.py), so this
+    # test exercises the route directly via the app, not the bare engine
+    # function, to prove the actual leak is closed where it matters.
+    import server
+    import httpx
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        from core.auth import create_token
+        client_token = create_token(client["id"])
+        sup_token = create_token(supervisor["id"])
+        r_client = await c.get(f"/api/projects/{project['id']}/commercial/events",
+                               headers={"Authorization": f"Bearer {client_token}"})
+        r_sup = await c.get(f"/api/projects/{project['id']}/commercial/events",
+                            headers={"Authorization": f"Bearer {sup_token}"})
+        assert r_client.status_code == 403
+        assert r_sup.status_code == 403
+
+
+async def test_commercial_summary_blocked_for_supervisor_client_safe():
+    """A real audit finding this phase: the summary route treated
+    Supervisor identically to Client (both got everything except
+    budget) - Supervisor should be more restricted per this task's own
+    Section 7, which gives no safe-list exception the way Client's own
+    Section 6 does."""
+    admin, project = await _setup_commercial_project("summary_supervisor")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+
+    import server
+    import httpx
+    from core.auth import create_token
+    supervisor = await memory_engine.upsert_user(phone="90p33summarysup0001", name="Summary Sup", role="site_supervisor")
+    await memory_engine.set_user_projects(supervisor["id"], [project["id"]])
+    supervisor = await memory_engine.get_user_by_phone("90p33summarysup0001")
+    client = await memory_engine.upsert_user(phone="90p33summarysup0002", name="Summary Client", role="client")
+    await memory_engine.set_user_projects(client["id"], [project["id"]])
+    client = await memory_engine.get_user_by_phone("90p33summarysup0002")
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        sup_token = create_token(supervisor["id"])
+        client_token = create_token(client["id"])
+        r_sup = await c.get(f"/api/projects/{project['id']}/commercial/summary",
+                            headers={"Authorization": f"Bearer {sup_token}"})
+        r_client = await c.get(f"/api/projects/{project['id']}/commercial/summary",
+                               headers={"Authorization": f"Bearer {client_token}"})
+        assert r_sup.status_code == 403
+        assert r_client.status_code == 200
+        assert r_client.json()["budget"] is None
+
+
+async def test_archived_project_blocks_new_commercial_activity_but_preserves_reads():
+    """A real, genuine gap found this phase: commercial_engine.py had
+    zero archive-awareness anywhere. 'ARCHIVED != DELETED' - reads must
+    keep working, only new mutations are rejected."""
+    admin, project = await _setup_commercial_project("archive_isolation")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Foundation", sequence=1, planned_percent=20, trigger="t")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+
+    await memory_engine.archive_project(project["id"])
+
+    # Reads must still succeed - historical access preserved
+    summary = await commercial_engine.get_project_commercial_summary(project["id"])
+    assert summary is not None
+
+    # New mutations must be rejected
+    with pytest.raises(commercial_engine.CommercialError):
+        await commercial_engine.create_payment_request(
+            actor=admin, project_id=project["id"], milestone_id=ms["id"],
+            amount=100000, raised_date="2026-08-14", due_date="2026-08-28")
+
+
+async def test_notification_failure_does_not_block_the_underlying_mutation():
+    """This task's own explicit rule: notifications must never block
+    the underlying commercial transaction. Confirmed by monkeypatching
+    notify_commercial to raise, and verifying record_payment still
+    succeeds and returns the real payment document."""
+    admin, project, pr = await _setup_sent_payment_request("notif_failure_isolation")
+
+    import unittest.mock
+    with unittest.mock.patch.object(notification_engine, "notify_commercial", side_effect=RuntimeError("simulated failure")):
+        pay = await commercial_engine.record_payment(
+            actor=admin, payment_request_id=pr["id"], amount=100000, date="2026-08-05", method="bank_transfer")
+    assert pay["amount"] == 100000
+    updated_pr = await commercial_engine.get_payment_request(pr["id"])
+    assert updated_pr["status"] == "partially_paid"

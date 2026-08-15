@@ -196,7 +196,7 @@ class PaymentRequestCreate(BaseModel):
 async def create_payment_request(req: PaymentRequestCreate, user: dict = Depends(get_current_user)):
     _require_write_access(user)
     try:
-        await ce.assert_project_visible(req.project_id, user)
+        await ce.assert_project_visible(req.project_id, user, require_active=True)
         return await ce.create_payment_request(actor=user, **req.model_dump())
     except ValueError as e:
         _raise_for(e)
@@ -223,8 +223,23 @@ async def set_payment_request_status(payment_request_id: str, req: PaymentReques
         pr = await ce.get_payment_request(payment_request_id)
         if not pr:
             raise CommercialNotFoundError(f"Payment request '{payment_request_id}' not found.")
-        await ce.assert_project_visible(pr["project_id"], user)
+        await ce.assert_project_visible(pr["project_id"], user, require_active=True)
         return await ce.transition_payment_request_status(payment_request_id, req.status, actor=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
+@router.post("/projects/{project_id}/commercial/overdue-check")
+async def run_overdue_check(project_id: str, user: dict = Depends(get_current_user)):
+    """PX-03 Phase 3 Section 3 — the callable check path this task's
+    own instruction asks for, given no scheduler exists in this
+    environment. An external cron/scheduler would call this endpoint
+    periodically; nothing in Atlas currently does so automatically —
+    documented directly in PX03_PHASE3_COMMERCIAL_COMPLETION.md."""
+    _require_write_access(user)
+    try:
+        await ce.assert_project_visible(project_id, user)
+        return await ce.check_and_escalate_overdue_payment_requests(project_id, actor=user)
     except ValueError as e:
         _raise_for(e)
 
@@ -249,7 +264,7 @@ async def record_payment(req: PaymentCreate, user: dict = Depends(get_current_us
         pr = await ce.get_payment_request(req.payment_request_id)
         if not pr:
             raise CommercialNotFoundError(f"Payment request '{req.payment_request_id}' not found.")
-        await ce.assert_project_visible(pr["project_id"], user)
+        await ce.assert_project_visible(pr["project_id"], user, require_active=True)
         return await ce.record_payment(actor=user, **req.model_dump())
     except ValueError as e:
         _raise_for(e)
@@ -423,6 +438,18 @@ async def record_actual_cost(project_id: str, req: CostEntry, user: dict = Depen
 
 @router.get("/projects/{project_id}/commercial/events")
 async def list_commercial_events(project_id: str, user: dict = Depends(get_current_user)):
+    # PX-03 Phase 3 Section 6/7 — a real security gap found during
+    # this phase's own audit: this route previously had zero role
+    # gating (only project-visibility). Its own event payloads include
+    # exact internal budget/cost figures (budget_revised's from/to,
+    # actual_cost_recorded's amount_delta) — exactly what this task's
+    # own Section 7 forbids exposing to Client/Supervisor. No safe
+    # subset exists (a single leaked budget_revised event reveals
+    # internal numbers), so this is gated wholesale, matching the
+    # identical reasoning Phase 2 already applied to profitability-
+    # panel/health/cash-flow-timeline.
+    if user.get("role") not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can view the commercial event ledger.")
     try:
         await ce.assert_project_visible(project_id, user)
     except ValueError as e:
@@ -459,6 +486,16 @@ async def get_project_commercial_summary(project_id: str, user: dict = Depends(g
         await ce.assert_project_visible(project_id, user)
     except ValueError as e:
         _raise_for(e)
+    # PX-03 Phase 3 Section 6/7 — a real audit finding: this route
+    # previously treated Supervisor identically to Client (both got
+    # everything except budget). This task's own Section 7 gives
+    # Supervisor no safe-list exception the way Client's own Section 6
+    # does, so Supervisor is blocked entirely — matching Phase 2's own
+    # established billing-collections pattern (client-safe,
+    # supervisor-blocked).
+    if user["role"] == "site_supervisor":
+        raise HTTPException(status_code=403,
+                            detail="Site Supervisors do not have access to detailed commercial values.")
     summary = await ce.get_project_commercial_summary(project_id)
     if summary and user["role"] not in ("management", "project_manager"):
         summary = {**summary, "budget": None}
