@@ -216,8 +216,12 @@ export default function OpDetail() {
   };
 
   const startRecord = async () => {
-    const ok = await startRecordRaw();
-    if (!ok) Alert.alert('Recording failed', 'Could not start recording');
+    const result = await startRecordRaw();
+    if (result === 'permission_denied') {
+      Alert.alert('Microphone access needed', 'Turn on microphone access in your phone Settings to record.');
+    } else if (result !== 'started') {
+      Alert.alert('Recording failed', 'Could not start recording. Try again.');
+    }
   };
   const stopAndUpload = async () => {
     try {

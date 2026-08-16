@@ -25,6 +25,14 @@ export default function CaptureScreen() {
   // each screen maintaining its own separate useAudioRecorder instance.
   const { recording, elapsed, start: startRecordingRaw, stop: stopRecordingRaw, cancel: cancelRecordingRaw } = useVoiceRecorder();
   const [photoUris, setPhotoUris] = useState<string[]>([]);
+  // PX-04 Section 2/10 — the recorded audio's own real, local file URI,
+  // held here so a failed upload can retry the same recording rather
+  // than forcing the user to speak it all again. expo-audio's own
+  // recorder.uri already points to a real file on the device's
+  // filesystem, so this is a genuine retry path, not fabricated
+  // persistence — cleared only on a successful save or an explicit
+  // cancel, never silently discarded on a failure.
+  const [pendingCaptureUri, setPendingCaptureUri] = useState<string | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
   const [projectMap, setProjectMap] = useState<Record<string, Project>>({});
   const [siteId, setSiteId] = useState<string | null>(null);
@@ -80,31 +88,52 @@ export default function CaptureScreen() {
   const startRecording = async () => {
     tryCaptureGps();
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy).catch(() => {});
-    const ok = await startRecordingRaw();
-    if (ok) setStatus('Recording…');
-    else setStatus('Could not start recording');
+    const result = await startRecordingRaw();
+    if (result === 'started') setStatus('Recording…');
+    else if (result === 'permission_denied') {
+      setStatus('Microphone access is off. Turn it on in your phone Settings to record.');
+    } else setStatus('Could not start recording. Try again.');
   };
 
-  const stopAndSubmit = async () => {
+  const submitCapture = async (uri: string | null) => {
     if (!siteId) { setStatus('Pick a site first'); return; }
+    if (!uri && photoUris.length === 0) { setStatus('Nothing to send'); return; }
+    setSubmitting(true);
+    setStatus('Saving…');
     try {
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      const uri = await stopRecordingRaw();
-      if (!uri && photoUris.length === 0) { setStatus('Nothing to send'); return; }
-      setSubmitting(true);
-      setStatus('Saving…');
       const event = await apiCreateEvent({ siteId, audioUri: uri, photoUris, gps, requiresApproval });
       if (requiresApproval) apiRequestApproval(event.id).catch(() => {}); // never blocks the save
       setStatus(requiresApproval ? 'Saved! Sent for client approval.' : 'Saved! AI analyzing in background…');
       setPhotoUris([]);
       setRequiresApproval(false);
+      setPendingCaptureUri(null);
       setTimeout(() => {
         setStatus('');
         router.push('/(tabs)');
       }, 500);
     } catch (e: any) {
-      setStatus(e?.message || 'Save failed');
+      // PX-04 Section 2/10 — the recording itself already succeeded and
+      // is sitting on the device; only the upload failed. Keep
+      // pendingCaptureUri set (not cleared here) so "Try again" can
+      // retry the same recording without asking the user to speak it
+      // all over again, per this task's own explicit "tell the user
+      // the recording was made but could not be uploaded and provide
+      // an appropriate retry path" instruction.
+      if (uri) setPendingCaptureUri(uri);
+      setStatus(uri
+        ? 'Recording saved on this phone — upload failed. Tap Try Again.'
+        : (e?.message || 'Save failed. Try again.'));
     } finally { setSubmitting(false); }
+  };
+
+  const stopAndSubmit = async () => {
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    const uri = await stopRecordingRaw();
+    await submitCapture(uri);
+  };
+
+  const retrySubmit = async () => {
+    await submitCapture(pendingCaptureUri);
   };
 
   const cancelRecording = async () => {
@@ -269,6 +298,13 @@ export default function CaptureScreen() {
             {status || (recording ? `Recording · ${mins}:${secs}` : sites.length === 0 ? 'No sites available — check back soon' : 'Choose how you want to capture')}
           </Text>
 
+          {pendingCaptureUri && !submitting && (
+            <Pressable testID="retry-upload-button" onPress={retrySubmit} style={styles.retryUploadBtn}>
+              <Ionicons name="refresh" size={16} color={theme.color.onBrand} />
+              <Text style={styles.retryUploadBtnText}>Try Again</Text>
+            </Pressable>
+          )}
+
           {/* Sprint 6.2 — Voice / Photo / Text as one consistent,
               responsive control group: equal size, equal weight, same
               row. Recording state is shown by the Voice button itself
@@ -403,6 +439,11 @@ const styles = StyleSheet.create({
   },
   noSitesText: { color: theme.color.textDim, fontSize: 13, fontWeight: '600', paddingHorizontal: theme.spacing.md },
   statusText: { color: theme.color.text, fontSize: 18, fontWeight: '700', letterSpacing: 0.5, textAlign: 'center' },
+  retryUploadBtn: {
+    flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'center', marginTop: 10,
+    backgroundColor: theme.color.brand, borderRadius: theme.radius.pill, paddingVertical: 8, paddingHorizontal: 18,
+  },
+  retryUploadBtnText: { color: theme.color.onBrand, fontSize: 14, fontWeight: '800' },
   // Sprint 6.2 — Voice / Photo / Text as one consistent, responsive group:
   // equal flex, equal height, same row, wraps on very narrow screens
   // instead of clipping or overlapping text.

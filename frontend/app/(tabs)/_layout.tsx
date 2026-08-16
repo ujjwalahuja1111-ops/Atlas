@@ -140,6 +140,17 @@ export default function TabLayout() {
           file already used for every role/tab combination that
           doesn't apply, not a new mechanism. */}
       <Tabs.Screen name="ops" options={hidden} />
+      {/* PX-04 Section 1 — Executive Hub lives here, inside the tab
+          group, specifically so the tab bar (and therefore every
+          other destination) stays reachable while Management is on
+          it. This is the actual fix for the "dead-end" navigation
+          problem: the screen previously lived outside this Tabs
+          navigator entirely, which hid the tab bar the moment
+          Management landed here. Hidden as a tab icon (matching the
+          ops precedent above) since Home's own redirect already
+          routes Management here directly — no separate icon is
+          needed for a screen reached via the Home tab itself. */}
+      <Tabs.Screen name="executive-hub" options={hidden} />
     </Tabs>
   );
 }

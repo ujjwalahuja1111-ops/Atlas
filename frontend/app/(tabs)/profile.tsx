@@ -110,7 +110,7 @@ export default function ProfileScreen() {
 
         {viewRole === 'admin' && (
           <>
-            <Pressable testID="open-executive-hub" onPress={() => router.push('/executive-hub')} style={styles.primaryDestBtn}>
+            <Pressable testID="open-executive-hub" onPress={() => router.push('/(tabs)/executive-hub')} style={styles.primaryDestBtn}>
               <View style={styles.primaryDestIconWrap}>
                 <Ionicons name="business-outline" size={26} color={theme.color.onBrand} />
               </View>

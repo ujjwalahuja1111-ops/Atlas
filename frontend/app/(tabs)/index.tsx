@@ -9,12 +9,12 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
-import { ManagementCreCards, PmCreCards, SupervisorCreCards } from '@/src/CreDashboard';
+import { ManagementCreCards, PmCreCards } from '@/src/CreDashboard';
 import { MyDaySection } from '@/src/MyDay';
 import { PortfolioSummaryWidget } from '@/src/PortfolioSummaryWidget';
 import {
   apiListSites, apiListProjects, apiTimeline, apiSeedDemo, apiProjectSummary,
-  getActiveSite, setActiveSite,
+  getActiveSite, setActiveSite, apiGetMe,
   type Site, type Project, type TimelineItem, type ProjectSummary,
 } from '@/src/api';
 import { apiGetWorkflow, type WorkflowActivity } from '@/src/workflow_api';
@@ -26,7 +26,7 @@ import {
   type ClientRecentActivity,
   type PaymentJourneyStep,
 } from '@/src/commercial_api';
-import { apiListItems, type OperationalItem } from '@/src/ops_api';
+import { apiListItems, apiMyDay, type OperationalItem, type MyDaySupervisor } from '@/src/ops_api';
 
 const TYPE_ICON: Record<string, any> = {
   voice_note: 'mic', photo: 'camera', material_request: 'cube',
@@ -85,14 +85,65 @@ function ContinueWorkingCta({ projectId, router }: { projectId: string; router: 
   );
 }
 
-function CaptureSiteUpdateCta({ router }: { router: ReturnType<typeof useRouter> }) {
+function SupervisorHomeHeader({ router, siteName, projectName }: {
+  router: ReturnType<typeof useRouter>; siteName: string | null; projectName: string | null;
+}) {
+  const [name, setName] = useState<string>('');
+  const [myDay, setMyDay] = useState<MyDaySupervisor | null>(null);
+  useEffect(() => {
+    apiGetMe().then((u) => setName(u.name?.split(' ')[0] || '')).catch(() => {});
+    apiMyDay().then((d) => { if (d.role === 'site_supervisor') setMyDay(d as MyDaySupervisor); }).catch(() => {});
+  }, []);
+
+  // PX-04 Section 6 — field language, not system terminology. A
+  // supervisor's own "tasks" are anything ready, in progress, or due
+  // today; "needs attention" is anything blocked or waiting on
+  // material — the same underlying data apiMyDay() already returns,
+  // just named the way a person on site would actually say it.
+  const taskCount = myDay ? myDay.ready_to_start.length + myDay.in_progress.length + myDay.due_today.length : 0;
+  const attentionCount = myDay ? myDay.blocked.length + myDay.waiting_for_material.length : 0;
+  const greeting = new Date().getHours() < 12 ? 'Good morning' : new Date().getHours() < 17 ? 'Good afternoon' : 'Good evening';
+
   return (
-    <Pressable testID="home-capture-site-update" onPress={() => router.push('/(tabs)/capture')} style={styles.ctaBanner}>
-      <Ionicons name="mic" size={22} color={theme.color.onBrand} />
-      <Text style={styles.ctaBannerText}>Capture Site Update</Text>
-    </Pressable>
+    <View style={styles.supHome} testID="supervisor-home">
+      <Text style={styles.supGreeting}>{greeting}{name ? `, ${name}` : ''}</Text>
+      {siteName && (
+        <Text style={styles.supSiteLine}>
+          {projectName ? `${projectName} · ` : ''}{siteName}
+        </Text>
+      )}
+
+      <View style={styles.supActionsGrid}>
+        <Pressable testID="sup-action-capture" onPress={() => router.push('/(tabs)/capture')} style={[styles.supActionCard, styles.supActionCardPrimary]}>
+          <Ionicons name="mic" size={30} color={theme.color.onBrand} />
+          <Text style={styles.supActionCardTextPrimary}>Site Update</Text>
+        </Pressable>
+        <Pressable testID="sup-action-issue" onPress={() => router.push('/(tabs)/capture?mode=issue')} style={styles.supActionCard}>
+          <Ionicons name="warning" size={28} color={theme.color.error} />
+          <Text style={styles.supActionCardText}>Report Issue</Text>
+        </Pressable>
+        <Pressable testID="sup-action-tasks" onPress={() => router.push('/(tabs)/ops')} style={styles.supActionCard}>
+          <Ionicons name="checkbox" size={28} color={theme.color.brand} />
+          <Text style={styles.supActionCardText}>My Tasks{taskCount > 0 ? ` (${taskCount})` : ''}</Text>
+        </Pressable>
+        <Pressable testID="sup-action-messages" onPress={() => router.push('/(tabs)/notifications')} style={styles.supActionCard}>
+          <Ionicons name="notifications" size={28} color={theme.color.brand} />
+          <Text style={styles.supActionCardText}>Messages</Text>
+        </Pressable>
+      </View>
+
+      {attentionCount > 0 && (
+        <Pressable testID="sup-needs-attention" onPress={() => router.push('/(tabs)/ops')} style={styles.supAttentionBanner}>
+          <Ionicons name="alert-circle" size={18} color="#fff" />
+          <Text style={styles.supAttentionText}>{attentionCount} item{attentionCount !== 1 ? 's' : ''} need{attentionCount === 1 ? 's' : ''} attention</Text>
+        </Pressable>
+      )}
+
+      <Text style={styles.supSectionLabel}>SITE HISTORY</Text>
+    </View>
   );
 }
+
 
 function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
   const router = useRouter();
@@ -134,7 +185,7 @@ function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
   useEffect(() => {
     if (stayHere) return;
     if (viewRole === 'admin') {
-      router.replace('/executive-hub');
+      router.replace('/(tabs)/executive-hub');
     }
   }, [viewRole, router, stayHere]);
 
@@ -294,7 +345,7 @@ function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
           ListHeaderComponent={
             viewRole === 'admin' ? <><PortfolioSummaryWidget /><MyDaySection viewRole="admin" /><ManagementCreCards projectId={activeProjectId} /></> :
             viewRole === 'pm' ? <>{activeProjectId && <ContinueWorkingCta projectId={activeProjectId} router={router} />}<MyDaySection viewRole="pm" /><PmCreCards projectId={activeProjectId} /></> :
-            viewRole === 'supervisor' ? <><CaptureSiteUpdateCta router={router} /><MyDaySection viewRole="supervisor" /><SupervisorCreCards projectId={activeProjectId} /></> :
+            viewRole === 'supervisor' ? <SupervisorHomeHeader router={router} siteName={activeSite?.name || null} projectName={activeSite ? projectMap[activeSite.project_id]?.name || null : null} /> :
             null
           }
           renderItem={({ item, index }) => (
@@ -894,6 +945,23 @@ const badge = StyleSheet.create({
 });
 
 const styles = StyleSheet.create({
+  supHome: { paddingHorizontal: theme.spacing.md, paddingTop: theme.spacing.sm },
+  supGreeting: { color: theme.color.text, fontSize: 24, fontWeight: '900' },
+  supSiteLine: { color: theme.color.textDim, fontSize: 15, fontWeight: '600', marginTop: 2, marginBottom: theme.spacing.md },
+  supActionsGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: theme.spacing.sm },
+  supActionCard: {
+    width: '47%', backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, paddingVertical: 20,
+    alignItems: 'center', justifyContent: 'center', gap: 8, borderWidth: 1, borderColor: theme.color.border,
+  },
+  supActionCardPrimary: { backgroundColor: theme.color.brand, borderColor: theme.color.brand, width: '100%' },
+  supActionCardText: { color: theme.color.text, fontSize: 15, fontWeight: '800' },
+  supActionCardTextPrimary: { color: theme.color.onBrand, fontSize: 17, fontWeight: '900' },
+  supAttentionBanner: {
+    flexDirection: 'row', alignItems: 'center', gap: 8, backgroundColor: theme.color.error,
+    borderRadius: theme.radius.sm, padding: 12, marginTop: 4, marginBottom: theme.spacing.sm,
+  },
+  supAttentionText: { color: '#fff', fontSize: 14, fontWeight: '800' },
+  supSectionLabel: { color: theme.color.textDim, fontSize: 12, fontWeight: '800', letterSpacing: 0.8, marginTop: theme.spacing.sm, marginBottom: 4 },
   ctaBanner: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     backgroundColor: theme.color.brand, borderRadius: theme.radius.md,

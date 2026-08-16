@@ -55,9 +55,7 @@ export default function ExecutiveHubScreen() {
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
       <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} testID="exec-hub-back">
-          <Ionicons name="chevron-back" size={26} color={theme.color.text} />
-        </Pressable>
+        <View style={{ width: 26 }} />
         <Text style={styles.headerTitle}>Executive Hub</Text>
         <Pressable onPress={() => router.push('/portfolio-search')} hitSlop={12} testID="exec-hub-search">
           <Ionicons name="search" size={22} color={theme.color.brand} />
