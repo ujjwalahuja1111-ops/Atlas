@@ -189,7 +189,23 @@ async def _process(event_id: str) -> None:
 
         # Drive proposal generation off the canonical ai_analyses doc.
         # Same code path for voice / text / mixed input.
-        await generate_proposals_for_event(event_id)
+        proposal_result = await generate_proposals_for_event(event_id)
+
+        # The freehand product decision — this is the one line that
+        # actually closes the capture -> understanding loop for a real
+        # user, not just via the API. Never allowed to block the
+        # pipeline itself if notification delivery fails.
+        try:
+            from engines import notification_engine
+            if event.get("user_id"):
+                await notification_engine.notify_understanding_ready(
+                    user_id=event["user_id"],
+                    summary=structured.get("summary") or "",
+                    proposal_count=proposal_result.get("generated_count", 0),
+                    project_id=event["project_id"], entity_id=event_id,
+                )
+        except Exception:
+            logger.exception(f"worker: understanding-ready notification failed for {event_id}; continuing")
 
     except Exception as e:
         error = f"{type(e).__name__}: {e}"

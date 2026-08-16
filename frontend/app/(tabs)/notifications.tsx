@@ -89,6 +89,8 @@ export default function NotificationInboxScreen() {
     }
     if (n.project_id && n.entity_type === 'operational_item') {
       router.push(`/op/${n.entity_id}`);
+    } else if (n.entity_type === 'event' && n.entity_id) {
+      router.push(`/event/${n.entity_id}`);
     } else if (n.project_id && (n.entity_type === 'payment_request' || n.entity_type === 'payment')) {
       router.push(`/commercial/${n.project_id}`);
     } else if (n.project_id) {

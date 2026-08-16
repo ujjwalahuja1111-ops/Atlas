@@ -127,3 +127,20 @@ async def notify_commercial(*, user_id: str, title: str, body: str,
         user_id=user_id, category="commercial", title=title, body=body,
         project_id=project_id, entity_type=entity_type, entity_id=entity_id,
     )
+
+
+async def notify_understanding_ready(*, user_id: str, summary: str, proposal_count: int,
+                                     project_id: str, entity_id: str) -> None:
+    """The freehand product decision's own completion signal — closes
+    the capture -> understanding loop. Reuses status_change (the
+    event's own ai_status genuinely did change to 'analyzed'), not a
+    new category, per this task's own "prefer orchestration" rule."""
+    title = "Atlas understood your update"
+    if proposal_count > 0:
+        body = f"{summary[:120]}. {proposal_count} thing{'s' if proposal_count != 1 else ''} to review."
+    else:
+        body = summary[:150] or "Your site update has been reviewed."
+    await create_notification(
+        user_id=user_id, category="status_change", title=title, body=body,
+        project_id=project_id, entity_type="event", entity_id=entity_id,
+    )

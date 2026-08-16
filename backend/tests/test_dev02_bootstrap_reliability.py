@@ -239,6 +239,7 @@ from engines import reasoning_engine, commercial_engine, operations_engine, know
 from services import daily_site_report_service  # noqa: E402
 from services import inbox_intelligence_service  # noqa: E402
 from services import commercial_workflow_service  # noqa: E402
+from services import event_intelligence_service  # noqa: E402
 reasoning_engine.db = _mock_db
 commercial_engine.db = _mock_db
 operations_engine.db = _mock_db
@@ -2770,3 +2771,136 @@ async def test_escalation_notification_immediately_red_and_in_escalations_sectio
     card = inbox["escalations"][0]
     assert "severely overdue" in card["latest_title"]
     assert card["aging_signal"] == "red"  # immediately, not aged into it
+
+
+# ==========================================================================
+# Atlas Freehand Evolution — Event Intelligence. The product decision:
+# close the capture -> understanding loop by grounding an event's own
+# AI summary against real, existing schedule and commercial data.
+# Matches the exact scenario verified live through the real API
+# (this task's own "tile work completed" worked example) before being
+# written as a permanent test.
+# ==========================================================================
+async def _insert_test_event(*, site_id: str, project_id: str, user: dict, text_input: str) -> dict:
+    """A minimal, real event document matching reality_engine.capture()'s
+    own actual field shape - confirmed against the real function before
+    writing this, not guessed. Bypasses the UploadFile-based capture()
+    entry point (too heavy for a unit test) while producing an
+    identically-shaped document."""
+    now = datetime.now(timezone.utc).isoformat()
+    doc = {
+        "id": memory_engine._new_id("evt_"), "site_id": site_id, "project_id": project_id,
+        "activity_id": None, "user_id": user["id"], "user_name": user["name"],
+        "kind": "text", "text_input": text_input, "audio_asset_id": None, "photo_asset_ids": [],
+        "gps": None, "client_created_at": now, "server_created_at": now, "app_version": None,
+        "ai_status": "pending", "ai_analysis_id": None,
+    }
+    return await memory_engine.insert_event(doc)
+
+
+async def test_event_understanding_grounds_milestone_from_real_trigger_text():
+    admin = {"id": "freehand_admin", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="Freehand Villa", code="FREEHAND1")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Villa Site")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=5000000, contract_date="2026-01-01", duration_days=150)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Bathroom Tiling Milestone", sequence=3,
+        planned_percent=15, trigger="Tile work complete in all bathrooms, ready for client sign-off")
+
+    event = await _insert_test_event(
+        site_id=site["id"], project_id=project["id"], user=admin,
+        text_input="Tile work completed in master bathroom, looks great")
+    analysis_doc = {
+        "id": memory_engine._new_id("ana_"), "event_id": event["id"], "transcript": None,
+        "language_detected": "en",
+        "structured": {"summary": "Tile work completed in the master bathroom", "urgency": "normal"},
+        "evidence": [], "model_versions": {}, "prompt_version_id": None, "prompt_name": None,
+        "prompt_version": None, "started_at": "2026-08-01T00:00:00+00:00",
+        "finished_at": "2026-08-01T00:00:01+00:00", "error": None,
+    }
+    await memory_engine.put_ai_analysis(analysis_doc)
+    await memory_engine.set_event_ai_status(event["id"], "analyzed", analysis_doc["id"])
+
+    understanding = await event_intelligence_service.build_event_understanding(event["id"], user=admin)
+
+    assert understanding["summary"] == "Tile work completed in the master bathroom"
+    assert understanding["possible_milestone"] is not None
+    assert understanding["possible_milestone"]["name"] == "Bathroom Tiling Milestone"
+    # traceable back to the real, human-authored field that grounded the match
+    assert "Tile work complete" in understanding["possible_milestone"]["trigger"]
+
+
+async def test_event_understanding_never_fabricates_a_match():
+    """No overlap, no match - confirms this is a real grounding
+    threshold, not a guess dressed up as intelligence."""
+    admin = {"id": "freehand_admin2", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="Freehand No Match", code="FREEHAND2")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Electrical Milestone", sequence=1,
+        planned_percent=10, trigger="Main panel wiring complete and inspected")
+
+    event = await _insert_test_event(
+        site_id=site["id"], project_id=project["id"], user=admin,
+        text_input="Weather was rainy today, minor site cleanup done")
+    analysis_doc = {
+        "id": memory_engine._new_id("ana_"), "event_id": event["id"], "transcript": None,
+        "language_detected": "en",
+        "structured": {"summary": "Minor site cleanup performed due to rain", "urgency": "normal"},
+        "evidence": [], "model_versions": {}, "prompt_version_id": None, "prompt_name": None,
+        "prompt_version": None, "started_at": "2026-08-01T00:00:00+00:00",
+        "finished_at": "2026-08-01T00:00:01+00:00", "error": None,
+    }
+    await memory_engine.put_ai_analysis(analysis_doc)
+    await memory_engine.set_event_ai_status(event["id"], "analyzed", analysis_doc["id"])
+
+    understanding = await event_intelligence_service.build_event_understanding(event["id"], user=admin)
+    assert understanding["possible_milestone"] is None
+    assert understanding["possible_next_activity"] is None
+
+
+async def test_event_understanding_excludes_already_achieved_milestones():
+    admin = {"id": "freehand_admin3", "name": "Admin", "role": "management"}
+    project = await memory_engine.insert_project(name="Freehand Achieved", code="FREEHAND3")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    await commercial_engine.create_contract(
+        actor=admin, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=100)
+    ms = await commercial_engine.create_milestone(
+        actor=admin, project_id=project["id"], name="Tiling Milestone", sequence=1,
+        planned_percent=10, trigger="Tile work complete in all bathrooms")
+    await commercial_engine.transition_milestone_status(ms["id"], "ready", actor=admin)
+    await commercial_engine.transition_milestone_status(ms["id"], "achieved", actor=admin)
+
+    event = await _insert_test_event(
+        site_id=site["id"], project_id=project["id"], user=admin,
+        text_input="Tile work completed in master bathroom")
+    analysis_doc = {
+        "id": memory_engine._new_id("ana_"), "event_id": event["id"], "transcript": None,
+        "language_detected": "en",
+        "structured": {"summary": "Tile work completed", "urgency": "normal"},
+        "evidence": [], "model_versions": {}, "prompt_version_id": None, "prompt_name": None,
+        "prompt_version": None, "started_at": "2026-08-01T00:00:00+00:00",
+        "finished_at": "2026-08-01T00:00:01+00:00", "error": None,
+    }
+    await memory_engine.put_ai_analysis(analysis_doc)
+    await memory_engine.set_event_ai_status(event["id"], "analyzed", analysis_doc["id"])
+
+    understanding = await event_intelligence_service.build_event_understanding(event["id"], user=admin)
+    # already achieved - nothing left to become "eligible" for
+    assert understanding["possible_milestone"] is None
+
+
+async def test_understanding_ready_notification_content():
+    await notification_engine.notify_understanding_ready(
+        user_id="freehand_notif_user", summary="Tile work completed in the master bathroom",
+        proposal_count=2, project_id="freehand_proj", entity_id="freehand_evt")
+    notifs = await notification_engine.list_notifications("freehand_notif_user")
+    assert notifs[0]["title"] == "Atlas understood your update"
+    assert "2 things to review" in notifs[0]["body"]
+    assert notifs[0]["entity_type"] == "event"

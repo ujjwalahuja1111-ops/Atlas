@@ -13,6 +13,7 @@ import {
   apiListProposals, apiAcceptProposal, apiRejectProposal, type AiProposal,
   apiListItems, apiListUsers, apiAssignItem, type OperationalItem, type AssignableUser,
 } from '@/src/ops_api';
+import { apiGetEventUnderstanding, type EventUnderstanding } from '@/src/event_intelligence_api';
 
 const TYPE_LABEL: Record<string, string> = {
   voice_note: 'VOICE NOTE', photo: 'PHOTO', material_request: 'MATERIAL REQUEST',
@@ -53,6 +54,7 @@ export default function EventDetail() {
   // Proposal Inbox and Operations Center both navigate here rather
   // than showing their own review/assignment UI.
   const [proposals, setProposals] = useState<AiProposal[]>([]);
+  const [understanding, setUnderstanding] = useState<EventUnderstanding | null>(null);
   const [proposalEdits, setProposalEdits] = useState<Record<string, { title: string; description: string; priority: AiProposal['suggested_priority'] }>>({});
   const [proposalBusyId, setProposalBusyId] = useState<string | null>(null);
   const [regenerating, setRegenerating] = useState(false);
@@ -78,6 +80,7 @@ export default function EventDetail() {
   useEffect(() => {
     if (!id || viewRole === null) return;
     loadRelated();
+    apiGetEventUnderstanding(id).then(setUnderstanding).catch(() => {});
     // Proposal Review (Canonical Event UX patch) — Management/PM only,
     // matching "Review AI proposal" in the RBAC table below.
     if (viewRole === 'admin' || viewRole === 'pm') {
@@ -475,6 +478,49 @@ export default function EventDetail() {
               regenerate-proposals endpoint; shown even with zero
               proposals, since that's exactly when regenerating matters
               most (AI produced nothing usable the first time). */}
+          {understanding && (understanding.summary || understanding.ai_status === 'pending') && (
+            <Section icon="bulb-outline" title="WHAT ATLAS UNDERSTOOD">
+              {understanding.ai_status === 'pending' ? (
+                <View style={styles.understandingRow}>
+                  <ActivityIndicator size="small" color={theme.color.brand} />
+                  <Text style={styles.understandingProcessingText}>Still reviewing this update…</Text>
+                </View>
+              ) : (
+                <>
+                  {understanding.summary && (
+                    <Text style={styles.understandingSummary}>{understanding.summary}</Text>
+                  )}
+                  {understanding.possible_milestone && (
+                    <Pressable
+                      testID="event-possible-milestone"
+                      onPress={() => router.push(`/commercial/${item?.event.project_id}`)}
+                      style={styles.understandingLinkCard}
+                    >
+                      <Ionicons name="flag-outline" size={18} color={theme.color.brand} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.understandingLinkTitle}>May relate to: {understanding.possible_milestone.name}</Text>
+                        <Text style={styles.understandingLinkSubtext} numberOfLines={2}>{understanding.possible_milestone.trigger}</Text>
+                      </View>
+                    </Pressable>
+                  )}
+                  {understanding.possible_next_activity && (
+                    <View style={styles.understandingLinkCard}>
+                      <Ionicons name="arrow-forward-circle-outline" size={18} color={theme.color.brand} />
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.understandingLinkTitle}>Next likely: {understanding.possible_next_activity.name}</Text>
+                        {!understanding.possible_next_activity.ready && understanding.possible_next_activity.possible_blockers.length > 0 && (
+                          <Text style={styles.understandingLinkSubtext} numberOfLines={2}>
+                            Not ready yet: {understanding.possible_next_activity.possible_blockers[0]}
+                          </Text>
+                        )}
+                      </View>
+                    </View>
+                  )}
+                </>
+              )}
+            </Section>
+          )}
+
           {(viewRole === 'admin' || viewRole === 'pm') && (
             <Section icon="sparkles-outline" title="AI PROPOSAL">
               <Pressable testID="event-regenerate-proposals" onPress={regenerateProposals} disabled={regenerating}
@@ -763,6 +809,15 @@ const styles = StyleSheet.create({
   },
   approvalBadgeText: { color: theme.color.text, fontSize: 13, fontWeight: '700' },
   approvalRequestLink: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 10 },
+  understandingRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  understandingProcessingText: { color: theme.color.textDim, fontSize: 14, fontStyle: 'italic' },
+  understandingSummary: { color: theme.color.text, fontSize: 15, lineHeight: 21, marginBottom: 10 },
+  understandingLinkCard: {
+    flexDirection: 'row', alignItems: 'flex-start', gap: 10, backgroundColor: theme.color.surface2,
+    borderRadius: theme.radius.sm, padding: 12, marginTop: 8, borderWidth: 1, borderColor: theme.color.border,
+  },
+  understandingLinkTitle: { color: theme.color.text, fontSize: 14, fontWeight: '700' },
+  understandingLinkSubtext: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
   approvalRequestLinkText: { color: theme.color.brand, fontSize: 14, fontWeight: '700' },
   approvalForm: { marginTop: 10, gap: 8 },
   approvalInput: {
