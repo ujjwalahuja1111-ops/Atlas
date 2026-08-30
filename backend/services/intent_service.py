@@ -1,0 +1,323 @@
+"""Atlas Intent & Orchestration — Phase 1.
+
+Implements docs/ATLAS_INTENT_ORCHESTRATION_SPEC.md Items 1-11, 30 exactly:
+one AI structuring pass (Item 4/7/8/9), deterministic intent->engine
+dispatch (Item 10), read-only orchestration only (Item 11).
+
+Phase 1 explicitly does NOT implement: voice (Item 3), write actions,
+draft entities (Item 13), or persistent conversation memory beyond a
+single clarification round (Item 19/22) — per this phase's own scope.
+
+The structuring call reuses the exact LLM-call pattern already
+established in engines/intelligence_engine.py's own _structure() and
+engines/reasoning_engine.py's own _ai_review() — same client, same
+total-failure-isolation discipline (any exception -> unresolved,
+never a guess), not a new pattern.
+"""
+from __future__ import annotations
+import json
+import logging
+import uuid
+from typing import Optional
+
+from core.llm_compat import LlmChat, UserMessage
+from core.settings import EMERGENT_LLM_KEY
+from engines import memory_engine, reasoning_engine
+
+logger = logging.getLogger(__name__)
+
+LLM_MODEL = "gpt-4o"
+
+# Item 4 — the closed intent taxonomy for Phase 1. Only the five intents
+# named in this phase's own scope; every other intent in the full spec's
+# taxonomy is deliberately absent here, not silently supported.
+SUPPORTED_INTENTS = (
+    "query_health", "query_digest", "query_schedule_impact",
+    "query_comparison", "unresolved",
+)
+
+# Item 8 — confidence floor: below this, treated as unresolved (Item 4)
+# rather than acted on. Set to "medium" so only "low" confidence is
+# rejected — "medium" and "high" both proceed. (A floor of "low" would
+# be mathematically unreachable, since nothing sorts below the lowest
+# value; this was caught by test_low_confidence_is_treated_as_unresolved
+# actually failing, not assumed correct from the code alone.)
+CONFIDENCE_FLOOR = "medium"
+_CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
+
+INTENT_SYSTEM_PROMPT = """You are Atlas's intent-structuring pass for a construction \
+management platform. Given a user's free-text request, classify it into EXACTLY ONE \
+of these intents:
+
+- query_health: asking why a project is at risk, or about its overall health/status
+- query_digest: asking what's happening today/recently across their projects
+- query_schedule_impact: asking whether something affects the schedule/handover/a date
+- query_comparison: asking to compare this project against other projects
+- unresolved: the request does not clearly match any of the above, or is a write/\
+action request (creating, changing, or approving something) — Phase 1 supports \
+READ-ONLY QUERIES ONLY, so any request to create, change, approve, or take an action \
+must be classified unresolved.
+
+Return JSON only, in exactly this shape:
+{
+  "intent": "<one of the five above>",
+  "confidence": "high" | "medium" | "low",
+  "project_reference": "<any project name/identifier literally mentioned, or null>",
+  "comparison_scope": "<for query_comparison only: what kind of projects to compare \
+against, e.g. 'residential', or null>",
+  "reasoning": "<one short sentence explaining the classification>"
+}
+Do not include any text outside the JSON object."""
+
+
+class IntentServiceError(Exception):
+    pass
+
+
+async def _run_structuring_pass(user_input: str) -> Optional[dict]:
+    """The ONE LLM call (Item 4/7/8/9 combined into a single pass, per
+    the spec's own explicit 'one structured interpretation' principle).
+
+    Total failure isolation, matching reasoning_engine._ai_review()'s
+    own documented behaviour exactly: any failure returns None, never
+    a guess. The caller treats None identically to an 'unresolved'
+    classification (Item 17 - fail safely, do not guess).
+    """
+    if not EMERGENT_LLM_KEY:
+        return None
+    try:
+        chat = LlmChat(
+            api_key=EMERGENT_LLM_KEY,
+            session_id=str(uuid.uuid4()),
+            system_message=INTENT_SYSTEM_PROMPT,
+        ).with_model("openai", LLM_MODEL)
+        response = await chat.send_message(UserMessage(text=user_input + "\n\nReturn JSON only."))
+        text = (response if isinstance(response, str) else str(response)).strip()
+        if text.startswith("```"):
+            text = text.split("```", 2)[1]
+            if text.startswith("json"):
+                text = text[4:]
+            text = text.strip().removesuffix("```").strip()
+        raw = json.loads(text)
+        if not isinstance(raw, dict):
+            return None
+        return raw
+    except Exception:
+        logger.exception("Intent structuring pass failed; treating as unresolved")
+        return None
+
+
+async def _resolve_project(structured: dict, user: dict, active_project_id: Optional[str]) -> dict:
+    """Item 5/6 — Context Resolution, in the exact priority order the
+    spec defines: (1) explicit mention in the input, (2) the existing
+    getActiveSite() context passed in from the frontend, (3) most
+    recent activity. Returns a dict describing the outcome rather than
+    a bare project_id, so the caller can distinguish a clean resolution
+    from an ambiguous one requiring a clarifying question (Item 22).
+    """
+    visible_projects = await memory_engine.list_projects(user=user)
+    if not visible_projects:
+        return {"status": "none_visible"}
+
+    mention = (structured.get("project_reference") or "").strip().lower()
+    if mention:
+        matches = [p for p in visible_projects if mention in p["name"].lower()]
+        if len(matches) == 1:
+            return {"status": "resolved", "project": matches[0], "resolved_from": "explicit"}
+        if len(matches) > 1:
+            return {"status": "ambiguous", "candidates": matches}
+        # Named but no match at all — do not silently fall through to
+        # active project, since that would answer about the wrong
+        # project. Ask, per Item 5's own "ask rather than guess" rule.
+        return {"status": "not_found", "mention": structured.get("project_reference")}
+
+    if active_project_id:
+        active = next((p for p in visible_projects if p["id"] == active_project_id), None)
+        if active:
+            return {"status": "resolved", "project": active, "resolved_from": "active_context"}
+
+    if len(visible_projects) == 1:
+        return {"status": "resolved", "project": visible_projects[0], "resolved_from": "only_project"}
+
+    return {"status": "ambiguous", "candidates": visible_projects}
+
+
+# ---------------------------------------------------------------------------
+# Item 10 — deterministic intent -> engine dispatch. Plain function
+# lookup, no AI involved in this step, matching the spec's own explicit
+# "plain dict lookup, no AI" description of this layer.
+# ---------------------------------------------------------------------------
+
+async def _handle_query_health(project: dict, user: dict) -> dict:
+    try:
+        result = await reasoning_engine.explain_health(project["id"], user=user)
+        return {"ok": True, "data": result}
+    except reasoning_engine.ReasoningError as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def _handle_query_schedule_impact(project: dict, user: dict) -> dict:
+    try:
+        result = await reasoning_engine.project_lookahead_view(project["id"], user=user)
+        return {"ok": True, "data": result}
+    except reasoning_engine.ReasoningError as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def _handle_query_comparison(project: dict, user: dict, structured: dict) -> dict:
+    scope = (structured.get("comparison_scope") or "").strip()
+    if scope:
+        # Item 28/Flow 8 — named gap, not silently guessed: project
+        # "type" is not structured, queryable data in Atlas today
+        # (confirmed: memory_engine.insert_project has no type field).
+        # Rather than guess which projects count as e.g. "residential",
+        # say so plainly.
+        return {
+            "ok": False,
+            "error": (
+                f"I can't reliably tell which of your projects are '{scope}' yet — "
+                "project type isn't consistently recorded. Try naming specific "
+                "projects to compare instead."
+            ),
+        }
+    try:
+        all_projects = await memory_engine.list_projects(user=user)
+        other_ids = [p["id"] for p in all_projects if p["id"] != project["id"]][:5]
+        if not other_ids:
+            return {"ok": False, "error": "You don't have any other projects to compare against yet."}
+        result = await reasoning_engine.compare_projects([project["id"]] + other_ids, user=user)
+        return {"ok": True, "data": result}
+    except reasoning_engine.ReasoningError as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def _handle_query_digest(user: dict) -> dict:
+    """Portfolio-wide by nature (Item 11/Flow 10) — does not require a
+    resolved project at all, matching the spec's own Flow 10."""
+    from services import inbox_intelligence_service
+    from engines import operations_engine
+    results: dict = {}
+    errors: list[str] = []
+    # Item 17 — isolate each engine failure independently rather than
+    # letting one failure blank the entire digest, matching the exact
+    # pattern already established in event_intelligence_service.py.
+    try:
+        results["coordination"] = await inbox_intelligence_service.daily_coordination_digest(user)
+    except Exception:
+        logger.exception("query_digest: coordination digest failed")
+        errors.append("coordination digest unavailable")
+    try:
+        results["my_day"] = await operations_engine.my_day(user=user)
+    except Exception:
+        logger.exception("query_digest: my_day failed")
+        errors.append("today's task summary unavailable")
+    if user.get("role") == "management":
+        try:
+            results["management_attention"] = await inbox_intelligence_service.management_attention_digest(user)
+        except Exception:
+            logger.exception("query_digest: management digest failed")
+            errors.append("management attention digest unavailable")
+    if not results:
+        return {"ok": False, "error": "Could not retrieve today's summary right now."}
+    return {"ok": True, "data": results, "partial_errors": errors or None}
+
+
+PROJECT_SCOPED_INTENTS = {"query_health", "query_schedule_impact", "query_comparison"}
+
+
+async def handle_intent(user_input: str, *, user: dict, active_project_id: Optional[str] = None,
+                        confirmed_project_id: Optional[str] = None) -> dict:
+    """The single entry point. Returns one of three response shapes:
+      - {"type": "result", "intent": ..., "result": ...}
+      - {"type": "clarification_needed", "question": ..., "candidates": [...]}
+      - {"type": "unresolved", "message": ...}
+    Never raises for a bad/ambiguous input — only for a genuine
+    programming error, matching Item 17's fail-safely principle.
+
+    confirmed_project_id (Item 22 — the one-round clarification
+    completing) is the caller's own answer to a just-asked "which
+    project?" question. When set, it bypasses the normal three-source
+    resolution entirely — re-running resolution against the same
+    original text would simply hit the same ambiguous mention again,
+    since explicit mention takes priority over active_project_id in
+    _resolve_project's own ordering. Still subject to the same RBAC
+    visibility check every other path goes through.
+    """
+    if not user_input or not user_input.strip():
+        return {"type": "unresolved", "message": "I didn't catch a question — try asking something like "
+                                                   "\"why is this project at risk?\""}
+
+    try:
+        structured = await _run_structuring_pass(user_input.strip())
+    except Exception:
+        logger.exception("Intent structuring pass raised unexpectedly; treating as unresolved")
+        structured = None
+    if structured is None:
+        return {"type": "unresolved", "message": "I couldn't understand that clearly. Try rephrasing, "
+                                                   "or ask a specific question about a project."}
+
+    # Shape validation lives here, not inside _run_structuring_pass,
+    # so it always applies to whatever that function returns —
+    # whether from a real LLM call or a test mock.
+    if structured.get("intent") not in SUPPORTED_INTENTS or structured.get("confidence") not in _CONFIDENCE_ORDER:
+        return {"type": "unresolved", "message": "I couldn't understand that clearly. Try rephrasing, "
+                                                   "or ask a specific question about a project."}
+
+    intent = structured["intent"]
+    confidence = structured["confidence"]
+
+    # Item 8 — confidence floor. Below it, treated as unresolved.
+    if _CONFIDENCE_ORDER[confidence] < _CONFIDENCE_ORDER[CONFIDENCE_FLOOR]:
+        return {"type": "unresolved", "message": "I'm not confident I understood that correctly. "
+                                                   "Could you rephrase your question?"}
+
+    if intent == "unresolved":
+        return {"type": "unresolved", "message": "That's not something I can help with yet — "
+                                                   "I can currently answer questions about project health, "
+                                                   "schedule impact, comparisons, and daily summaries."}
+
+    if intent == "query_digest":
+        outcome = await _handle_query_digest(user)
+        return {"type": "result", "intent": intent, "result": outcome}
+
+    # Every remaining Phase 1 intent is project-scoped — resolve context.
+    if confirmed_project_id:
+        visible_projects = await memory_engine.list_projects(user=user)
+        confirmed = next((p for p in visible_projects if p["id"] == confirmed_project_id), None)
+        resolution = {"status": "resolved", "project": confirmed} if confirmed else {"status": "not_found", "mention": "the selected project"}
+    else:
+        resolution = await _resolve_project(structured, user, active_project_id)
+
+    if resolution["status"] == "none_visible":
+        return {"type": "unresolved", "message": "You don't have any projects yet."}
+
+    if resolution["status"] == "not_found":
+        return {"type": "unresolved",
+                "message": f"I couldn't find a project matching \"{resolution['mention']}\"."}
+
+    if resolution["status"] == "ambiguous":
+        names = [p["name"] for p in resolution["candidates"][:8]]
+        return {
+            "type": "clarification_needed",
+            "question": "Which project did you mean?",
+            "candidates": [{"id": p["id"], "name": p["name"]} for p in resolution["candidates"][:8]],
+        }
+
+    project = resolution["project"]
+
+    # RBAC (Item 18) — enforced entirely by the existing engine calls
+    # themselves (assert_project_visible inside explain_health /
+    # project_lookahead_view / compare_projects), never re-implemented
+    # here. This dispatch layer performs zero authorization logic of
+    # its own, per the spec's own explicit Item 18 requirement.
+    if intent == "query_health":
+        outcome = await _handle_query_health(project, user)
+    elif intent == "query_schedule_impact":
+        outcome = await _handle_query_schedule_impact(project, user)
+    elif intent == "query_comparison":
+        outcome = await _handle_query_comparison(project, user, structured)
+    else:
+        return {"type": "unresolved", "message": "That's not something I can help with yet."}
+
+    return {"type": "result", "intent": intent, "project": {"id": project["id"], "name": project["name"]},
+            "result": outcome}
