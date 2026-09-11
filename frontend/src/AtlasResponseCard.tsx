@@ -149,6 +149,71 @@ function ComparisonResponse({ data }: { data: any }) {
   );
 }
 
+function ItemGroup({ label, items }: { label: string; items: any[] }) {
+  if (!items || items.length === 0) return null;
+  return (
+    <View style={{ marginBottom: 8 }}>
+      <Text style={styles.actionText}>{label} ({items.length})</Text>
+      {items.slice(0, 3).map((it: any, i: number) => (
+        <Text key={i} style={styles.bulletLine}>• {it.title || it.name || 'Untitled'}</Text>
+      ))}
+    </View>
+  );
+}
+
+// Fix for a real bug live testing caught: my_day()'s own shape is
+// completely different per role (site_supervisor: 6 item-array
+// fields; project_manager: 12 mixed count/array fields; management:
+// portfolio-level counts only). The previous version only handled the
+// Supervisor shape - a PM's or Management's own "Today" section would
+// silently show nothing even with real, populated data. Discriminated
+// on the real role field, each branch renders that shape's own actual
+// fields.
+function MyDayContent({ myDay }: { myDay: any }) {
+  if (myDay.role === 'site_supervisor') {
+    return (
+      <>
+        <ItemGroup label="Blocked" items={myDay.blocked} />
+        <ItemGroup label="Due today" items={myDay.due_today} />
+        <ItemGroup label="In progress" items={myDay.in_progress} />
+        <ItemGroup label="Ready to start" items={myDay.ready_to_start} />
+      </>
+    );
+  }
+  if (myDay.role === 'management') {
+    const ph = myDay.portfolio_health || {};
+    return (
+      <>
+        <Text style={styles.bulletLine}>
+          • {ph.active_projects ?? 0} active project{ph.active_projects === 1 ? '' : 's'} — {ph.healthy ?? 0} healthy, {ph.attention ?? 0} need attention, {ph.critical ?? 0} critical
+        </Text>
+        {typeof myDay.critical_issues === 'number' && myDay.critical_issues > 0 && (
+          <Text style={styles.bulletLine}>• {myDay.critical_issues} critical issue{myDay.critical_issues === 1 ? '' : 's'}</Text>
+        )}
+        {typeof myDay.pending_approvals === 'number' && myDay.pending_approvals > 0 && (
+          <Text style={styles.bulletLine}>• {myDay.pending_approvals} approval{myDay.pending_approvals === 1 ? '' : 's'} pending</Text>
+        )}
+        <ItemGroup label="Delayed projects" items={myDay.delayed_projects} />
+      </>
+    );
+  }
+  // project_manager (and any future/unrecognized role falls through
+  // here too, per the "degrade gracefully, never render nothing
+  // silently" principle) — real, mixed count/array fields.
+  return (
+    <>
+      <ItemGroup label="Blocked activities" items={myDay.blocked_activities} />
+      <ItemGroup label="Delayed activities" items={myDay.delayed_activities} />
+      <ItemGroup label="High priority work" items={myDay.high_priority_work} />
+      <ItemGroup label="Pending approvals" items={myDay.pending_approvals} />
+      <ItemGroup label="Escalations" items={myDay.escalations} />
+      {typeof myDay.open_operational_items_count === 'number' && myDay.open_operational_items_count > 0 && (
+        <Text style={styles.bulletLine}>• {myDay.open_operational_items_count} open operational item{myDay.open_operational_items_count === 1 ? '' : 's'}</Text>
+      )}
+    </>
+  );
+}
+
 function DigestResponse({ data }: { data: any }) {
   const router = useRouter();
   return (
@@ -165,23 +230,7 @@ function DigestResponse({ data }: { data: any }) {
       )}
       {data.my_day && (
         <Section label="TODAY">
-          {[
-            { key: 'blocked', label: 'Blocked' },
-            { key: 'due_today', label: 'Due today' },
-            { key: 'in_progress', label: 'In progress' },
-            { key: 'ready_to_start', label: 'Ready to start' },
-          ].map(({ key, label }) => {
-            const items: any[] = Array.isArray(data.my_day[key]) ? data.my_day[key] : [];
-            if (items.length === 0) return null;
-            return (
-              <View key={key} style={{ marginBottom: 8 }}>
-                <Text style={styles.actionText}>{label} ({items.length})</Text>
-                {items.slice(0, 3).map((it: any, i: number) => (
-                  <Text key={i} style={styles.bulletLine}>• {it.title || it.name || 'Untitled'}</Text>
-                ))}
-              </View>
-            );
-          })}
+          <MyDayContent myDay={data.my_day} />
         </Section>
       )}
       {data.management_attention?.summary_lines?.length > 0 && (
