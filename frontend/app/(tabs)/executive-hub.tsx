@@ -9,7 +9,7 @@ import {
   type PriorityEngineResult, type CrossProjectIntelligence, type CommercialIntelligence,
 } from '@/src/cre_api';
 import { apiGetManagementDigest, type ManagementDigest } from '@/src/inbox_intelligence_api';
-import { IntentBox } from '@/src/IntentBox';
+import { AtlasShell } from '@/src/AtlasShell';
 
 function formatInrShort(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
@@ -74,7 +74,7 @@ export default function ExecutiveHubScreen() {
         contentContainerStyle={styles.content}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.color.brand} />}
       >
-        <IntentBox activeProjectId={null} />
+        <AtlasShell role="admin" activeProjectId={null} />
         {/* Priority Engine summary */}
         <Pressable style={styles.section} onPress={() => router.push('/priorities')} testID="exec-hub-priorities">
           <View style={styles.sectionHeader}>
