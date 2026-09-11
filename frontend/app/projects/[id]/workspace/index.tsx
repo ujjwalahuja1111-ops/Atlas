@@ -28,7 +28,7 @@ import { theme } from '@/src/theme';
 import { getViewRole, type ViewRole } from '@/src/roles';
 import { apiListProjects, apiListSites, type Project, type Site } from '@/src/api';
 import { apiGetCommercialSummary, type CommercialSummary } from '@/src/commercial_api';
-import { apiExplainHealth, apiListInsights, apiGetSinceLastVisit, type ExplainedHealth, type Insight, type SinceLastVisit } from '@/src/cre_api';
+import { apiExplainHealth, apiListInsights, apiGetSinceLastVisit, apiProjectLookahead, type ExplainedHealth, type Insight, type SinceLastVisit, type ProjectLookahead } from '@/src/cre_api';
 
 import UnifiedWorkspace from '../../../workspace/[id]';
 import CommercialWorkspaceScreen from '../../../commercial/[id]';
@@ -41,19 +41,23 @@ import { ClosePhase } from './phases/ClosePhase';
 type Phase = 'setup' | 'plan' | 'execute' | 'review' | 'bill' | 'close';
 
 const PHASES: { key: Phase; label: string }[] = [
+  { key: 'review', label: 'Overview' },
   { key: 'setup', label: 'Setup' },
   { key: 'plan', label: 'Plan' },
   { key: 'execute', label: 'Execute' },
-  { key: 'review', label: 'Review' },
   { key: 'bill', label: 'Bill' },
   { key: 'close', label: 'Close' },
 ];
 
-// PX-02 Phase 1 Section 5 — role-aware default phase on open.
+// Phase B — every role now lands on the intelligent overview
+// (Review, enriched) first, per the brief's own explicit hierarchy:
+// Project Context -> Ask Atlas -> Attention -> Health -> What's
+// Happening -> What's Next -> deep workspaces. Execute and the other
+// phases remain one tap away via the rail, not the default landing.
 const DEFAULT_PHASE_FOR_ROLE: Record<ViewRole, Phase> = {
   admin: 'review',
-  pm: 'execute',
-  supervisor: 'execute',
+  pm: 'review',
+  supervisor: 'review',
   client: 'review',
 };
 
@@ -69,6 +73,7 @@ export default function ProjectWorkspaceShell() {
   const [health, setHealth] = useState<ExplainedHealth | null>(null);
   const [insights, setInsights] = useState<Insight[]>([]);
   const [sinceLastVisit, setSinceLastVisit] = useState<SinceLastVisit | null>(null);
+  const [lookahead, setLookahead] = useState<ProjectLookahead | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -80,13 +85,14 @@ export default function ProjectWorkspaceShell() {
 
   const load = useCallback(async () => {
     if (!id) return;
-    const [projects, siteList, commercialSummary, healthResult, insightList, svl] = await Promise.all([
+    const [projects, siteList, commercialSummary, healthResult, insightList, svl, lookaheadResult] = await Promise.all([
       apiListProjects(true).catch(() => []),
       apiListSites(id).catch(() => []),
       apiGetCommercialSummary(id).catch(() => null),
       apiExplainHealth(id).catch(() => null),
       apiListInsights(id).catch(() => []),
       apiGetSinceLastVisit(id).catch(() => null),
+      apiProjectLookahead(id).catch(() => null),
     ]);
     setProject(projects.find((p) => p.id === id) || null);
     setSites(siteList);
@@ -94,6 +100,7 @@ export default function ProjectWorkspaceShell() {
     setHealth(healthResult);
     setInsights(insightList);
     setSinceLastVisit(svl);
+    setLookahead(lookaheadResult);
   }, [id]);
 
   useEffect(() => { (async () => { setLoading(true); await load(); setLoading(false); })(); }, [load]);
@@ -137,7 +144,7 @@ export default function ProjectWorkspaceShell() {
         {phase === 'setup' && id && <SetupPhase projectId={id} project={project} sites={sites} summary={summary} onProjectChanged={load} />}
         {phase === 'plan' && <PlanPhase summary={summary} />}
         {phase === 'execute' && <UnifiedWorkspace />}
-        {phase === 'review' && id && <ReviewPhase projectId={id} health={health} insights={insights} sinceLastVisit={sinceLastVisit} viewRole={viewRole} />}
+        {phase === 'review' && id && <ReviewPhase projectId={id} projectName={project?.name || null} health={health} insights={insights} sinceLastVisit={sinceLastVisit} lookahead={lookahead} viewRole={viewRole} router={router} onGoDeeper={setPhase} />}
         {phase === 'bill' && <CommercialWorkspaceScreen />}
         {phase === 'close' && id && <ClosePhase projectId={id} project={project} onArchived={() => router.replace('/projects')} />}
       </View>
