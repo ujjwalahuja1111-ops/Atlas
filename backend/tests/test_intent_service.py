@@ -338,3 +338,70 @@ async def test_llm_returns_none_fails_safely_to_unresolved():
     result = await intent_service.handle_intent(
         "why is this at risk?", user=ADMIN, active_project_id=None)
     assert result["type"] == "unresolved"
+
+
+# ==========================================================================
+# Workflow Refinement Pass — P0 fix. reasoning_engine.explain_health /
+# project_lookahead_view / compare_projects and operations_engine.my_day
+# are all restricted to non-Client roles at their own real HTTP routes
+# (_forbid_client, confirmed by reading routes/reasoning.py and
+# routes/operational_items.py directly). intent_service previously
+# called these functions directly, bypassing that route-layer check
+# entirely - a real Client user could get a genuine 200 with full
+# health/schedule/comparison/task data through the intent API. Found by
+# live-testing an actual Client login against the real endpoint, not
+# assumed from reading code; these tests lock the fix in place.
+CLIENT_USER = {"id": "u_intent_client", "name": "Intent Client", "role": "client"}
+
+
+async def test_query_health_forbidden_for_client_even_though_engine_call_would_succeed():
+    project = await _make_project("Client RBAC Health Project")
+    _mock_structuring({"intent": "query_health", "confidence": "high",
+                        "project_reference": None, "comparison_scope": None})
+    result = await intent_service.handle_intent(
+        "why is this at risk?", user=CLIENT_USER, active_project_id=project["id"])
+    assert result["type"] == "result"  # not a hard failure - a clear, honest refusal
+    assert result["result"]["ok"] is False
+    assert "client" in result["result"]["error"].lower()
+
+
+async def test_query_schedule_impact_forbidden_for_client():
+    project = await _make_project("Client RBAC Schedule Project")
+    _mock_structuring({"intent": "query_schedule_impact", "confidence": "high",
+                        "project_reference": None, "comparison_scope": None})
+    result = await intent_service.handle_intent(
+        "does this affect handover?", user=CLIENT_USER, active_project_id=project["id"])
+    assert result["result"]["ok"] is False
+    assert "client" in result["result"]["error"].lower()
+
+
+async def test_query_comparison_forbidden_for_client():
+    await _make_project("Client RBAC Alpha Project")
+    await _make_project("Client RBAC Beta Project")
+    _mock_structuring({"intent": "query_comparison", "confidence": "high",
+                        "project_reference": "Client RBAC Alpha Project", "comparison_scope": None})
+    result = await intent_service.handle_intent(
+        "compare with my other project", user=CLIENT_USER, active_project_id=None)
+    assert result["result"]["ok"] is False
+    assert "client" in result["result"]["error"].lower()
+
+
+async def test_query_digest_omits_my_day_for_client_but_keeps_coordination():
+    _mock_structuring({"intent": "query_digest", "confidence": "high",
+                        "project_reference": None, "comparison_scope": None})
+    result = await intent_service.handle_intent(
+        "what do I need to know today?", user=CLIENT_USER, active_project_id=None)
+    assert result["type"] == "result"
+    assert result["result"]["ok"] is True
+    assert "my_day" not in result["result"]["data"]
+    assert "coordination" in result["result"]["data"]
+
+
+async def test_query_health_still_works_normally_for_non_client_roles():
+    """The fix must not affect any role it wasn't meant to restrict."""
+    project = await _make_project("Non Client RBAC Project")
+    _mock_structuring({"intent": "query_health", "confidence": "high",
+                        "project_reference": None, "comparison_scope": None})
+    result = await intent_service.handle_intent(
+        "why is this at risk?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is True

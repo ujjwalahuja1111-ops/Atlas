@@ -146,9 +146,22 @@ async def _resolve_project(structured: dict, user: dict, active_project_id: Opti
 # Item 10 — deterministic intent -> engine dispatch. Plain function
 # lookup, no AI involved in this step, matching the spec's own explicit
 # "plain dict lookup, no AI" description of this layer.
+#
+# P0 FIX — a real, serious RBAC leak found by live testing: these
+# handlers call reasoning_engine.explain_health / project_lookahead_view
+# / compare_projects directly, bypassing the _forbid_client(user) check
+# that lives in the HTTP route layer (routes/reasoning.py) for these
+# exact same functions. A Client user could get a real 200 with full
+# health/schedule/comparison data through the intent API, while the
+# equivalent direct route correctly returns 403 for the identical
+# request - confirmed live before this fix, confirmed fixed after it.
+# The check is replicated here rather than imported from routes/ (a
+# services module should not depend on a routes module).
 # ---------------------------------------------------------------------------
 
 async def _handle_query_health(project: dict, user: dict) -> dict:
+    if user.get("role") == "client":
+        return {"ok": False, "error": "Clients cannot access project health reasoning."}
     try:
         result = await reasoning_engine.explain_health(project["id"], user=user)
         return {"ok": True, "data": result}
@@ -157,6 +170,8 @@ async def _handle_query_health(project: dict, user: dict) -> dict:
 
 
 async def _handle_query_schedule_impact(project: dict, user: dict) -> dict:
+    if user.get("role") == "client":
+        return {"ok": False, "error": "Clients cannot access project schedule reasoning."}
     try:
         result = await reasoning_engine.project_lookahead_view(project["id"], user=user)
         return {"ok": True, "data": result}
@@ -165,6 +180,8 @@ async def _handle_query_schedule_impact(project: dict, user: dict) -> dict:
 
 
 async def _handle_query_comparison(project: dict, user: dict, structured: dict) -> dict:
+    if user.get("role") == "client":
+        return {"ok": False, "error": "Clients cannot access project comparison."}
     scope = (structured.get("comparison_scope") or "").strip()
     if scope:
         # Item 28/Flow 8 — named gap, not silently guessed: project
@@ -206,11 +223,17 @@ async def _handle_query_digest(user: dict) -> dict:
     except Exception:
         logger.exception("query_digest: coordination digest failed")
         errors.append("coordination digest unavailable")
-    try:
-        results["my_day"] = await operations_engine.my_day(user=user)
-    except Exception:
-        logger.exception("query_digest: my_day failed")
-        errors.append("today's task summary unavailable")
+    # my_day() is Client-restricted at its own route (routes/operational_items.py's
+    # own _forbid_client(user, "view My Day")) — confirmed, not assumed;
+    # daily_coordination_digest and management_attention_digest have no
+    # such restriction on their own real routes, so only this one
+    # source is skipped for Client, not the whole digest.
+    if user.get("role") != "client":
+        try:
+            results["my_day"] = await operations_engine.my_day(user=user)
+        except Exception:
+            logger.exception("query_digest: my_day failed")
+            errors.append("today's task summary unavailable")
     if user.get("role") == "management":
         try:
             results["management_attention"] = await inbox_intelligence_service.management_attention_digest(user)
