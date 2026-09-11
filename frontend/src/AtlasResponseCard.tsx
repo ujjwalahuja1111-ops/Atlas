@@ -165,13 +165,23 @@ function DigestResponse({ data }: { data: any }) {
       )}
       {data.my_day && (
         <Section label="TODAY">
-          {['ready_to_start', 'in_progress', 'due_today', 'blocked'].map((key) =>
-            Array.isArray(data.my_day[key]) && data.my_day[key].length > 0 ? (
-              <Text key={key} style={styles.bulletLine}>
-                • {data.my_day[key].length} item{data.my_day[key].length !== 1 ? 's' : ''} {key.replace(/_/g, ' ')}
-              </Text>
-            ) : null
-          )}
+          {[
+            { key: 'blocked', label: 'Blocked' },
+            { key: 'due_today', label: 'Due today' },
+            { key: 'in_progress', label: 'In progress' },
+            { key: 'ready_to_start', label: 'Ready to start' },
+          ].map(({ key, label }) => {
+            const items: any[] = Array.isArray(data.my_day[key]) ? data.my_day[key] : [];
+            if (items.length === 0) return null;
+            return (
+              <View key={key} style={{ marginBottom: 8 }}>
+                <Text style={styles.actionText}>{label} ({items.length})</Text>
+                {items.slice(0, 3).map((it: any, i: number) => (
+                  <Text key={i} style={styles.bulletLine}>• {it.title || it.name || 'Untitled'}</Text>
+                ))}
+              </View>
+            );
+          })}
         </Section>
       )}
       {data.management_attention?.summary_lines?.length > 0 && (

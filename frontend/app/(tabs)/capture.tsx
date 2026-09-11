@@ -9,7 +9,7 @@ import * as Haptics from 'expo-haptics';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
 import { Image as ExpoImage } from 'expo-image';
-import { useRouter } from 'expo-router';
+import { useRouter, useLocalSearchParams } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
 import { useVoiceRecorder } from '@/src/useVoiceRecorder';
@@ -21,6 +21,16 @@ import {
 
 export default function CaptureScreen() {
   const router = useRouter();
+  // Phase C — a genuine field-mode entry point, replacing PX-04's own
+  // silent no-op (?mode=issue was referenced from Supervisor Home but
+  // never actually read here). 'issue' and 'observation' change only
+  // the header copy and default input method — never a different
+  // backend contract; the same apiCreateEvent call and the same AI
+  // structuring pipeline handle every mode identically, matching this
+  // phase's own explicit "route to existing capabilities, don't invent
+  // a new write path" instruction.
+  const { mode } = useLocalSearchParams<{ mode?: string }>();
+  const fieldMode = mode === 'issue' || mode === 'observation' ? mode : null;
   // FAC-OPS-06 — shared with app/op/[id].tsx's voice update, instead of
   // each screen maintaining its own separate useAudioRecorder instance.
   const { recording, elapsed, start: startRecordingRaw, stop: stopRecordingRaw, cancel: cancelRecordingRaw } = useVoiceRecorder();
@@ -235,7 +245,7 @@ export default function CaptureScreen() {
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === 'ios' ? 'padding' : undefined}
         keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}>
         <View style={styles.headerRow}>
-          <Text style={styles.title}>CAPTURE</Text>
+          <Text style={styles.title}>{fieldMode === 'issue' ? 'REPORT ISSUE' : fieldMode === 'observation' ? 'SITE OBSERVATION' : 'CAPTURE'}</Text>
           <Text style={styles.subtitle} numberOfLines={1}>
             {activeProject ? `${activeProject.name} · ` : ''}{activeSite?.name || 'No site selected'}
           </Text>

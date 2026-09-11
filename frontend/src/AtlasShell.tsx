@@ -27,9 +27,14 @@ function greeting(): string {
 }
 
 export function AtlasShell({
-  role, activeProjectId, activeProjectName,
+  role, activeProjectId, activeProjectName, fieldMode,
 }: {
   role: Role; activeProjectId?: string | null; activeProjectName?: string | null;
+  // Phase C — when true, shows the field quick-actions row and the
+  // voice/photo shortcuts on the input row. Defaults to true for
+  // Supervisor (the primary field role) and false otherwise, but any
+  // caller can opt in explicitly — any role can be standing on site.
+  fieldMode?: boolean;
 }) {
   const router = useRouter();
   const [text, setText] = useState('');
@@ -37,6 +42,7 @@ export function AtlasShell({
   const [response, setResponse] = useState<IntentResponse | null>(null);
   const [lastQuery, setLastQuery] = useState('');
   const [userName, setUserName] = useState<string>('');
+  const showField = fieldMode ?? role === 'supervisor';
 
   useEffect(() => {
     apiGetMe().then((u) => setUserName(u.name?.split(' ')[0] || '')).catch(() => {});
@@ -66,7 +72,7 @@ export function AtlasShell({
   return (
     <View style={styles.container} testID="atlas-shell">
       <Text style={styles.greeting}>{greeting()}{userName ? `, ${userName}` : ''}.</Text>
-      <Text style={styles.subGreeting}>What would you like to know or do?</Text>
+      <Text style={styles.subGreeting}>{showField ? 'Tell Atlas what is happening.' : 'What would you like to know or do?'}</Text>
 
       {activeProjectName ? (
         <Pressable style={styles.contextPill} onPress={() => router.push('/(tabs)/projects')} testID="atlas-context-pill">
@@ -76,18 +82,45 @@ export function AtlasShell({
         </Pressable>
       ) : null}
 
+      {showField && (
+        <View style={styles.fieldActionsRow} testID="atlas-field-actions">
+          <FieldActionButton icon="alert-circle-outline" label="Report Issue" color={theme.color.error}
+            onPress={() => router.push('/(tabs)/capture?mode=issue')} />
+          <FieldActionButton icon="help-buoy-outline" label="What's Blocking Me?"
+            onPress={() => runQuery("What's blocking me?")} />
+          <FieldActionButton icon="today-outline" label="Today's Work"
+            onPress={() => runQuery('What do I need to know today?')} />
+          <FieldActionButton icon="camera-outline" label="Capture Progress"
+            onPress={() => router.push('/(tabs)/capture?mode=observation')} />
+        </View>
+      )}
+
       <View style={styles.inputRow}>
         <Ionicons name="sparkles-outline" size={20} color={theme.color.brand} />
         <TextInput
           testID="atlas-shell-input"
           style={styles.input}
-          placeholder="Ask Atlas anything about your projects…"
+          placeholder={showField ? 'Ask Atlas, or tell it what happened…' : 'Ask Atlas anything about your projects…'}
           placeholderTextColor={theme.color.textDim}
           value={text}
           onChangeText={setText}
           onSubmitEditing={() => runQuery(text)}
           returnKeyType="send"
         />
+        {showField && (
+          // Honest shortcuts, not a fake voice-to-intent integration —
+          // the intent API is text-only (Phase 1's own explicit
+          // scope); these route to Capture, the real pipeline that
+          // actually handles voice and photos.
+          <>
+            <Pressable testID="atlas-shell-mic" onPress={() => router.push('/(tabs)/capture')} hitSlop={10}>
+              <Ionicons name="mic-outline" size={22} color={theme.color.textDim} />
+            </Pressable>
+            <Pressable testID="atlas-shell-camera" onPress={() => router.push('/(tabs)/capture')} hitSlop={10}>
+              <Ionicons name="camera-outline" size={22} color={theme.color.textDim} />
+            </Pressable>
+          </>
+        )}
         {loading ? (
           <ActivityIndicator size="small" color={theme.color.brand} />
         ) : (
@@ -127,6 +160,15 @@ export function AtlasShell({
   );
 }
 
+function FieldActionButton({ icon, label, color, onPress }: { icon: any; label: string; color?: string; onPress: () => void }) {
+  return (
+    <Pressable style={styles.fieldActionBtn} onPress={onPress} testID={`atlas-field-action-${label.toLowerCase().replace(/[^a-z]+/g, '-')}`}>
+      <Ionicons name={icon} size={24} color={color || theme.color.brand} />
+      <Text style={styles.fieldActionLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   container: { paddingHorizontal: theme.spacing.md, paddingTop: theme.spacing.sm, marginBottom: theme.spacing.lg },
   greeting: { color: theme.color.text, fontSize: 26, fontWeight: '900' },
@@ -137,6 +179,12 @@ const styles = StyleSheet.create({
     borderWidth: 1, borderColor: theme.color.border, paddingVertical: 6, paddingHorizontal: 12, marginBottom: 14,
   },
   contextPillText: { color: theme.color.text, fontSize: 12, fontWeight: '700' },
+  fieldActionsRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10, marginBottom: 14 },
+  fieldActionBtn: {
+    width: '47%', backgroundColor: theme.color.surface2, borderRadius: theme.radius.md, paddingVertical: 16,
+    alignItems: 'center', gap: 6, borderWidth: 1, borderColor: theme.color.border, minHeight: 64,
+  },
+  fieldActionLabel: { color: theme.color.text, fontSize: 13, fontWeight: '700', textAlign: 'center' },
   inputRow: {
     flexDirection: 'row', alignItems: 'center', gap: 12, backgroundColor: theme.color.surface2,
     borderRadius: theme.radius.lg, borderWidth: 1, borderColor: theme.color.border,
