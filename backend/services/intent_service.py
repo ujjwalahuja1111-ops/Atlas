@@ -161,7 +161,8 @@ async def _resolve_project(structured: dict, user: dict, active_project_id: Opti
 
 async def _handle_query_health(project: dict, user: dict) -> dict:
     if user.get("role") == "client":
-        return {"ok": False, "error": "Clients cannot access project health reasoning."}
+        return {"ok": False, "error": "That level of project detail isn't available on your account — "
+                                       "try asking about progress or what's happening instead."}
     try:
         result = await reasoning_engine.explain_health(project["id"], user=user)
         return {"ok": True, "data": result}
@@ -171,7 +172,8 @@ async def _handle_query_health(project: dict, user: dict) -> dict:
 
 async def _handle_query_schedule_impact(project: dict, user: dict) -> dict:
     if user.get("role") == "client":
-        return {"ok": False, "error": "Clients cannot access project schedule reasoning."}
+        return {"ok": False, "error": "That level of schedule detail isn't available on your account — "
+                                       "try asking about progress or what's next instead."}
     try:
         result = await reasoning_engine.project_lookahead_view(project["id"], user=user)
         return {"ok": True, "data": result}
@@ -181,7 +183,8 @@ async def _handle_query_schedule_impact(project: dict, user: dict) -> dict:
 
 async def _handle_query_comparison(project: dict, user: dict, structured: dict) -> dict:
     if user.get("role") == "client":
-        return {"ok": False, "error": "Clients cannot access project comparison."}
+        return {"ok": False, "error": "Comparing projects isn't available on your account — "
+                                       "try asking about your own project's progress instead."}
     scope = (structured.get("comparison_scope") or "").strip()
     if scope:
         # Item 28/Flow 8 — named gap, not silently guessed: project

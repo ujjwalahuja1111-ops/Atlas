@@ -362,7 +362,7 @@ async def test_query_health_forbidden_for_client_even_though_engine_call_would_s
         "why is this at risk?", user=CLIENT_USER, active_project_id=project["id"])
     assert result["type"] == "result"  # not a hard failure - a clear, honest refusal
     assert result["result"]["ok"] is False
-    assert "client" in result["result"]["error"].lower()
+    assert "available on your account" in result["result"]["error"].lower()
 
 
 async def test_query_schedule_impact_forbidden_for_client():
@@ -372,7 +372,7 @@ async def test_query_schedule_impact_forbidden_for_client():
     result = await intent_service.handle_intent(
         "does this affect handover?", user=CLIENT_USER, active_project_id=project["id"])
     assert result["result"]["ok"] is False
-    assert "client" in result["result"]["error"].lower()
+    assert "available on your account" in result["result"]["error"].lower()
 
 
 async def test_query_comparison_forbidden_for_client():
@@ -383,7 +383,7 @@ async def test_query_comparison_forbidden_for_client():
     result = await intent_service.handle_intent(
         "compare with my other project", user=CLIENT_USER, active_project_id=None)
     assert result["result"]["ok"] is False
-    assert "client" in result["result"]["error"].lower()
+    assert "available on your account" in result["result"]["error"].lower()
 
 
 async def test_query_digest_omits_my_day_for_client_but_keeps_coordination():
