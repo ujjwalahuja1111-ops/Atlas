@@ -94,6 +94,7 @@ function HealthResponse({ data, projectId }: { data: any; projectId?: string }) 
 function ScheduleImpactResponse({ data, projectId }: { data: any; projectId?: string }) {
   const router = useRouter();
   const upcoming = Array.isArray(data.upcoming) ? data.upcoming : [];
+  const blocked = Array.isArray(data.blocked) ? data.blocked : [];
   // data.stage is an object ({current, current_label, reason, ...}),
   // confirmed live against the real endpoint — never render it
   // directly, always its own current_label field.
@@ -101,8 +102,34 @@ function ScheduleImpactResponse({ data, projectId }: { data: any; projectId?: st
   return (
     <View>
       {stageLabel && <Text style={styles.subtext}>Current stage: {stageLabel}</Text>}
+
+      {blocked.length > 0 && (
+        <Section label="BLOCKED WORK">
+          {blocked.slice(0, 4).map((b: any, i: number) => {
+            const reasons: any[] = Array.isArray(b.blocking_reason) ? b.blocking_reason : [];
+            const dependents: any[] = Array.isArray(b.downstream_dependents) ? b.downstream_dependents : [];
+            return (
+              <View key={b.activity_id || i} style={styles.actionRow}>
+                <Text style={styles.actionDot}>🔴</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.actionText}>{b.name}</Text>
+                  {reasons.length > 0 ? (
+                    <Text style={styles.actionSubtext}>Waiting on: {reasons.map((r: any) => r.title).join(', ')}</Text>
+                  ) : (
+                    <Text style={styles.actionSubtext}>No linked cause recorded.</Text>
+                  )}
+                  {dependents.length > 0 && (
+                    <Text style={styles.actionSubtext}>Blocks: {dependents.map((d: any) => d.name).join(', ')}</Text>
+                  )}
+                </View>
+              </View>
+            );
+          })}
+        </Section>
+      )}
+
       {upcoming.length === 0 ? (
-        <Text style={styles.bulletLine}>No upcoming activity data available for this project yet.</Text>
+        blocked.length === 0 && <Text style={styles.bulletLine}>No upcoming activity data available for this project yet.</Text>
       ) : (
         <Section label="WHAT'S NEXT">
           {upcoming.slice(0, 4).map((a: any, i: number) => (

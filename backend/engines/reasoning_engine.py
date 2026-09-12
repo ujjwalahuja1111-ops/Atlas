@@ -1674,12 +1674,44 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
             "observation": i.get("observation"),
             "suggested_action": i.get("suggested_operational_action"),
             "created_at": i.get("created_at"),
+            "source": "persisted",
         }
         for i in sorted(open_insights, key=lambda x: SEVERITIES.index(x["severity"]), reverse=True)
         if i.get("suggested_operational_action")
     ]
 
+    # Phase E — reconciliation. drivers (always fresh) and
+    # recommended_actions (persisted) can genuinely disagree on how
+    # many real issues exist right now — found live during the
+    # Construction Intelligence Challenge (4 fresh drivers, 1 persisted
+    # recommendation, for the identical project in the identical
+    # moment). Any fresh finding with no persisted counterpart
+    # (matched by rule_id, not free text) is promoted directly from
+    # data this same call already computed — never a second AI pass,
+    # never a second health calculation, never fabricated.
+    persisted_rule_ids = {a["rule_id"] for a in recommended_actions if a.get("rule_id")}
+    snapshot = await build_project_snapshot(project_id)
+    fresh_findings = evaluate_rules(snapshot)
+    for f in sorted(fresh_findings, key=lambda x: SEVERITIES.index(x["severity"]), reverse=True):
+        if f["rule_id"] in persisted_rule_ids:
+            continue
+        if not f.get("suggested_operational_action"):
+            continue
+        recommended_actions.append({
+            "insight_id": None,
+            "rule_id": f["rule_id"],
+            "domain": f["domain"],
+            "severity": f["severity"],
+            "observation": f["observation"],
+            "suggested_action": f["suggested_operational_action"],
+            "created_at": None,
+            "source": "current",
+        })
+        persisted_rule_ids.add(f["rule_id"])
+    recommended_actions.sort(key=lambda a: SEVERITIES.index(a["severity"]), reverse=True)
+
     most_recent_insight_at = max((i.get("created_at") or "" for i in open_insights), default=None)
+    current_count = sum(1 for a in recommended_actions if a["source"] == "current")
 
     return {
         "project_id": project_id,
@@ -1692,11 +1724,18 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
         "action_currency": {
             "open_insight_count": len(open_insights),
             "most_recent_insight_at": most_recent_insight_at,
-            "note": "Recommended actions reflect the last completed reasoning run for this "
-                   "project, not necessarily this exact moment — dimensions and drivers above "
-                   "are always freshly computed." if open_insights else
-                   "No open insights recorded for this project yet — recommended actions will "
-                   "appear once a reasoning run has been performed.",
+            "current_only_count": current_count,
+            "note": (
+                f"{current_count} of the recommendation(s) below reflect this exact moment "
+                "and have not yet been through a persisted reasoning run; the rest come from "
+                "the last completed run — dimensions and drivers above are always freshly computed."
+                if current_count else
+                "Recommended actions reflect the last completed reasoning run for this "
+                "project, not necessarily this exact moment — dimensions and drivers above "
+                "are always freshly computed."
+            ) if open_insights or current_count else
+            "No open insights recorded for this project yet — recommended actions will "
+            "appear once a reasoning run has been performed.",
         },
     }
 

@@ -358,11 +358,117 @@ def project_lookahead(snapshot: dict) -> dict:
         "ready_now": [f"Ready for {n}" for n in ready_names],
         "in_progress": [{"activity_id": a["id"], "name": a["name"]}
                         for a in in_progress],
-        "blocked": [{"activity_id": a["id"], "name": a["name"],
-                     "since": a.get("status_updated_at")}
-                    for a in blocked],
+        "blocked": [
+            {
+                "activity_id": a["id"], "name": a["name"],
+                "since": a.get("status_updated_at"),
+                # Phase E — a blocked activity's own real, traceable
+                # reason (or an honest absence of one) and its direct
+                # downstream dependents, per the Stage 1 proposal's own
+                # two-hop consequence chain. Never guessed: an empty
+                # blocking_reason means no operational item has been
+                # explicitly linked, stated plainly rather than
+                # inferred from the activity's own status alone.
+                "blocking_reason": affecting_items_for(snapshot, a["id"]),
+                "downstream_dependents": direct_dependents(snapshot, a["id"]),
+                "consequence_chain": blocking_consequence_chain(snapshot, a["id"]),
+            }
+            for a in blocked
+        ],
         "computed_at": snapshot["generated_at"],
     }
+
+
+# ---------------------------------------------------------------------------
+# Phase E — Construction Relationship & Consequence Foundation. Three
+# small, pure functions, each following this module's own established
+# discipline (snapshot in, plain dict/list out, no I/O, no AI). Every
+# returned entry is tagged with where it came from (fact / relationship
+# / derived / inferred), per the brief's own explicit provenance
+# requirement — never a single flattened sentence that hides which
+# parts are which.
+# ---------------------------------------------------------------------------
+
+def affecting_items_for(snapshot: dict, activity_id: str) -> list[dict]:
+    """RELATIONSHIP (fact, only when explicitly linked) — every
+    operational item whose own affected_activity_ids names this
+    activity. Never inferred: an item only appears here because a
+    human explicitly linked it via link_affected_activities()."""
+    out = []
+    for item in snapshot["operational_items"]:
+        if activity_id in (item.get("affected_activity_ids") or []):
+            out.append({
+                "provenance": "relationship:fact",
+                "item_id": item["id"],
+                "category": item.get("category"),
+                "title": item.get("title"),
+                "status": item.get("status"),
+            })
+    return out
+
+
+def direct_dependents(snapshot: dict, activity_id: str) -> list[dict]:
+    """DERIVED — activities that directly depend on this one, via the
+    existing, already-proven depends_on_activity_ids field, reversed.
+    One hop only, by construction — never recurses into a dependent's
+    own dependents. Reuses the exact logic already proven correct in
+    reasoning_engine._r_planned_finish_missed, extracted here so it is
+    shared rather than duplicated."""
+    return [
+        {"provenance": "derived", "activity_id": a["id"], "name": a["name"]}
+        for a in snapshot["workflow_activities"]
+        if activity_id in (a.get("depends_on_activity_ids") or [])
+    ]
+
+
+def blocking_consequence_chain(snapshot: dict, activity_id: str) -> dict:
+    """The smallest deterministic consequence traversal that proves the
+    architecture — exactly two hops, provenance preserved at every
+    step, never a general N-hop engine. See the Phase E Stage 1
+    proposal Section 7 for the full design rationale."""
+    by_id = {a["id"]: a for a in snapshot["workflow_activities"]}
+    activity = by_id.get(activity_id)
+    if not activity:
+        return {"provenance": "unknown", "note": "activity not found in this project's snapshot"}
+
+    causes = affecting_items_for(snapshot, activity_id)
+    dependents = direct_dependents(snapshot, activity_id)
+
+    steps = [{
+        "provenance": "fact",
+        "statement": f"'{activity['name']}' is currently {activity.get('status')}.",
+    }]
+    if causes:
+        for c in causes:
+            steps.append({
+                "provenance": "relationship:fact",
+                "statement": f"'{c['title']}' ({c['category']}) is explicitly linked as affecting this activity.",
+            })
+    else:
+        steps.append({
+            "provenance": "unknown",
+            "statement": "No operational item is explicitly linked as the cause of this block.",
+        })
+    if dependents:
+        names = ", ".join(d["name"] for d in dependents)
+        steps.append({
+            "provenance": "derived",
+            "statement": f"{names} directly depend{'s' if len(dependents) == 1 else ''} on '{activity['name']}'.",
+        })
+        steps.append({
+            "provenance": "inferred",
+            "statement": (f"{names} cannot proceed as planned while '{activity['name']}' remains "
+                          f"{activity.get('status')}."),
+        })
+    # Handover is never claimed as affected unless a real Activity ->
+    # Milestone/Handover link exists (it doesn't — see Stage 1 proposal
+    # Section 3) — say so plainly rather than infer it from lifecycle
+    # stage alone.
+    steps.append({
+        "provenance": "unknown",
+        "statement": "Handover exposure cannot yet be established from the available relationships.",
+    })
+    return {"activity_id": activity_id, "activity_name": activity["name"], "steps": steps}
 
 
 # ---------------------------------------------------------------------------

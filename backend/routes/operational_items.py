@@ -314,6 +314,30 @@ async def clear_blocker(item_id: str, user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+class LinkActivitiesReq(BaseModel):
+    activity_ids: list[str]
+
+
+@router.post("/operational-items/{item_id}/affected-activities")
+async def link_affected_activities(item_id: str, req: LinkActivitiesReq, user: dict = Depends(get_current_user)):
+    """Phase E — Construction Relationship & Consequence Foundation.
+    Explicitly, humanly recording that an operational item (e.g. an
+    approval) affects specific workflow activities. Never inferred,
+    never set by an LLM. No frontend UI calls this yet this phase —
+    it exists so the relationship can be tested through the real API
+    and set directly by anyone building on Atlas, per the Stage 1
+    proposal's own explicit scope."""
+    _forbid_client(user, "link affected activities")
+    await _get_visible_item_or_404(item_id, user)
+    try:
+        item = await operations_engine.link_affected_activities(
+            item_id=item_id, actor=user, activity_ids=req.activity_ids,
+        )
+        return operations_engine.enrich(item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 @router.get("/users")
 async def list_users(role: Optional[str] = None, project_id: Optional[str] = None,
                      user: dict = Depends(get_current_user)):

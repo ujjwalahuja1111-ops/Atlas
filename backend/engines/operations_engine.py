@@ -330,6 +330,19 @@ async def create_item(*, actor: dict, site_id: str,
         "health": "on_track",
         "last_updated_at": created_at,
         "last_derived_from_op_event_id": None,
+
+        # Phase E — Construction Relationship & Consequence Foundation.
+        # The one new field this phase introduces: which workflow
+        # activities this item affects (e.g. an approval blocking a
+        # specific activity). List, matching the existing
+        # depends_on_activity_ids convention on workflow_activities.
+        # Optional, defaults empty - existing documents without this
+        # field are read identically to documents with an explicit
+        # empty list; no migration required. Never set by inference -
+        # only ever set explicitly via link_affected_activities(),
+        # matching the brief's own "never use an LLM to create
+        # construction relationships" requirement.
+        "affected_activity_ids": [],
     }
     # Initial ledger event
     initial = await append_event(item_id=item_id, kind="created", actor=actor,
@@ -558,6 +571,30 @@ async def clear_blocker(*, item_id: str, actor: dict) -> dict:
     item["last_updated_at"] = _iso(_now())
     item["last_derived_from_op_event_id"] = ev["id"]
     item["health"] = derive_health(item)
+    await _save_item(item)
+    return item
+
+
+# ---------------------------------------------------------------------------
+# Phase E — Construction Relationship & Consequence Foundation. The one
+# new write path this phase introduces, mirroring set_blocker()'s own
+# shape exactly: explicit, human-set, ledgered the same way every other
+# operational-item change already is. Never inferred, never set by an
+# LLM - per the brief's own explicit "never use an LLM to create
+# construction relationships" requirement.
+# ---------------------------------------------------------------------------
+
+async def link_affected_activities(*, item_id: str, actor: dict, activity_ids: list[str]) -> dict:
+    item = await get_item(item_id)
+    if not item:
+        raise ValueError("item not found")
+    ev = await append_event(item_id=item_id, kind="activities_linked", actor=actor,
+                            prev_status=item["status"], new_status=item["status"],
+                            payload={"affected_activity_ids": activity_ids,
+                                     "previous_affected_activity_ids": item.get("affected_activity_ids") or []})
+    item["affected_activity_ids"] = activity_ids
+    item["last_updated_at"] = _iso(_now())
+    item["last_derived_from_op_event_id"] = ev["id"]
     await _save_item(item)
     return item
 

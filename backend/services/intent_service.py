@@ -89,7 +89,11 @@ from this list — select only what's genuinely relevant, up to 3, ordered by re
 - unresolved: the request does not clearly match any of the above, or is a write/\
 action request (creating, changing, or approving something) — Phase 1 supports \
 READ-ONLY QUERIES ONLY, so any request to create, change, approve, or take an action \
-must be classified unresolved.
+must be classified unresolved. This also applies to any question asking whether a \
+problem has happened before, which other project had a similar issue, what happened \
+on a past project, or which project to learn from — Atlas does not have this \
+capability today, so these must be classified unresolved rather than answered with \
+an unrelated intent.
 
 Rules for selecting intents:
 - A simple, single-topic question (e.g. "what's the project health?") should select \
@@ -318,6 +322,25 @@ async def handle_intent(user_input: str, *, user: dict, active_project_id: Optio
     if not user_input or not user_input.strip():
         return {"type": "unresolved", "message": "I didn't catch a question — try asking something like "
                                                    "\"why is this project at risk?\""}
+
+    # Phase E — defensive safety net for cross-project-memory-style
+    # phrasing, alongside the prompt-level correction above. Belt and
+    # suspenders: if the model ever misclassifies one of these into an
+    # unrelated intent, this catches it before dispatch rather than
+    # letting a plausible-sounding wrong answer through. Never expands
+    # what Atlas does — only ensures it correctly declines rather than
+    # silently answering a different question than the one asked (the
+    # exact failure found live during the Construction Intelligence
+    # Challenge: "have we seen this problem before?" was answered as
+    # current-project health).
+    lowered = user_input.strip().lower()
+    if any(phrase in lowered for phrase in (
+        "have we seen this", "seen this before", "seen this problem",
+        "which project should we learn", "learn from",
+        "happened on", "similar issue", "similar problem",
+    )):
+        return {"type": "unresolved", "message": "I can't compare this against other projects' own history yet — "
+                                                   "that's not something Atlas can do today."}
 
     try:
         structured = await _run_structuring_pass(user_input.strip())
