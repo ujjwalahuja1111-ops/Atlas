@@ -245,6 +245,25 @@ function DigestResponse({ data }: { data: any }) {
   );
 }
 
+// User-facing section labels for the multi_result divider — the same
+// vocabulary already used in the backend's own INTENT_LABEL constant,
+// never an engine or route name (Section 11's own explicit rule).
+const SECTION_LABEL: Record<string, string> = {
+  query_health: 'Health', query_schedule_impact: 'Schedule',
+  query_comparison: 'Comparison', query_digest: 'Recent Activity',
+};
+
+function ResponseSectionContent({ intent, result, projectId }: { intent: string; result: { ok: boolean; data?: any; error?: string }; projectId?: string }) {
+  if (!result.ok) {
+    return <Text style={styles.bulletLine}>{result.error || "I couldn't retrieve this right now."}</Text>;
+  }
+  if (intent === 'query_health') return <HealthResponse data={result.data} projectId={projectId} />;
+  if (intent === 'query_schedule_impact') return <ScheduleImpactResponse data={result.data} projectId={projectId} />;
+  if (intent === 'query_comparison') return <ComparisonResponse data={result.data} />;
+  if (intent === 'query_digest') return <DigestResponse data={result.data} />;
+  return <Text style={styles.bulletLine}>No further detail available.</Text>;
+}
+
 export function AtlasResponseCard({ response }: { response: IntentResponse }) {
   if (response.type === 'unresolved') {
     return (
@@ -255,8 +274,34 @@ export function AtlasResponseCard({ response }: { response: IntentResponse }) {
   }
   if (response.type === 'clarification_needed') {
     // Rendered by the caller (needs interactive candidate picking with
-    // its own state) — this component only handles the "result" shape.
+    // its own state) — this component only handles the "result" and
+    // "multi_result" shapes.
     return null;
+  }
+
+  if (response.type === 'multi_result') {
+    // One card, one project pill (shared across every project-scoped
+    // section, since project resolution ran once), the deterministic
+    // lead-in, then each section divided by a plain, user-facing
+    // label — never "Engine 1 / Engine 2", per Section 11.
+    const sharedProject = response.sections.find((s) => s.project)?.project;
+    return (
+      <View style={styles.card} testID="atlas-response-multi-card">
+        {sharedProject && (
+          <View style={styles.projectPill}>
+            <Ionicons name="briefcase-outline" size={12} color={theme.color.brand} />
+            <Text style={styles.projectPillText}>{sharedProject.name}</Text>
+          </View>
+        )}
+        <Text style={styles.leadIn}>{response.lead_in}</Text>
+        {response.sections.map((s, i) => (
+          <View key={s.intent} style={i > 0 ? styles.sectionDivider : undefined}>
+            <Text style={styles.sectionLabel}>{SECTION_LABEL[s.intent] || s.intent}</Text>
+            <ResponseSectionContent intent={s.intent} result={s.result} projectId={s.project?.id} />
+          </View>
+        ))}
+      </View>
+    );
   }
 
   const { intent, result, project } = response;
@@ -268,19 +313,7 @@ export function AtlasResponseCard({ response }: { response: IntentResponse }) {
           <Text style={styles.projectPillText}>{project.name}</Text>
         </View>
       )}
-      {!result.ok ? (
-        <Text style={styles.bulletLine}>{result.error || "I couldn't retrieve this right now."}</Text>
-      ) : intent === 'query_health' ? (
-        <HealthResponse data={result.data} projectId={project?.id} />
-      ) : intent === 'query_schedule_impact' ? (
-        <ScheduleImpactResponse data={result.data} projectId={project?.id} />
-      ) : intent === 'query_comparison' ? (
-        <ComparisonResponse data={result.data} />
-      ) : intent === 'query_digest' ? (
-        <DigestResponse data={result.data} />
-      ) : (
-        <Text style={styles.bulletLine}>No further detail available.</Text>
-      )}
+      <ResponseSectionContent intent={intent} result={result} projectId={project?.id} />
       {result.partial_errors?.length ? (
         <Text style={styles.partialNote}>({result.partial_errors.join(', ')})</Text>
       ) : null}
@@ -305,6 +338,8 @@ const styles = StyleSheet.create({
   headline: { color: theme.color.text, fontSize: 16, fontWeight: '800' },
   subtext: { color: theme.color.textDim, fontSize: 12, marginTop: 2 },
   sectionLabel: { color: theme.color.textDim, fontSize: 11, fontWeight: '800', letterSpacing: 0.6, marginBottom: 6 },
+  leadIn: { color: theme.color.text, fontSize: 14, fontWeight: '700', marginBottom: 10 },
+  sectionDivider: { marginTop: 14, paddingTop: 14, borderTopWidth: 1, borderTopColor: theme.color.border },
   bulletLine: { color: theme.color.textMuted, fontSize: 13, marginTop: 3, lineHeight: 18 },
   actionRow: { flexDirection: 'row', alignItems: 'flex-start', gap: 8, marginTop: 6 },
   actionDot: { fontSize: 12, marginTop: 2 },

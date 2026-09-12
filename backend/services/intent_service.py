@@ -1,12 +1,30 @@
-"""Atlas Intent & Orchestration — Phase 1.
+"""Atlas Intent & Orchestration — Phase 1 + Phase D (Multi-Intent Synthesis).
 
-Implements docs/ATLAS_INTENT_ORCHESTRATION_SPEC.md Items 1-11, 30 exactly:
-one AI structuring pass (Item 4/7/8/9), deterministic intent->engine
-dispatch (Item 10), read-only orchestration only (Item 11).
+Phase 1 implemented docs/ATLAS_INTENT_ORCHESTRATION_SPEC.md Items 1-11, 30:
+one AI structuring pass, deterministic intent->engine dispatch,
+read-only orchestration only.
+
+Phase D removes the single-intent ceiling identified in the Construction
+Intelligence Review: the SAME one structuring call now returns an
+ORDERED LIST of up to 3 relevant intents instead of exactly one. Every
+existing handler is completely unchanged; only the dispatch loop and a
+small, deterministic composition step are new. A single selected
+intent produces the exact same response shape Phase 1 always has
+(Section 4's own explicit backward-compatibility requirement) — the
+new "multi_result" shape only appears when 2+ intents are genuinely
+selected.
+
+Phase D explicitly does NOT implement: an engine capability registry,
+cross-engine evidence/conflict reasoning, global confidence
+aggregation, sentence-level provenance, or any new AI call beyond the
+one structuring pass that already existed — per this phase's own
+scope, and per the Construction Intelligence Review's own explicit
+recommendation not to build those yet.
 
 Phase 1 explicitly does NOT implement: voice (Item 3), write actions,
 draft entities (Item 13), or persistent conversation memory beyond a
-single clarification round (Item 19/22) — per this phase's own scope.
+single clarification round (Item 19/22) — per this phase's own scope,
+unaffected by Phase D.
 
 The structuring call reuses the exact LLM-call pattern already
 established in engines/intelligence_engine.py's own _structure() and
@@ -36,6 +54,11 @@ SUPPORTED_INTENTS = (
     "query_comparison", "unresolved",
 )
 
+# Phase D — the maximum number of intents a single question can select.
+# A plain, named constant (Section 3/6 of the Phase D brief), not a
+# magic number buried in a conditional.
+MAX_INTENTS = 3
+
 # Item 8 — confidence floor: below this, treated as unresolved (Item 4)
 # rather than acted on. Set to "medium" so only "low" confidence is
 # rejected — "medium" and "high" both proceed. (A floor of "low" would
@@ -45,9 +68,19 @@ SUPPORTED_INTENTS = (
 CONFIDENCE_FLOOR = "medium"
 _CONFIDENCE_ORDER = {"low": 0, "medium": 1, "high": 2}
 
+# User-facing labels for each intent, used only in the multi-result
+# composition lead-in (Section 9) — never exposes an engine or route
+# name, per Section 11's own explicit instruction.
+INTENT_LABEL = {
+    "query_health": "health",
+    "query_schedule_impact": "schedule",
+    "query_comparison": "comparison",
+    "query_digest": "recent activity",
+}
+
 INTENT_SYSTEM_PROMPT = """You are Atlas's intent-structuring pass for a construction \
-management platform. Given a user's free-text request, classify it into EXACTLY ONE \
-of these intents:
+management platform. Given a user's free-text request, select the RELEVANT intents \
+from this list — select only what's genuinely relevant, up to 3, ordered by relevance:
 
 - query_health: asking why a project is at risk, or about its overall health/status
 - query_digest: asking what's happening today/recently across their projects
@@ -58,14 +91,26 @@ action request (creating, changing, or approving something) — Phase 1 supports
 READ-ONLY QUERIES ONLY, so any request to create, change, approve, or take an action \
 must be classified unresolved.
 
+Rules for selecting intents:
+- A simple, single-topic question (e.g. "what's the project health?") should select \
+exactly ONE intent.
+- A genuinely broad question (e.g. "what should I be worried about?", "what could \
+affect handover?") may select 2-3 intents if more than one is truly relevant — but \
+do NOT select extra intents just to fill the list. Select only what the question \
+actually asks about.
+- If nothing is sufficiently understood, or the request needs an action Phase 1 \
+doesn't support, select only "unresolved" and nothing else.
+- Never select "unresolved" alongside another intent.
+
 Return JSON only, in exactly this shape:
 {
-  "intent": "<one of the five above>",
-  "confidence": "high" | "medium" | "low",
+  "intents": [
+    {"intent": "<one of the four query intents, or 'unresolved' alone>", "confidence": "high" | "medium" | "low"}
+  ],
   "project_reference": "<any project name/identifier literally mentioned, or null>",
   "comparison_scope": "<for query_comparison only: what kind of projects to compare \
 against, e.g. 'residential', or null>",
-  "reasoning": "<one short sentence explaining the classification>"
+  "reasoning": "<one short sentence explaining the selection>"
 }
 Do not include any text outside the JSON object."""
 
@@ -253,8 +298,9 @@ PROJECT_SCOPED_INTENTS = {"query_health", "query_schedule_impact", "query_compar
 
 async def handle_intent(user_input: str, *, user: dict, active_project_id: Optional[str] = None,
                         confirmed_project_id: Optional[str] = None) -> dict:
-    """The single entry point. Returns one of three response shapes:
-      - {"type": "result", "intent": ..., "result": ...}
+    """The single entry point. Returns one of four response shapes:
+      - {"type": "result", "intent": ..., "result": ...}                     (exactly 1 intent selected — unchanged from Phase 1)
+      - {"type": "multi_result", "lead_in": ..., "sections": [...]}           (Phase D — 2-3 intents selected)
       - {"type": "clarification_needed", "question": ..., "candidates": [...]}
       - {"type": "unresolved", "message": ...}
     Never raises for a bad/ambiguous input — only for a genuine
@@ -282,68 +328,126 @@ async def handle_intent(user_input: str, *, user: dict, active_project_id: Optio
         return {"type": "unresolved", "message": "I couldn't understand that clearly. Try rephrasing, "
                                                    "or ask a specific question about a project."}
 
-    # Shape validation lives here, not inside _run_structuring_pass,
-    # so it always applies to whatever that function returns —
-    # whether from a real LLM call or a test mock.
-    if structured.get("intent") not in SUPPORTED_INTENTS or structured.get("confidence") not in _CONFIDENCE_ORDER:
+    # Phase D shape validation — the structured pass now returns an
+    # ORDERED LIST of up to MAX_INTENTS candidate intents instead of
+    # one. Validated here, not inside _run_structuring_pass, so it
+    # always applies to whatever that function returns — whether from
+    # a real LLM call or a test mock (same discipline Phase 1 already
+    # established for the single-intent shape).
+    raw_intents = structured.get("intents")
+    if not isinstance(raw_intents, list) or not raw_intents:
         return {"type": "unresolved", "message": "I couldn't understand that clearly. Try rephrasing, "
                                                    "or ask a specific question about a project."}
 
-    intent = structured["intent"]
-    confidence = structured["confidence"]
+    selected: list[dict] = []
+    seen: set[str] = set()
+    explicit_unresolved = False
+    for item in raw_intents:
+        if not isinstance(item, dict):
+            continue
+        candidate_intent = item.get("intent")
+        candidate_confidence = item.get("confidence")
+        if candidate_intent not in SUPPORTED_INTENTS or candidate_confidence not in _CONFIDENCE_ORDER:
+            continue
+        if candidate_intent == "unresolved":
+            explicit_unresolved = True
+            continue  # never mixed with real intents; handled below
+        if _CONFIDENCE_ORDER[candidate_confidence] < _CONFIDENCE_ORDER[CONFIDENCE_FLOOR]:
+            continue  # Item 8's own floor, applied per-intent — truth beats completeness (Section 15)
+        if candidate_intent in seen:
+            continue  # test case E — deduplicated, not rejected
+        seen.add(candidate_intent)
+        selected.append({"intent": candidate_intent, "confidence": candidate_confidence})
+        if len(selected) >= MAX_INTENTS:
+            break  # test case F — bounded to MAX_INTENTS, extras silently ignored
 
-    # Item 8 — confidence floor. Below it, treated as unresolved.
-    if _CONFIDENCE_ORDER[confidence] < _CONFIDENCE_ORDER[CONFIDENCE_FLOOR]:
+    if not selected:
+        if explicit_unresolved:
+            # Preserves Phase 1's own original, more accurate message —
+            # the model understood the request and correctly identified
+            # it as unsupported, which is a different situation from
+            # "nothing survived confidence/validity filtering" below.
+            return {"type": "unresolved", "message": "That's not something I can help with yet — "
+                                                       "I can currently answer questions about project health, "
+                                                       "schedule impact, comparisons, and daily summaries."}
         return {"type": "unresolved", "message": "I'm not confident I understood that correctly. "
-                                                   "Could you rephrase your question?"}
+                                                   "Could you rephrase your question, or ask a specific "
+                                                   "question about a project?"}
 
-    if intent == "unresolved":
-        return {"type": "unresolved", "message": "That's not something I can help with yet — "
-                                                   "I can currently answer questions about project health, "
-                                                   "schedule impact, comparisons, and daily summaries."}
+    # Project resolution runs ONCE, shared across every selected
+    # intent that needs it (Section 5) — never once per intent.
+    project = None
+    needs_project = any(s["intent"] in PROJECT_SCOPED_INTENTS for s in selected)
+    if needs_project:
+        if confirmed_project_id:
+            visible_projects = await memory_engine.list_projects(user=user)
+            confirmed = next((p for p in visible_projects if p["id"] == confirmed_project_id), None)
+            resolution = {"status": "resolved", "project": confirmed} if confirmed else {"status": "not_found", "mention": "the selected project"}
+        else:
+            resolution = await _resolve_project(structured, user, active_project_id)
 
+        if resolution["status"] == "none_visible":
+            return {"type": "unresolved", "message": "You don't have any projects yet."}
+        if resolution["status"] == "not_found":
+            return {"type": "unresolved",
+                    "message": f"I couldn't find a project matching \"{resolution['mention']}\"."}
+        if resolution["status"] == "ambiguous":
+            return {
+                "type": "clarification_needed",
+                "question": "Which project did you mean?",
+                "candidates": [{"id": p["id"], "name": p["name"]} for p in resolution["candidates"][:8]],
+            }
+        project = resolution["project"]
+
+    # Dispatch every selected intent to its own existing, unchanged
+    # handler (Section 6) — RBAC stays inside each handler exactly as
+    # in Phase 1 (Section 7's own explicit "never perform authorization
+    # only once at the top"), and each handler's own failure is
+    # isolated from the others (Section 8), matching the pattern
+    # query_digest already established for its own multiple sources.
+    sections: list[dict] = []
+    for s in selected:
+        try:
+            outcome = await _dispatch_one(s["intent"], structured, user, project)
+        except Exception:
+            logger.exception(f"Phase D: handler for intent '{s['intent']}' raised unexpectedly")
+            outcome = {"ok": False, "error": "This part of the answer wasn't available right now."}
+        section = {"intent": s["intent"], "result": outcome}
+        if project and s["intent"] in PROJECT_SCOPED_INTENTS:
+            section["project"] = {"id": project["id"], "name": project["name"]}
+        sections.append(section)
+
+    # Backward compatibility (Section 4) — exactly one intent selected
+    # produces the EXACT SAME shape Phase 1 has always returned, not a
+    # single-item list wrapped in the new shape.
+    if len(sections) == 1:
+        only = sections[0]
+        result = {"type": "result", "intent": only["intent"], "result": only["result"]}
+        if "project" in only:
+            result["project"] = only["project"]
+        return result
+
+    # Phase D — 2+ intents selected. A small, deterministic composition
+    # (Section 9): a plain, template-composed lead-in naming what was
+    # checked in user-facing language (never an engine/route name, per
+    # Section 11), and the individual, unmodified section results for
+    # the frontend to render — no LLM-written summary paragraph.
+    labels = [INTENT_LABEL.get(s["intent"], s["intent"]) for s in sections]
+    lead_in = "Here's what matters" + (f" — checked {', '.join(labels[:-1])} and {labels[-1]}" if len(labels) > 1 else f" — checked {labels[0]}") + "."
+    return {"type": "multi_result", "lead_in": lead_in, "sections": sections}
+
+
+async def _dispatch_one(intent: str, structured: dict, user: dict, project: Optional[dict]) -> dict:
+    """Section 6 — the one place that routes a single selected intent
+    to its own existing, completely unmodified handler. Not a new
+    engine, not new business logic — a plain lookup, same discipline
+    Phase 1 already used for its own single-intent dispatch."""
     if intent == "query_digest":
-        outcome = await _handle_query_digest(user)
-        return {"type": "result", "intent": intent, "result": outcome}
-
-    # Every remaining Phase 1 intent is project-scoped — resolve context.
-    if confirmed_project_id:
-        visible_projects = await memory_engine.list_projects(user=user)
-        confirmed = next((p for p in visible_projects if p["id"] == confirmed_project_id), None)
-        resolution = {"status": "resolved", "project": confirmed} if confirmed else {"status": "not_found", "mention": "the selected project"}
-    else:
-        resolution = await _resolve_project(structured, user, active_project_id)
-
-    if resolution["status"] == "none_visible":
-        return {"type": "unresolved", "message": "You don't have any projects yet."}
-
-    if resolution["status"] == "not_found":
-        return {"type": "unresolved",
-                "message": f"I couldn't find a project matching \"{resolution['mention']}\"."}
-
-    if resolution["status"] == "ambiguous":
-        names = [p["name"] for p in resolution["candidates"][:8]]
-        return {
-            "type": "clarification_needed",
-            "question": "Which project did you mean?",
-            "candidates": [{"id": p["id"], "name": p["name"]} for p in resolution["candidates"][:8]],
-        }
-
-    project = resolution["project"]
-
-    # RBAC (Item 18) — enforced entirely by the existing engine calls
-    # themselves (assert_project_visible inside explain_health /
-    # project_lookahead_view / compare_projects), never re-implemented
-    # here. This dispatch layer performs zero authorization logic of
-    # its own, per the spec's own explicit Item 18 requirement.
+        return await _handle_query_digest(user)
     if intent == "query_health":
-        outcome = await _handle_query_health(project, user)
-    elif intent == "query_schedule_impact":
-        outcome = await _handle_query_schedule_impact(project, user)
-    elif intent == "query_comparison":
-        outcome = await _handle_query_comparison(project, user, structured)
-    else:
-        return {"type": "unresolved", "message": "That's not something I can help with yet."}
-
-    return {"type": "result", "intent": intent, "project": {"id": project["id"], "name": project["name"]},
-            "result": outcome}
+        return await _handle_query_health(project, user)
+    if intent == "query_schedule_impact":
+        return await _handle_query_schedule_impact(project, user)
+    if intent == "query_comparison":
+        return await _handle_query_comparison(project, user, structured)
+    return {"ok": False, "error": "That's not something I can help with yet."}

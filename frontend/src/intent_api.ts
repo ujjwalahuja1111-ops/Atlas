@@ -6,8 +6,11 @@ const BACKEND = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export type IntentCandidate = { id: string; name: string };
 
+export type IntentSection = { intent: string; project?: { id: string; name: string }; result: { ok: boolean; data?: any; error?: string; partial_errors?: string[] | null } };
+
 export type IntentResponse =
   | { type: 'result'; intent: string; project?: { id: string; name: string }; result: { ok: boolean; data?: any; error?: string; partial_errors?: string[] | null } }
+  | { type: 'multi_result'; lead_in: string; sections: IntentSection[] }
   | { type: 'clarification_needed'; question: string; candidates: IntentCandidate[] }
   | { type: 'unresolved'; message: string };
 
