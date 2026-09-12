@@ -588,6 +588,28 @@ async def link_affected_activities(*, item_id: str, actor: dict, activity_ids: l
     item = await get_item(item_id)
     if not item:
         raise ValueError("item not found")
+
+    # Hardening fix — every activity must belong to the same project as
+    # this operational item. workflow_activities carry project_id
+    # directly (confirmed: they have no site_id field at all, so
+    # project_id is the only meaningful ownership boundary — see the
+    # Phase E hardening review). Validated in full before any write:
+    # a single cross-project or nonexistent id rejects the entire
+    # request, never a partial link.
+    if activity_ids:
+        found = await db.workflow_activities.find(
+            {"id": {"$in": activity_ids}}, {"_id": 0, "id": 1, "project_id": 1},
+        ).to_list(len(activity_ids) + 1)
+        found_by_id = {a["id"]: a for a in found}
+        for aid in activity_ids:
+            activity = found_by_id.get(aid)
+            if not activity:
+                raise ValueError(f"activity '{aid}' does not exist")
+            if activity.get("project_id") != item.get("project_id"):
+                raise ValueError(
+                    f"activity '{aid}' belongs to a different project and cannot be "
+                    "linked to this operational item")
+
     ev = await append_event(item_id=item_id, kind="activities_linked", actor=actor,
                             prev_status=item["status"], new_status=item["status"],
                             payload={"affected_activity_ids": activity_ids,

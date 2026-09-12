@@ -1661,9 +1661,22 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
     happened for this project. If that gap matters for a given
     project, action_currency below says so plainly rather than
     presenting stale advice as fresh.
+
+    Phase E hardening — snapshot/findings/open-insights are each
+    computed exactly once in this function and reused for both the
+    health composition and the recommendation reconciliation below,
+    via compute_project_health()'s own findings= parameter (built for
+    exactly this reuse case). The earlier version called the
+    higher-level project_health() (which internally builds its own
+    snapshot, findings, and open-insights list) and then separately
+    recomputed all three again for reconciliation — three genuine
+    duplicate computations, found and removed during the pre-merge
+    hardening review.
     """
-    health = await project_health(project_id, user=user)
+    snapshot = await build_project_snapshot(project_id)
+    fresh_findings = evaluate_rules(snapshot)
     open_insights = await list_insights(project_id, user=user, status="open")
+    health = compute_project_health(snapshot, findings=fresh_findings, open_insight_count=len(open_insights))
 
     recommended_actions = [
         {
@@ -1690,8 +1703,6 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
     # data this same call already computed — never a second AI pass,
     # never a second health calculation, never fabricated.
     persisted_rule_ids = {a["rule_id"] for a in recommended_actions if a.get("rule_id")}
-    snapshot = await build_project_snapshot(project_id)
-    fresh_findings = evaluate_rules(snapshot)
     for f in sorted(fresh_findings, key=lambda x: SEVERITIES.index(x["severity"]), reverse=True):
         if f["rule_id"] in persisted_rule_ids:
             continue
