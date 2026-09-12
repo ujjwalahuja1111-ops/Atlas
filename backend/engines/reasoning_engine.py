@@ -1639,6 +1639,55 @@ async def project_health(project_id: str, *, user: dict) -> dict:
     return compute_project_health(snapshot, open_insight_count=len(open_now))
 
 
+def _explain_priority(recommended_actions: list[dict]) -> Optional[dict]:
+    """Phase F — a plain, deterministic explanation of why the
+    top-ranked recommendation ranks first, composed from data already
+    on the ranked list itself (severity, consequence_weight,
+    downstream_dependents) - never a second LLM call, never invented
+    comparison language. Returns None when there is nothing to rank.
+
+    Two honest cases:
+    - No other item shares this one's severity tier -> severity alone
+      explains the ranking.
+    - Another item shares the same severity tier but ranked lower ->
+      the consequence tie-break is what actually decided it, so the
+      explanation names the real downstream dependents that did it,
+      never fabricates a reason.
+    """
+    if not recommended_actions:
+        return None
+    top = recommended_actions[0]
+    same_tier = [a for a in recommended_actions[1:] if a["severity"] == top["severity"]]
+
+    if not same_tier:
+        return {
+            "insight_id": top.get("insight_id"),
+            "reason": "severity",
+            "statement": (f"It is currently classified as {top['severity']} — the most severe "
+                          "open issue on this project right now."),
+        }
+
+    dependents = top.get("downstream_dependents") or []
+    if dependents:
+        names = ", ".join(d["name"] for d in dependents[:3])
+        return {
+            "insight_id": top.get("insight_id"),
+            "reason": "consequence",
+            "statement": (
+                f"It is currently classified as {top['severity']}, and it directly affects "
+                f"{len(dependents)} other activit{'y' if len(dependents) == 1 else 'ies'} "
+                f"({names}) — more than the other {top['severity']}-level issue(s) open right now."
+            ),
+        }
+    # Same severity tier, no consequence data on either side — the
+    # ranking is a stable tie, not a fabricated distinction.
+    return {
+        "insight_id": top.get("insight_id"),
+        "reason": "severity",
+        "statement": f"It is currently classified as {top['severity']}, tied with other open issues at the same severity.",
+    }
+
+
 async def explain_health(project_id: str, *, user: dict) -> dict:
     """Beta-05 — "Explain Health," this sprint's own named "largest
     remaining gap." Health Score -> Dimensions -> Drivers ->
@@ -1672,14 +1721,40 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
     recomputed all three again for reconciliation — three genuine
     duplicate computations, found and removed during the pre-merge
     hardening review.
+
+    Phase F — consequence-aware prioritization. Severity remains the
+    PRIMARY, unchanged ranking key — a critical safety issue always
+    outranks a warning-severity schedule issue, by construction, never
+    as a special case. Within the same severity tier, a real,
+    deterministic tie-breaker is added: how many direct downstream
+    activities (Phase E's own direct_dependents(), unmodified) does
+    this finding's own activity have, where the originating CRE rule
+    already names one via affected_activity_id (five existing rules
+    already set this field; confirmed it already survives persistence
+    via run_reasoning()'s own **f spread). No new weighted score, no
+    LLM ranking pass - a plain count of already-proven relationship
+    data.
     """
     snapshot = await build_project_snapshot(project_id)
     fresh_findings = evaluate_rules(snapshot)
     open_insights = await list_insights(project_id, user=user, status="open")
     health = compute_project_health(snapshot, findings=fresh_findings, open_insight_count=len(open_insights))
 
-    recommended_actions = [
-        {
+    def _consequence(activity_id: Optional[str]) -> tuple[int, list[dict]]:
+        """Returns (weight, dependents) - weight is 0 (never penalized,
+        never fabricated) when there is no linked activity or it has
+        no real dependents."""
+        if not activity_id:
+            return 0, []
+        dependents = projections.direct_dependents(snapshot, activity_id)
+        return len(dependents), dependents
+
+    recommended_actions = []
+    for i in sorted(open_insights, key=lambda x: SEVERITIES.index(x["severity"]), reverse=True):
+        if not i.get("suggested_operational_action"):
+            continue
+        weight, dependents = _consequence(i.get("affected_activity_id"))
+        recommended_actions.append({
             "insight_id": i["id"],
             "rule_id": i.get("rule_id"),
             "domain": i.get("domain"),
@@ -1688,10 +1763,11 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
             "suggested_action": i.get("suggested_operational_action"),
             "created_at": i.get("created_at"),
             "source": "persisted",
-        }
-        for i in sorted(open_insights, key=lambda x: SEVERITIES.index(x["severity"]), reverse=True)
-        if i.get("suggested_operational_action")
-    ]
+            "affected_activity_id": i.get("affected_activity_id"),
+            "affected_activity_name": i.get("affected_activity_name"),
+            "consequence_weight": weight,
+            "downstream_dependents": dependents,
+        })
 
     # Phase E — reconciliation. drivers (always fresh) and
     # recommended_actions (persisted) can genuinely disagree on how
@@ -1708,6 +1784,7 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
             continue
         if not f.get("suggested_operational_action"):
             continue
+        weight, dependents = _consequence(f.get("affected_activity_id"))
         recommended_actions.append({
             "insight_id": None,
             "rule_id": f["rule_id"],
@@ -1717,9 +1794,18 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
             "suggested_action": f["suggested_operational_action"],
             "created_at": None,
             "source": "current",
+            "affected_activity_id": f.get("affected_activity_id"),
+            "affected_activity_name": f.get("affected_activity_name"),
+            "consequence_weight": weight,
+            "downstream_dependents": dependents,
         })
         persisted_rule_ids.add(f["rule_id"])
-    recommended_actions.sort(key=lambda a: SEVERITIES.index(a["severity"]), reverse=True)
+    # Severity is still the PRIMARY key (unchanged) - consequence_weight
+    # only breaks ties within the same severity tier, never lets a
+    # lower-severity item outrank a higher one. This is the whole of
+    # Phase F's own ranking change.
+    recommended_actions.sort(key=lambda a: (SEVERITIES.index(a["severity"]), a["consequence_weight"]), reverse=True)
+    priority_explanation = _explain_priority(recommended_actions)
 
     most_recent_insight_at = max((i.get("created_at") or "" for i in open_insights), default=None)
     current_count = sum(1 for a in recommended_actions if a["source"] == "current")
@@ -1732,6 +1818,7 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
         "drivers": health["drivers"],
         "progress": health["progress"],
         "recommended_actions": recommended_actions,
+        "priority_explanation": priority_explanation,
         "action_currency": {
             "open_insight_count": len(open_insights),
             "most_recent_insight_at": most_recent_insight_at,

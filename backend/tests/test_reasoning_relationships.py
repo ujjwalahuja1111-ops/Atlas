@@ -505,3 +505,237 @@ async def test_consequence_reasoning_never_sees_a_rejected_relationship():
     snapshot = await _make_snapshot(project["id"])
     chain = reasoning_projections.blocking_consequence_chain(snapshot, a2)
     assert not any("Elsewhere" in s["statement"] for s in chain["steps"])
+
+
+# ==========================================================================
+# Phase F — Consequence-Aware Prioritization. Severity remains the
+# PRIMARY, unchanged ranking key (confirmed by test A below); a real,
+# deterministic downstream-dependent count only breaks ties within the
+# same severity tier (test B). No weighted score, no LLM ranking pass.
+# ==========================================================================
+
+async def _seed_electrical_chain(project_id, with_link=True):
+    """Shared scenario: Foundation (completed) -> Electrical (blocked,
+    late, optionally linked to an approval) -> Plastering (depends on
+    Electrical)."""
+    now = _now()
+    a1 = await _make_activity(project_id, "Foundation", status="completed")
+    a2 = await _make_activity(project_id, "Electrical First Fix", status="blocked", depends_on=[a1])
+    await _mock_db.workflow_activities.update_one(
+        {"id": a2}, {"$set": {"planned_finish": _iso(now - timedelta(days=4))}})
+    a3 = await _make_activity(project_id, "Plastering", status="not_started", depends_on=[a2])
+    if with_link:
+        site = await memory_engine.insert_site(project_id=project_id, name="Site")
+        item = await operations_engine.create_item(
+            actor=PM, site_id=site["id"], category="client_approval", title="Kitchen Layout")
+        await operations_engine.link_affected_activities(item_id=item["id"], actor=PM, activity_ids=[a2])
+    return a1, a2, a3
+
+
+async def _seed_critical_safety(project_id):
+    now = _now()
+    await _mock_db.reasoning_insights.insert_one({
+        "id": f"ins_{uuid.uuid4()}", "project_id": project_id, "status": "open",
+        "domain": "safety", "severity": "critical", "rule_id": "safety.unresolved_high_priority",
+        "observation": "A safety hazard is open.", "recommendation": "Resolve it.",
+        "suggested_operational_action": {"category": "safety_observation", "title": "Resolve hazard", "description": ""},
+        "evidence_ids": [], "created_at": _iso(now), "updated_at": _iso(now),
+    })
+
+
+# A. Current critical safety issue remains rankable first
+async def test_critical_safety_stays_first_despite_verified_consequence():
+    project = await _make_project("PF Safety First Project")
+    await _seed_electrical_chain(project["id"])
+    await _seed_critical_safety(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    assert result["recommended_actions"][0]["severity"] == "critical"
+    assert result["priority_explanation"]["reason"] == "severity"
+
+
+# B. Schedule warning with verified downstream consequence is not
+#    treated the same as an unrelated schedule warning
+async def test_consequence_weight_breaks_ties_within_same_severity_tier():
+    project = await _make_project("PF Tie Break Project")
+    await _seed_electrical_chain(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    warnings = [a for a in result["recommended_actions"] if a["severity"] == "warning"]
+    assert warnings[0]["consequence_weight"] > 0
+    # The unrelated forecast-slip finding (no linked activity) must
+    # rank behind the ones with real downstream dependents.
+    unrelated = [a for a in warnings if a["consequence_weight"] == 0]
+    linked = [a for a in warnings if a["consequence_weight"] > 0]
+    if unrelated and linked:
+        assert warnings.index(linked[0]) < warnings.index(unrelated[0])
+
+
+# C. Consequence information is actually available to the ranking logic
+async def test_consequence_data_present_on_ranked_entries():
+    project = await _make_project("PF Consequence Available Project")
+    await _seed_electrical_chain(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    blocked_entry = next(a for a in result["recommended_actions"] if a["rule_id"] == "construction_logic.activity_blocked")
+    assert blocked_entry["affected_activity_id"] is not None
+    assert len(blocked_entry["downstream_dependents"]) == 1
+    assert blocked_entry["downstream_dependents"][0]["name"] == "Plastering"
+
+
+# D. Priority explanation identifies the reason for the ranking
+async def test_priority_explanation_names_the_real_reason():
+    project = await _make_project("PF Explanation Reason Project")
+    await _seed_electrical_chain(project["id"])
+    await _seed_critical_safety(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    assert result["priority_explanation"]["reason"] in ("severity", "consequence")
+    assert "critical" in result["priority_explanation"]["statement"]
+
+
+# E. "Why should I deal with that first?" does not merely repeat the finding
+async def test_explanation_is_not_a_bare_repeat_of_the_observation():
+    project = await _make_project("PF Not A Repeat Project")
+    await _seed_electrical_chain(project["id"])
+    await _seed_critical_safety(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    top = result["recommended_actions"][0]
+    assert result["priority_explanation"]["statement"] != top["observation"]
+    assert "most severe" in result["priority_explanation"]["statement"]
+
+
+# F. Changing the consequence relationship changes the relevant
+#    priority evidence deterministically
+async def test_changing_the_link_changes_consequence_weight():
+    project = await _make_project("PF Link Change Project")
+    a1, a2, a3 = await _seed_electrical_chain(project["id"], with_link=True)
+    before = await reasoning_engine.explain_health(project["id"], user=PM)
+    before_weight = next(a["consequence_weight"] for a in before["recommended_actions"] if a["rule_id"] == "construction_logic.activity_blocked")
+    assert before_weight == 1
+    # Add a second real dependent
+    await _make_activity(project["id"], "Painting", status="not_started", depends_on=[a2])
+    after = await reasoning_engine.explain_health(project["id"], user=PM)
+    after_weight = next(a["consequence_weight"] for a in after["recommended_actions"] if a["rule_id"] == "construction_logic.activity_blocked")
+    assert after_weight == 2
+
+
+# G. Removing the relationship removes that consequence evidence
+async def test_removing_dependency_removes_consequence_weight():
+    project = await _make_project("PF Remove Dependency Project")
+    a1 = await _make_activity(project["id"], "Foundation", status="completed")
+    a2 = await _make_activity(project["id"], "Electrical", status="blocked", depends_on=[a1])
+    await _mock_db.workflow_activities.update_one(
+        {"id": a2}, {"$set": {"planned_finish": _iso(_now() - timedelta(days=4))}})
+    a3 = await _make_activity(project["id"], "Plastering", status="not_started", depends_on=[a2])
+    with_dep = await reasoning_engine.explain_health(project["id"], user=PM)
+    weight_with = next(a["consequence_weight"] for a in with_dep["recommended_actions"] if a["rule_id"] == "construction_logic.activity_blocked")
+    assert weight_with == 1
+    # Remove the dependency
+    await _mock_db.workflow_activities.update_one({"id": a3}, {"$set": {"depends_on_activity_ids": []}})
+    without_dep = await reasoning_engine.explain_health(project["id"], user=PM)
+    weight_without = next(a["consequence_weight"] for a in without_dep["recommended_actions"] if a["rule_id"] == "construction_logic.activity_blocked")
+    assert weight_without == 0
+
+
+# H. No unsupported relationship creates priority evidence
+async def test_no_fabricated_consequence_for_unrelated_activity():
+    project = await _make_project("PF No Fabrication Project")
+    a1 = await _make_activity(project["id"], "Foundation", status="completed")
+    a2 = await _make_activity(project["id"], "Isolated Activity", status="blocked", depends_on=[a1])
+    # No dependents at all
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    blocked_entry = next((a for a in result["recommended_actions"] if a["rule_id"] == "construction_logic.activity_blocked"), None)
+    assert blocked_entry is not None
+    assert blocked_entry["consequence_weight"] == 0
+    assert blocked_entry["downstream_dependents"] == []
+
+
+# I. Stale persisted recommendations do not silently override current priority
+async def test_stale_persisted_recommendation_does_not_outrank_current_by_default():
+    project = await _make_project("PF Stale Persisted Project")
+    await _seed_electrical_chain(project["id"])
+    now = _now()
+    # A stale, low-severity persisted insight - must not jump ahead of
+    # the current, higher-severity findings just by being persisted.
+    await _mock_db.reasoning_insights.insert_one({
+        "id": f"ins_{uuid.uuid4()}", "project_id": project["id"], "status": "open",
+        "domain": "management", "severity": "advisory", "rule_id": "management.stale_open_item",
+        "observation": "An old, low-priority item exists.", "recommendation": "Review it eventually.",
+        "suggested_operational_action": {"category": "follow_up", "title": "Review", "description": ""},
+        "evidence_ids": [], "created_at": _iso(now - timedelta(days=60)), "updated_at": _iso(now - timedelta(days=60)),
+    })
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    severities_in_order = [a["severity"] for a in result["recommended_actions"]]
+    assert severities_in_order.index("warning") < severities_in_order.index("advisory")
+
+
+# J. Existing recommendation reconciliation remains correct
+async def test_reconciliation_still_distinguishes_current_and_persisted():
+    project = await _make_project("PF Reconciliation Still Correct Project")
+    await _seed_electrical_chain(project["id"])
+    await _seed_critical_safety(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    sources = {a["source"] for a in result["recommended_actions"]}
+    assert sources == {"persisted", "current"}
+
+
+# K. Phase E consequence chain remains unchanged
+async def test_phase_e_consequence_chain_unchanged():
+    project = await _make_project("PF Chain Unchanged Project")
+    await _seed_electrical_chain(project["id"])
+    snapshot = await _make_snapshot(project["id"])
+    activities = {a["name"]: a["id"] for a in snapshot["workflow_activities"]}
+    chain = reasoning_projections.blocking_consequence_chain(snapshot, activities["Electrical First Fix"])
+    provenances = [s["provenance"] for s in chain["steps"]]
+    assert provenances == ["fact", "relationship:fact", "derived", "inferred", "unknown"]
+
+
+# L. Phase D multi-intent behavior remains unchanged
+async def test_phase_d_multi_intent_still_works_after_phase_f():
+    project = await _make_project("PF PhaseD Still Works Project")
+    intent_service._run_structuring_pass = AsyncMock(return_value={
+        "intents": [{"intent": "query_health", "confidence": "high"}, {"intent": "query_schedule_impact", "confidence": "high"}],
+        "project_reference": None, "comparison_scope": None})
+    result = await intent_service.handle_intent(
+        "what should I worry about?", user=ADMIN, active_project_id=project["id"])
+    assert result["type"] == "multi_result"
+    assert len(result["sections"]) == 2
+
+
+# M. Client RBAC remains correct
+async def test_client_still_restricted_from_priority_data():
+    project = await _make_project("PF Client Still Restricted Project")
+    await _seed_electrical_chain(project["id"])
+    await _seed_critical_safety(project["id"])
+    intent_service._run_structuring_pass = AsyncMock(return_value={
+        "intents": [{"intent": "query_health", "confidence": "high"}],
+        "project_reference": None, "comparison_scope": None})
+    result = await intent_service.handle_intent(
+        "what should I deal with first?", user=CLIENT_USER, active_project_id=project["id"])
+    assert result["result"]["ok"] is False
+    assert "data" not in result["result"]
+
+
+# N. Management/PM/Supervisor behavior remains correct
+async def test_non_client_roles_retain_full_priority_access():
+    project = await _make_project("PF Non Client Access Project")
+    await _seed_electrical_chain(project["id"])
+    await _seed_critical_safety(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=ADMIN)
+    assert result["priority_explanation"] is not None
+    assert len(result["recommended_actions"]) > 0
+
+
+# O. Existing health behavior remains compatible
+async def test_health_score_still_computed_correctly():
+    project = await _make_project("PF Health Still Correct Project")
+    await _seed_electrical_chain(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    assert result["score"] < 100  # a real, late, blocked activity should lower the score
+    assert result["status"] in ("green", "amber", "red")  # a real, valid status - scoring itself unchanged by Phase F
+
+
+# P. Unsupported cross-project-memory question remains unresolved
+async def test_cross_project_memory_still_declines_after_phase_f():
+    intent_service._run_structuring_pass = AsyncMock(
+        side_effect=AssertionError("safety net must still short-circuit before the LLM is called"))
+    result = await intent_service.handle_intent(
+        "have we seen this problem before?", user=PM, active_project_id=None)
+    assert result["type"] == "unresolved"

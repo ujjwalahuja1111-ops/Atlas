@@ -68,14 +68,20 @@ function HealthResponse({ data, projectId }: { data: any; projectId?: string }) 
         </Section>
       )}
 
+      {data.priority_explanation && (
+        <Section label="WHY THIS IS FIRST">
+          <Text style={styles.bulletLine}>{data.priority_explanation.statement}</Text>
+        </Section>
+      )}
+
       {Array.isArray(data.recommended_actions) && data.recommended_actions.length > 0 && (
         <Section label="RECOMMENDED NEXT STEPS">
           {data.recommended_actions.slice(0, 4).map((a: any, i: number) => (
             <View key={i} style={styles.actionRow}>
               <Text style={styles.actionDot}>{SEVERITY_DOT[a.severity] || '•'}</Text>
               <View style={{ flex: 1 }}>
-                <Text style={styles.actionText}>{a.suggested_action || a.observation}</Text>
-                {a.suggested_action && a.observation && (
+                <Text style={styles.actionText}>{a.suggested_action?.title || a.observation}</Text>
+                {a.suggested_action?.title && a.observation && (
                   <Text style={styles.actionSubtext}>{a.observation}</Text>
                 )}
               </View>
