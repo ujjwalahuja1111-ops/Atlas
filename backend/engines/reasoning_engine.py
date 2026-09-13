@@ -1646,13 +1646,21 @@ def _explain_priority(recommended_actions: list[dict]) -> Optional[dict]:
     downstream_dependents) - never a second LLM call, never invented
     comparison language. Returns None when there is nothing to rank.
 
-    Two honest cases:
+    Three honest cases:
     - No other item shares this one's severity tier -> severity alone
       explains the ranking.
-    - Another item shares the same severity tier but ranked lower ->
-      the consequence tie-break is what actually decided it, so the
-      explanation names the real downstream dependents that did it,
-      never fabricates a reason.
+    - Another item shares the same severity tier, AND the top item's
+      own consequence_weight is strictly greater than every competing
+      same-tier item's own weight -> the consequence tie-break is what
+      actually decided it, named specifically (Pre-Merge Hardening
+      Review fix: the ranking keys themselves - severity, then
+      consequence_weight - are compared here, not merely "does the top
+      item have any dependents at all," which incorrectly claimed
+      consequence decided a ranking that was actually a genuine tie on
+      both keys).
+    - Same severity tier AND the same (or no worse) consequence_weight
+      as a competitor -> an honest stable-tie statement; never invents
+      a reason that isn't actually supported by the ranking keys.
     """
     if not recommended_actions:
         return None
@@ -1667,8 +1675,15 @@ def _explain_priority(recommended_actions: list[dict]) -> Optional[dict]:
                           "open issue on this project right now."),
         }
 
-    dependents = top.get("downstream_dependents") or []
-    if dependents:
+    # The actual ranking keys are (severity, consequence_weight) - so
+    # "consequence decided it" is only true when the top item's own
+    # weight is strictly greater than every same-tier competitor's,
+    # never merely "the top item happens to have some dependents."
+    top_weight = top.get("consequence_weight") or 0
+    max_competing_weight = max((a.get("consequence_weight") or 0) for a in same_tier)
+
+    if top_weight > max_competing_weight:
+        dependents = top.get("downstream_dependents") or []
         names = ", ".join(d["name"] for d in dependents[:3])
         return {
             "insight_id": top.get("insight_id"),
@@ -1679,8 +1694,9 @@ def _explain_priority(recommended_actions: list[dict]) -> Optional[dict]:
                 f"({names}) — more than the other {top['severity']}-level issue(s) open right now."
             ),
         }
-    # Same severity tier, no consequence data on either side — the
-    # ranking is a stable tie, not a fabricated distinction.
+    # Same severity tier AND the same (or no worse) consequence_weight
+    # as at least one competitor — a genuine tie on both ranking keys.
+    # Never fabricate a distinction that isn't actually there.
     return {
         "insight_id": top.get("insight_id"),
         "reason": "severity",

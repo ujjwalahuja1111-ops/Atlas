@@ -739,3 +739,161 @@ async def test_cross_project_memory_still_declines_after_phase_f():
     result = await intent_service.handle_intent(
         "have we seen this problem before?", user=PM, active_project_id=None)
     assert result["type"] == "unresolved"
+
+
+# ==========================================================================
+# Pre-Merge Hardening Review — Issue: _explain_priority() only checked
+# whether the top item had ANY dependents at all, never whether its own
+# consequence_weight was actually greater than a competing same-tier
+# item's weight. A genuine tie on both ranking keys (severity AND
+# consequence_weight) was incorrectly explained as "consequence decided
+# it." These are direct, deterministic unit tests against
+# reasoning_engine._explain_priority() itself (a pure function over an
+# already-ranked list) - simpler and more precise than seeding dozens
+# of real activities to reach specific weight values.
+# ==========================================================================
+
+def _ra(severity, weight, insight_id="ins_x", dependents=None):
+    """A minimal, hand-built recommended_actions entry for boundary
+    testing _explain_priority() directly."""
+    return {
+        "insight_id": insight_id, "severity": severity,
+        "consequence_weight": weight,
+        "downstream_dependents": dependents or [{"name": f"Dep{i}", "activity_id": f"wa_{i}", "provenance": "derived"} for i in range(weight)],
+    }
+
+
+# 1. Critical safety (weight 0) vs warning schedule (weight 10) -
+#    critical remains #1, ranking itself is untouched by this fix.
+def test_boundary_critical_always_beats_higher_weight_warning():
+    actions = sorted(
+        [_ra("critical", 0, "ins_safety"), _ra("warning", 10, "ins_schedule")],
+        key=lambda a: (reasoning_engine.SEVERITIES.index(a["severity"]), a["consequence_weight"]), reverse=True)
+    assert actions[0]["insight_id"] == "ins_safety"
+    explanation = reasoning_engine._explain_priority(actions)
+    assert explanation["reason"] == "severity"
+
+
+# 2. Warning A (weight 2) vs Warning B (weight 1) - A genuinely wins on
+#    the actual ranking keys; explanation may cite consequence.
+def test_boundary_genuine_weight_difference_cites_consequence():
+    actions = [_ra("warning", 2, "ins_a"), _ra("warning", 1, "ins_b")]
+    explanation = reasoning_engine._explain_priority(actions)
+    assert explanation["insight_id"] == "ins_a"
+    assert explanation["reason"] == "consequence"
+
+
+# 3. Warning A (weight 2) vs Warning B (weight 2) - a TRUE tie on both
+#    keys. Must NOT claim consequence decided it - this is the exact
+#    bug the reviewer found.
+def test_boundary_true_tie_does_not_fabricate_a_consequence_win():
+    actions = [_ra("warning", 2, "ins_a"), _ra("warning", 2, "ins_b")]
+    explanation = reasoning_engine._explain_priority(actions)
+    assert explanation["reason"] == "severity"
+    assert "tied" in explanation["statement"].lower()
+
+
+# 4. Warning A (weight 1), Warning B (weight 1), Warning C (weight 0) -
+#    A and B are tied for top; must not fabricate a distinction between
+#    them just because C exists with a lower weight.
+def test_boundary_tie_among_top_two_ignores_a_weaker_third():
+    actions = [_ra("warning", 1, "ins_a"), _ra("warning", 1, "ins_b"), _ra("warning", 0, "ins_c")]
+    explanation = reasoning_engine._explain_priority(actions)
+    assert explanation["reason"] == "severity"
+    assert "tied" in explanation["statement"].lower()
+
+
+# 5. Warning A (weight 0) vs Warning B (weight 0) - no fabricated
+#    consequence explanation when neither has any real consequence data.
+def test_boundary_no_consequence_data_on_either_side():
+    actions = [_ra("warning", 0, "ins_a", dependents=[]), _ra("warning", 0, "ins_b", dependents=[])]
+    explanation = reasoning_engine._explain_priority(actions)
+    assert explanation["reason"] == "severity"
+    assert "tied" in explanation["statement"].lower()
+
+
+# 6. Warning (weight 1) vs Advisory (weight 10) - warning remains first
+#    purely on severity, regardless of the advisory's own higher weight.
+def test_boundary_warning_beats_higher_weight_advisory():
+    actions = sorted(
+        [_ra("warning", 1, "ins_warning"), _ra("advisory", 10, "ins_advisory")],
+        key=lambda a: (reasoning_engine.SEVERITIES.index(a["severity"]), a["consequence_weight"]), reverse=True)
+    assert actions[0]["insight_id"] == "ins_warning"
+    explanation = reasoning_engine._explain_priority(actions)
+    assert explanation["reason"] == "severity"
+
+
+# 7. Critical (weight 0), Warning (weight 10), Advisory (weight 20) -
+#    critical remains first regardless of every other item's own weight.
+def test_boundary_critical_beats_everyone_regardless_of_weight():
+    actions = sorted(
+        [_ra("critical", 0, "ins_critical"), _ra("warning", 10, "ins_warning"), _ra("advisory", 20, "ins_advisory")],
+        key=lambda a: (reasoning_engine.SEVERITIES.index(a["severity"]), a["consequence_weight"]), reverse=True)
+    assert actions[0]["insight_id"] == "ins_critical"
+    explanation = reasoning_engine._explain_priority(actions)
+    assert explanation["reason"] == "severity"
+
+
+# 8. No recommendations - priority_explanation remains None.
+def test_boundary_no_recommendations_returns_none():
+    assert reasoning_engine._explain_priority([]) is None
+
+
+# ==========================================================================
+# Real construction test, repeated with the fix in place
+# ==========================================================================
+async def test_real_scenario_electrical_findings_tie_and_beat_unrelated_item():
+    """The Electrical activity's own two warning-tier findings
+    (planned_finish_missed and activity_blocked) are genuinely tied
+    with each other at the same consequence_weight - correctly
+    reported as a tie, not a fabricated "consequence" win, even though
+    both still rank above a genuinely unrelated warning with no
+    consequence data at all."""
+    project = await _make_project("PF Hardening No Critical Project")
+    now = _now()
+    a1 = await _make_activity(project["id"], "Foundation", status="completed")
+    a2 = await _make_activity(project["id"], "Electrical", status="blocked", depends_on=[a1])
+    await _mock_db.workflow_activities.update_one(
+        {"id": a2}, {"$set": {"planned_finish": _iso(now - timedelta(days=4))}})
+    await _make_activity(project["id"], "Plastering", status="not_started", depends_on=[a2])
+    await _mock_db.reasoning_insights.insert_one({
+        "id": f"ins_{uuid.uuid4()}", "project_id": project["id"], "status": "open",
+        "domain": "management", "severity": "warning", "rule_id": "management.stale_open_item",
+        "observation": "An unrelated item is stale.", "recommendation": "Review it.",
+        "suggested_operational_action": {"category": "follow_up", "title": "Review", "description": ""},
+        "evidence_ids": [], "created_at": _iso(now), "updated_at": _iso(now),
+    })
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    warning_items = [a for a in result["recommended_actions"] if a["severity"] == "warning"]
+    # Both Electrical-linked findings genuinely tie at weight 1,
+    # both above the unrelated item at weight 0 - the honest
+    # explanation is a tie, not a fabricated "consequence" win.
+    top_two_weights = [warning_items[0]["consequence_weight"], warning_items[1]["consequence_weight"]]
+    assert top_two_weights == [1, 1]
+    assert result["priority_explanation"]["reason"] == "severity"
+    assert "tied" in result["priority_explanation"]["statement"].lower()
+
+
+async def test_real_scenario_equal_weight_same_severity_does_not_fabricate():
+    """Two same-severity findings with the SAME real consequence_weight
+    (both linked to activities with exactly one dependent each) must
+    not have Atlas pretend one won because of consequence."""
+    project = await _make_project("PF Hardening Equal Weight Project")
+    now = _now()
+    a1 = await _make_activity(project["id"], "Foundation", status="completed")
+    a2 = await _make_activity(project["id"], "Electrical", status="blocked", depends_on=[a1])
+    await _mock_db.workflow_activities.update_one(
+        {"id": a2}, {"$set": {"planned_finish": _iso(now - timedelta(days=4))}})
+    a3 = await _make_activity(project["id"], "Plastering", status="not_started", depends_on=[a2])
+    a4 = await _make_activity(project["id"], "Plumbing", status="blocked", depends_on=[a1])
+    await _mock_db.workflow_activities.update_one(
+        {"id": a4}, {"$set": {"planned_finish": _iso(now - timedelta(days=4))}})
+    a5 = await _make_activity(project["id"], "Tiling", status="not_started", depends_on=[a4])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    warning_weights = [a["consequence_weight"] for a in result["recommended_actions"] if a["severity"] == "warning"]
+    if warning_weights.count(max(warning_weights)) > 1:
+        # A genuine tie exists among the warning-tier items - the
+        # explanation (if it's a warning at the top) must not claim
+        # consequence decided it.
+        if result["recommended_actions"][0]["severity"] == "warning":
+            assert result["priority_explanation"]["reason"] == "severity"
