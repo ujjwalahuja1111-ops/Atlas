@@ -1834,6 +1834,35 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
     open_insights = await list_insights(project_id, user=user, status="open")
     health = compute_project_health(snapshot, findings=fresh_findings, open_insight_count=len(open_insights))
 
+    def _responsible_for(activity_id: Optional[str], fallback_role: Optional[str]) -> Optional[dict]:
+        """Responsible-person join (narrow correction, not a new
+        relationship). A blocked activity can already carry a real
+        assigned person (assigned_to_user_name) and a real trade -
+        both real, existing data - but recommended_actions previously
+        surfaced only the generic suggested_responsible_role a CRE
+        rule computes, even when a specific person was already known.
+        Additive only: this produces a new, separate `responsible`
+        field; suggested_responsible_role itself is never touched, so
+        nothing that already reads it changes behavior.
+
+        Exact priority, matching the brief's own three-step rule:
+        1. A real assigned person on the linked activity, if one exists.
+        2. Otherwise, the activity's own real trade, if one exists.
+        3. Otherwise, the existing suggested_responsible_role fallback.
+        Never fabricated: if none of the three apply, returns None.
+        """
+        activity = None
+        if activity_id:
+            by_id = {a["id"]: a for a in snapshot["workflow_activities"]}
+            activity = by_id.get(activity_id)
+        if activity and activity.get("assigned_to_user_name"):
+            return {"type": "person", "name": activity["assigned_to_user_name"]}
+        if activity and activity.get("trade"):
+            return {"type": "trade", "name": activity["trade"]}
+        if fallback_role:
+            return {"type": "role", "name": fallback_role}
+        return None
+
     def _consequence(activity_id: Optional[str]) -> tuple[int, list[dict]]:
         """Returns (weight, dependents) - weight is 0 (never penalized,
         never fabricated) when there is no linked activity or it has
@@ -1856,6 +1885,7 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
             "observation": i.get("observation"),
             "suggested_action": i.get("suggested_operational_action"),
             "suggested_responsible_role": i.get("suggested_responsible_role"),
+            "responsible": _responsible_for(i.get("affected_activity_id"), i.get("suggested_responsible_role")),
             "created_at": i.get("created_at"),
             "source": "persisted",
             "affected_activity_id": i.get("affected_activity_id"),
@@ -1892,6 +1922,7 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
             "observation": f["observation"],
             "suggested_action": f["suggested_operational_action"],
             "suggested_responsible_role": f.get("suggested_responsible_role"),
+            "responsible": _responsible_for(f.get("affected_activity_id"), f.get("suggested_responsible_role")),
             "created_at": None,
             "source": "current",
             "affected_activity_id": f.get("affected_activity_id"),

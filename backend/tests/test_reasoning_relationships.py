@@ -1372,3 +1372,131 @@ async def test_non_client_roles_see_full_new_fields():
 
 # X. All existing Phase E/F tests remain green — confirmed by the full
 # 66-test suite (Phase E/F/G) re-passing entirely unmodified in this run.
+
+
+# ==========================================================================
+# Responsible-Person Join — narrow correction, not a new relationship.
+# recommended_actions previously surfaced only the generic
+# suggested_responsible_role; a blocked activity can already carry a
+# real assigned person and a real trade. Adds a new, additive
+# `responsible` field with the exact three-tier priority: assigned
+# person, then trade, then the existing role fallback - never
+# fabricated. suggested_responsible_role itself is never touched.
+# ==========================================================================
+
+async def _assign_activity(activity_id, user_id, user_name):
+    """Direct DB write mirroring what the real /assign route sets,
+    without needing a full users collection round-trip for these
+    focused tests."""
+    await _mock_db.workflow_activities.update_one(
+        {"id": activity_id}, {"$set": {"assigned_to_user_id": user_id, "assigned_to_user_name": user_name}})
+
+
+async def test_responsible_join_prefers_real_assigned_person():
+    project = await _make_project("RP Assigned Person Project")
+    a1, a2, a3 = await _seed_electrical_chain(project["id"])
+    await _assign_activity(a2, "u_ramesh", "Ramesh Supervisor")
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    entry = next(a for a in result["recommended_actions"] if a["affected_activity_id"] == a2)
+    assert entry["responsible"] == {"type": "person", "name": "Ramesh Supervisor"}
+    # suggested_responsible_role itself must remain completely untouched
+    assert entry["suggested_responsible_role"] == "project_manager"
+
+
+async def test_responsible_join_falls_back_to_trade_when_no_person_assigned():
+    project = await _make_project("RP Trade Fallback Project")
+    a1, a2, a3 = await _seed_electrical_chain(project["id"])
+    # No assignment set - the activity already carries a real trade
+    # ("Electrical", set by _make_activity's own default in some
+    # helpers; confirm explicitly here regardless of helper defaults).
+    await _mock_db.workflow_activities.update_one({"id": a2}, {"$set": {"trade": "Electrical"}})
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    entry = next(a for a in result["recommended_actions"] if a["affected_activity_id"] == a2)
+    assert entry["responsible"] == {"type": "trade", "name": "Electrical"}
+
+
+async def test_responsible_join_falls_back_to_role_when_neither_person_nor_trade():
+    project = await _make_project("RP Role Fallback Project")
+    a1, a2, a3 = await _seed_electrical_chain(project["id"])
+    await _mock_db.workflow_activities.update_one({"id": a2}, {"$set": {"trade": None}})
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    entry = next(a for a in result["recommended_actions"] if a["affected_activity_id"] == a2)
+    assert entry["responsible"] == {"type": "role", "name": "project_manager"}
+
+
+async def test_responsible_join_none_when_nothing_applies():
+    """A finding whose originating rule sets no suggested_responsible_role
+    at all, and whose activity has neither an assigned person nor a
+    trade - the join must return None, never fabricate a value."""
+    project = await _make_project("RP Nothing Applies Project")
+    now = _now()
+    await _mock_db.reasoning_insights.insert_one({
+        "id": f"ins_{uuid.uuid4()}", "project_id": project["id"], "status": "open",
+        "domain": "management", "severity": "advisory", "rule_id": "management.no_role_rule",
+        "observation": "A minor item.", "recommendation": "Review when convenient.",
+        "suggested_operational_action": {"category": "follow_up", "title": "Review", "description": ""},
+        "suggested_responsible_role": None,
+        "evidence": {"workflow_activities": [], "operational_items": [], "events": [], "media": [],
+                     "approvals": [], "knowledge_items": [], "absences": []},
+        "evidence_ids": [], "created_at": _iso(now), "updated_at": _iso(now),
+    })
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    entry = result["recommended_actions"][0]
+    assert entry["affected_activity_id"] is None
+    assert entry["responsible"] is None
+
+
+async def test_responsible_join_handles_multiple_actions_different_activities_independently():
+    project = await _make_project("RP Multiple Activities Project")
+    now = _now()
+    a1 = await _make_activity(project["id"], "Foundation", status="completed")
+    a2 = await _make_activity(project["id"], "Electrical", status="blocked", depends_on=[a1])
+    await _mock_db.workflow_activities.update_one(
+        {"id": a2}, {"$set": {"planned_finish": _iso(now - timedelta(days=4)), "trade": "Electrical"}})
+    await _assign_activity(a2, "u_ramesh", "Ramesh Supervisor")
+    a4 = await _make_activity(project["id"], "Plumbing", status="not_started")
+    await _mock_db.workflow_activities.update_one({"id": a4}, {"$set": {"trade": "Plumbing"}})
+    # a4's own finding is seeded directly as a persisted insight with a
+    # distinct rule_id (same pattern as _seed_critical_safety), rather
+    # than via a second blocked activity sharing
+    # construction_logic.activity_blocked's own rule_id with a2 - two
+    # activities triggering the identical rule_id would collide under
+    # Phase E's own existing reconciliation (which dedupes fresh
+    # findings by rule_id alone), a separate, pre-existing behavior
+    # this narrow correction is not scoped to touch.
+    await _mock_db.reasoning_insights.insert_one({
+        "id": f"ins_{uuid.uuid4()}", "project_id": project["id"], "status": "open",
+        "domain": "procurement", "severity": "warning", "rule_id": "procurement.material_lead_time",
+        "observation": "Plumbing materials have a long lead time.", "recommendation": "Order now.",
+        "suggested_operational_action": {"category": "follow_up", "title": "Order plumbing materials", "description": ""},
+        "suggested_responsible_role": "project_manager",
+        "affected_activity_id": a4, "affected_activity_name": "Plumbing",
+        "evidence": {"workflow_activities": [], "operational_items": [], "events": [], "media": [],
+                     "approvals": [], "knowledge_items": [], "absences": []},
+        "evidence_ids": [], "created_at": _iso(now), "updated_at": _iso(now),
+    })
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    entry_a2 = next(a for a in result["recommended_actions"] if a["affected_activity_id"] == a2)
+    entry_a4 = next(a for a in result["recommended_actions"] if a["affected_activity_id"] == a4)
+    assert entry_a2["responsible"] == {"type": "person", "name": "Ramesh Supervisor"}
+    assert entry_a4["responsible"] == {"type": "trade", "name": "Plumbing"}
+
+
+async def test_responsible_join_none_activity_id_still_uses_role_fallback():
+    """A finding with no affected_activity_id at all (e.g. the safety
+    rule) must still fall back correctly to the role, exactly as
+    before this correction."""
+    project = await _make_project("RP No Activity Id Project")
+    await _seed_critical_safety(project["id"])
+    result = await reasoning_engine.explain_health(project["id"], user=PM)
+    safety_entry = next(a for a in result["recommended_actions"] if a["rule_id"] == "safety.unresolved_high_priority")
+    assert safety_entry["affected_activity_id"] is None
+    assert safety_entry["responsible"] == {"type": "role", "name": "management"}
+
+
+# Severity ranking, consequence weighting, RBAC, and navigation
+# semantics unchanged — confirmed by the full existing 80-test suite
+# (including test_critical_safety_stays_first_despite_verified_consequence,
+# test_client_still_restricted_from_priority_data, and
+# test_destination_appears_for_activity_linked_finding) re-passing
+# entirely unmodified in this same run.
