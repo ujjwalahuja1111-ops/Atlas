@@ -12,6 +12,7 @@ import {
   type WorkflowActivity, type WorkflowStatus, type WorkflowScheduleInput, type ActivityEvidenceEvent,
 } from '@/src/workflow_api';
 import { apiGetCommercialSummary, type Milestone } from '@/src/commercial_api';
+import { apiGetMe } from '@/src/api';
 
 const STATUS_ORDER: WorkflowStatus[] = ['not_started', 'ready', 'in_progress', 'blocked', 'completed'];
 
@@ -54,6 +55,19 @@ export default function WorkflowViewer() {
   const [expandedMilestone, setExpandedMilestone] = useState<string | null>(null);
   const [projectMilestones, setProjectMilestones] = useState<Milestone[] | null>(null);
   const [milestoneDraft, setMilestoneDraft] = useState<string | null>(null);
+  // Phase N correction — link_workflow_activity_milestone (the existing
+  // backend route this screen already calls) has always been
+  // management/project_manager-only (Phase G's own original RBAC,
+  // unchanged). This reads the real, logged-in user's own role - not
+  // the device-local "view as" simulation used elsewhere for demo
+  // purposes - purely to decide whether to show the control at all,
+  // avoiding a guaranteed 403 rather than adding any new authorization
+  // logic. The backend remains the sole, final authority either way.
+  const [canAuthorMilestones, setCanAuthorMilestones] = useState(false);
+  useEffect(() => {
+    apiGetMe().then((me) => setCanAuthorMilestones(me.role === 'management' || me.role === 'project_manager'))
+      .catch(() => setCanAuthorMilestones(false));
+  }, []);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -285,41 +299,53 @@ export default function WorkflowViewer() {
                     </View>
                   )}
 
-                  {/* Phase N — Relationship Authoring: "Milestone" */}
-                  <Pressable testID={`workflow-milestone-toggle-${a.id}`} onPress={() => toggleMilestonePicker(a)}
-                    style={styles.scheduleToggle}>
-                    <Ionicons name="flag-outline" size={14} color={theme.color.textDim} />
-                    <Text style={styles.scheduleToggleText} numberOfLines={1}>
-                      {a.milestone_id
-                        ? (projectMilestones?.find((m) => m.id === a.milestone_id)?.name || 'Linked to a milestone')
-                        : 'No milestone linked — tap to connect'}
-                    </Text>
-                    <Ionicons name={expandedMilestone === a.id ? 'chevron-up' : 'chevron-down'} size={14} color={theme.color.textDim} />
-                  </Pressable>
-
-                  {expandedMilestone === a.id && (
-                    <View style={styles.scheduleBox}>
-                      {projectMilestones === null ? (
-                        <ActivityIndicator size="small" color={theme.color.textDim} />
-                      ) : projectMilestones.length === 0 ? (
-                        <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No milestones set up for this project yet</Text>
-                      ) : (
-                        projectMilestones.map((m) => (
-                          <Pressable key={m.id} testID={`pick-milestone-${m.id}`}
-                            onPress={() => setMilestoneDraft(m.id)} style={styles.milestoneOptionRow}>
-                            <Ionicons name={milestoneDraft === m.id ? 'radio-button-on' : 'radio-button-off'} size={16}
-                              color={milestoneDraft === m.id ? theme.color.info : theme.color.textDim} />
-                            <Text style={styles.milestoneOptionLabel}>{m.name}</Text>
-                          </Pressable>
-                        ))
-                      )}
-                      <Pressable testID={`milestone-save-${a.id}`} onPress={() => saveMilestone(a)}
-                        disabled={busyId === a.id || !milestoneDraft} style={styles.scheduleSaveBtn}>
-                        {busyId === a.id ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : (
-                          <Text style={styles.scheduleSaveBtnText}>SAVE MILESTONE</Text>
-                        )}
+                  {/* Phase N — Relationship Authoring: "Milestone".
+                      Shown only to roles link_workflow_activity_milestone
+                      (the existing, unchanged backend route) already
+                      authorizes - Management and PM. Supervisor/Client
+                      never see the control at all, avoiding a
+                      guaranteed 403 rather than adding any new
+                      authorization logic; "Work Affected" on the
+                      operational item screen is unaffected and remains
+                      available to Supervisor exactly as before. */}
+                  {canAuthorMilestones && (
+                    <>
+                      <Pressable testID={`workflow-milestone-toggle-${a.id}`} onPress={() => toggleMilestonePicker(a)}
+                        style={styles.scheduleToggle}>
+                        <Ionicons name="flag-outline" size={14} color={theme.color.textDim} />
+                        <Text style={styles.scheduleToggleText} numberOfLines={1}>
+                          {a.milestone_id
+                            ? (projectMilestones?.find((m) => m.id === a.milestone_id)?.name || 'Linked to a milestone')
+                            : 'No milestone linked — tap to connect'}
+                        </Text>
+                        <Ionicons name={expandedMilestone === a.id ? 'chevron-up' : 'chevron-down'} size={14} color={theme.color.textDim} />
                       </Pressable>
-                    </View>
+
+                      {expandedMilestone === a.id && (
+                        <View style={styles.scheduleBox}>
+                          {projectMilestones === null ? (
+                            <ActivityIndicator size="small" color={theme.color.textDim} />
+                          ) : projectMilestones.length === 0 ? (
+                            <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No milestones set up for this project yet</Text>
+                          ) : (
+                            projectMilestones.map((m) => (
+                              <Pressable key={m.id} testID={`pick-milestone-${m.id}`}
+                                onPress={() => setMilestoneDraft(m.id)} style={styles.milestoneOptionRow}>
+                                <Ionicons name={milestoneDraft === m.id ? 'radio-button-on' : 'radio-button-off'} size={16}
+                                  color={milestoneDraft === m.id ? theme.color.info : theme.color.textDim} />
+                                <Text style={styles.milestoneOptionLabel}>{m.name}</Text>
+                              </Pressable>
+                            ))
+                          )}
+                          <Pressable testID={`milestone-save-${a.id}`} onPress={() => saveMilestone(a)}
+                            disabled={busyId === a.id || !milestoneDraft} style={styles.scheduleSaveBtn}>
+                            {busyId === a.id ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : (
+                              <Text style={styles.scheduleSaveBtnText}>SAVE MILESTONE</Text>
+                            )}
+                          </Pressable>
+                        </View>
+                      )}
+                    </>
                   )}
 
                   {/* Beta-04 — Completion Evidence */}
