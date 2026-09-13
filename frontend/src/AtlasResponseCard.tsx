@@ -22,6 +22,13 @@ const SEVERITY_DOT: Record<string, string> = {
   critical: '🔴', high: '🔴', medium: '🟠', low: '🟢',
 };
 
+// Phase H — the three real, existing suggested_responsible_role values
+// (confirmed against the backend's own SUGGESTED_ROLES) mapped to plain,
+// user-facing labels. Never invents a fourth role.
+const ROLE_LABEL: Record<string, string> = {
+  project_manager: 'Project Manager', site_supervisor: 'Site Supervisor', management: 'Management',
+};
+
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <View style={{ marginTop: 12 }}>
@@ -76,17 +83,28 @@ function HealthResponse({ data, projectId }: { data: any; projectId?: string }) 
 
       {Array.isArray(data.recommended_actions) && data.recommended_actions.length > 0 && (
         <Section label="RECOMMENDED NEXT STEPS">
-          {data.recommended_actions.slice(0, 4).map((a: any, i: number) => (
-            <View key={i} style={styles.actionRow}>
-              <Text style={styles.actionDot}>{SEVERITY_DOT[a.severity] || '•'}</Text>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.actionText}>{a.suggested_action?.title || a.observation}</Text>
-                {a.suggested_action?.title && a.observation && (
-                  <Text style={styles.actionSubtext}>{a.observation}</Text>
-                )}
+          {data.recommended_actions.slice(0, 4).map((a: any, i: number) => {
+            const roleLabel = ROLE_LABEL[a.suggested_responsible_role] || null;
+            const dest = a.destination;
+            return (
+              <View key={i} style={styles.actionRow}>
+                <Text style={styles.actionDot}>{SEVERITY_DOT[a.severity] || '•'}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.actionText}>{a.suggested_action?.title || a.observation}</Text>
+                  {a.suggested_action?.title && a.observation && (
+                    <Text style={styles.actionSubtext}>{a.observation}</Text>
+                  )}
+                  {roleLabel && <Text style={styles.actionSubtext}>Responsible: {roleLabel}</Text>}
+                  {dest?.type === 'workflow' && dest.project_id && (
+                    <ActionButton label="View activity" onPress={() => router.push(`/workflow/${dest.project_id}`)} />
+                  )}
+                  {dest?.type === 'operational_item' && dest.item_id && (
+                    <ActionButton label="Open issue" onPress={() => router.push(`/op/${dest.item_id}`)} />
+                  )}
+                </View>
               </View>
-            </View>
-          ))}
+            );
+          })}
         </Section>
       )}
 

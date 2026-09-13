@@ -1639,28 +1639,88 @@ async def project_health(project_id: str, *, user: dict) -> dict:
     return compute_project_health(snapshot, open_insight_count=len(open_now))
 
 
+def _urgency(snapshot: dict, activity_id: Optional[str]) -> int:
+    """Phase H — deterministic urgency, measured as overdue_days: how
+    many whole days past its own real planned_finish the linked
+    activity currently is. Zero (never fabricated, never treated as
+    urgent) when: no linked activity, the activity has no
+    planned_finish, or the activity is not yet overdue.
+
+    Deliberately does NOT count down toward a future planned_finish —
+    "due in 7 days" and "due today" both read as 0. Whether something
+    not-yet-due should count as urgent is genuinely ambiguous (sooner
+    could mean more urgent or simply not yet relevant); overdue-ness
+    is the one unambiguous direction, so this stays the smallest
+    defensible model rather than inventing a countdown concept the
+    brief never asked for.
+    """
+    if not activity_id:
+        return 0
+    by_id = {a["id"]: a for a in snapshot["workflow_activities"]}
+    activity = by_id.get(activity_id)
+    if not activity or not activity.get("planned_finish"):
+        return 0
+    planned = _parse_iso(activity["planned_finish"])
+    if not planned:
+        return 0
+    now = snapshot_now(snapshot)
+    overdue = (now - planned).days
+    return max(0, overdue)
+
+
+def _destination(item: dict, project_id: str) -> Optional[dict]:
+    """Phase H — the smallest possible real destination reference,
+    reusing two existing, already-shipped frontend routes exactly as
+    they exist today. Never invents a new screen.
+
+    Priority, exactly as specified: (1) affected_activity_id, if
+    present, routes to the real, existing project-level workflow
+    screen (/workflow/{project_id}) — this is honestly a
+    project-scoped destination, not activity-specific navigation,
+    since no activity-highlighting capability exists on that screen
+    today (confirmed by inspection before this phase began); it is
+    still real, working navigation to where the activity lives, not a
+    fabricated precision the frontend can't deliver. (2) Otherwise, if
+    the finding's own evidence names exactly one operational item,
+    routes to the real, existing item detail screen (/op/{item_id}) —
+    unambiguous only when there is exactly one; never guessed when
+    there's more than one. (3) Otherwise, no destination — never a
+    fake button.
+    """
+    if item.get("affected_activity_id"):
+        return {"type": "workflow", "project_id": project_id}
+    op_items = (item.get("evidence") or {}).get("operational_items") or []
+    if len(op_items) == 1 and op_items[0].get("id"):
+        return {"type": "operational_item", "item_id": op_items[0]["id"]}
+    return None
+
+
 def _explain_priority(recommended_actions: list[dict]) -> Optional[dict]:
-    """Phase F — a plain, deterministic explanation of why the
+    """Phase F/H — a plain, deterministic explanation of why the
     top-ranked recommendation ranks first, composed from data already
     on the ranked list itself (severity, consequence_weight,
-    downstream_dependents) - never a second LLM call, never invented
+    urgency_overdue_days) - never a second LLM call, never invented
     comparison language. Returns None when there is nothing to rank.
 
-    Three honest cases:
+    Four honest cases, checked in the same order as the ranking keys
+    themselves (severity, then consequence_weight, then urgency):
     - No other item shares this one's severity tier -> severity alone
       explains the ranking.
-    - Another item shares the same severity tier, AND the top item's
-      own consequence_weight is strictly greater than every competing
-      same-tier item's own weight -> the consequence tie-break is what
-      actually decided it, named specifically (Pre-Merge Hardening
-      Review fix: the ranking keys themselves - severity, then
-      consequence_weight - are compared here, not merely "does the top
-      item have any dependents at all," which incorrectly claimed
-      consequence decided a ranking that was actually a genuine tie on
-      both keys).
-    - Same severity tier AND the same (or no worse) consequence_weight
-      as a competitor -> an honest stable-tie statement; never invents
-      a reason that isn't actually supported by the ranking keys.
+    - Same severity tier, AND the top item's own consequence_weight is
+      strictly greater than every competing same-tier item's own
+      weight -> consequence decided it (Pre-Merge Hardening Review
+      fix: compares the actual ranking keys, never merely "does the
+      top item have any dependents at all").
+    - Same severity AND same consequence_weight as at least one
+      competitor, AND the top item's own urgency_overdue_days is
+      strictly greater than every such competitor's own value ->
+      urgency decided it. Same discipline as the consequence fix:
+      checked against the real ranking keys, not "is this item
+      overdue at all" (which would wrongly claim urgency decided a
+      three-way tie).
+    - Tied on all three keys with at least one competitor -> an
+      honest stable-tie statement; never invents a reason that isn't
+      actually supported by the ranking keys.
     """
     if not recommended_actions:
         return None
@@ -1694,9 +1754,27 @@ def _explain_priority(recommended_actions: list[dict]) -> Optional[dict]:
                 f"({names}) — more than the other {top['severity']}-level issue(s) open right now."
             ),
         }
-    # Same severity tier AND the same (or no worse) consequence_weight
-    # as at least one competitor — a genuine tie on both ranking keys.
-    # Never fabricate a distinction that isn't actually there.
+
+    # Same severity AND same consequence_weight as at least one
+    # competitor - urgency only decides it when the top item's own
+    # overdue_days is strictly greater than every such competitor's.
+    same_tier_and_weight = [a for a in same_tier if (a.get("consequence_weight") or 0) == top_weight]
+    top_urgency = top.get("urgency_overdue_days") or 0
+    max_competing_urgency = max((a.get("urgency_overdue_days") or 0) for a in same_tier_and_weight)
+
+    if top_urgency > max_competing_urgency:
+        return {
+            "insight_id": top.get("insight_id"),
+            "reason": "urgency",
+            "statement": (
+                f"It is currently classified as {top['severity']}, with the same downstream "
+                f"consequence as the other {top['severity']}-level issue(s), but it is "
+                f"{top_urgency} day{'s' if top_urgency != 1 else ''} overdue — more than the others."
+            ),
+        }
+
+    # Tied on all three ranking keys with at least one competitor — a
+    # genuine tie. Never fabricate a distinction that isn't there.
     return {
         "insight_id": top.get("insight_id"),
         "reason": "severity",
@@ -1770,20 +1848,25 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
         if not i.get("suggested_operational_action"):
             continue
         weight, dependents = _consequence(i.get("affected_activity_id"))
-        recommended_actions.append({
+        entry = {
             "insight_id": i["id"],
             "rule_id": i.get("rule_id"),
             "domain": i.get("domain"),
             "severity": i.get("severity"),
             "observation": i.get("observation"),
             "suggested_action": i.get("suggested_operational_action"),
+            "suggested_responsible_role": i.get("suggested_responsible_role"),
             "created_at": i.get("created_at"),
             "source": "persisted",
             "affected_activity_id": i.get("affected_activity_id"),
             "affected_activity_name": i.get("affected_activity_name"),
             "consequence_weight": weight,
             "downstream_dependents": dependents,
-        })
+            "urgency_overdue_days": _urgency(snapshot, i.get("affected_activity_id")),
+            "evidence": i.get("evidence"),
+        }
+        entry["destination"] = _destination(entry, project_id)
+        recommended_actions.append(entry)
 
     # Phase E — reconciliation. drivers (always fresh) and
     # recommended_actions (persisted) can genuinely disagree on how
@@ -1801,26 +1884,32 @@ async def explain_health(project_id: str, *, user: dict) -> dict:
         if not f.get("suggested_operational_action"):
             continue
         weight, dependents = _consequence(f.get("affected_activity_id"))
-        recommended_actions.append({
+        entry = {
             "insight_id": None,
             "rule_id": f["rule_id"],
             "domain": f["domain"],
             "severity": f["severity"],
             "observation": f["observation"],
             "suggested_action": f["suggested_operational_action"],
+            "suggested_responsible_role": f.get("suggested_responsible_role"),
             "created_at": None,
             "source": "current",
             "affected_activity_id": f.get("affected_activity_id"),
             "affected_activity_name": f.get("affected_activity_name"),
             "consequence_weight": weight,
             "downstream_dependents": dependents,
-        })
+            "urgency_overdue_days": _urgency(snapshot, f.get("affected_activity_id")),
+            "evidence": f.get("evidence"),
+        }
+        entry["destination"] = _destination(entry, project_id)
+        recommended_actions.append(entry)
         persisted_rule_ids.add(f["rule_id"])
     # Severity is still the PRIMARY key (unchanged) - consequence_weight
-    # only breaks ties within the same severity tier, never lets a
-    # lower-severity item outrank a higher one. This is the whole of
-    # Phase F's own ranking change.
-    recommended_actions.sort(key=lambda a: (SEVERITIES.index(a["severity"]), a["consequence_weight"]), reverse=True)
+    # second, urgency (overdue_days) third (Phase H) - never lets a
+    # lower-severity or lower-consequence item outrank a higher one.
+    recommended_actions.sort(
+        key=lambda a: (SEVERITIES.index(a["severity"]), a["consequence_weight"], a["urgency_overdue_days"]),
+        reverse=True)
     priority_explanation = _explain_priority(recommended_actions)
 
     most_recent_insight_at = max((i.get("created_at") or "" for i in open_insights), default=None)
