@@ -96,7 +96,7 @@ function HealthResponse({ data, projectId }: { data: any; projectId?: string }) 
                   )}
                   {roleLabel && <Text style={styles.actionSubtext}>Responsible: {roleLabel}</Text>}
                   {dest?.type === 'workflow' && dest.project_id && (
-                    <ActionButton label="View activity" onPress={() => router.push(`/workflow/${dest.project_id}`)} />
+                    <ActionButton label="Open workflow" onPress={() => router.push(`/workflow/${dest.project_id}`)} />
                   )}
                   {dest?.type === 'operational_item' && dest.item_id && (
                     <ActionButton label="Open issue" onPress={() => router.push(`/op/${dest.item_id}`)} />
