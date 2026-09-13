@@ -421,11 +421,45 @@ def direct_dependents(snapshot: dict, activity_id: str) -> list[dict]:
     ]
 
 
+def milestone_for_activity(snapshot: dict, activity_id: str) -> Optional[dict]:
+    """RELATIONSHIP (fact, only when explicitly linked) — the
+    commercial milestone this activity contributes to, if any. Never
+    inferred: only ever populated via workflow_engine.link_milestone().
+    Uses only data already present in the snapshot (workflow_activities,
+    milestones) — no new database query."""
+    by_id = {a["id"]: a for a in snapshot["workflow_activities"]}
+    activity = by_id.get(activity_id)
+    if not activity or not activity.get("milestone_id"):
+        return None
+    milestones_by_id = {m["id"]: m for m in snapshot.get("milestones", [])}
+    milestone = milestones_by_id.get(activity["milestone_id"])
+    if not milestone:
+        return None
+    return {
+        "provenance": "relationship:fact",
+        "milestone_id": milestone["id"],
+        "name": milestone["name"],
+        "status": milestone["status"],
+        "contract_value": milestone.get("contract_value"),
+    }
+
+
 def blocking_consequence_chain(snapshot: dict, activity_id: str) -> dict:
     """The smallest deterministic consequence traversal that proves the
     architecture — exactly two hops, provenance preserved at every
     step, never a general N-hop engine. See the Phase E Stage 1
-    proposal Section 7 for the full design rationale."""
+    proposal Section 7 for the full design rationale.
+
+    Phase G — extended to reach commercial milestone information,
+    checked independently for the blocked activity itself (direct) and
+    each of its direct dependents (indirect) — never collapsed into
+    one claim, never summed, deduplicated by milestone_id (a milestone
+    reached directly is never also shown as indirect). milestone.
+    contract_value is presented only as "milestone value" — never as a
+    delay cost, loss, or damage figure, per the Stage 2A verification's
+    own explicit finding that the data does not support a causal delay-
+    cost claim. No name-based (stage_of_activity) fallback — removed
+    from scope per Stage 2A's own recommendation."""
     by_id = {a["id"]: a for a in snapshot["workflow_activities"]}
     activity = by_id.get(activity_id)
     if not activity:
@@ -460,14 +494,61 @@ def blocking_consequence_chain(snapshot: dict, activity_id: str) -> dict:
             "statement": (f"{names} cannot proceed as planned while '{activity['name']}' remains "
                           f"{activity.get('status')}."),
         })
-    # Handover is never claimed as affected unless a real Activity ->
-    # Milestone/Handover link exists (it doesn't — see Stage 1 proposal
-    # Section 3) — say so plainly rather than infer it from lifecycle
-    # stage alone.
-    steps.append({
-        "provenance": "unknown",
-        "statement": "Handover exposure cannot yet be established from the available relationships.",
-    })
+
+    # Phase G — direct milestone: the blocked activity's own link.
+    seen_milestone_ids: set[str] = set()
+    direct_ms = milestone_for_activity(snapshot, activity_id)
+    milestone_found = False
+    if direct_ms:
+        milestone_found = True
+        seen_milestone_ids.add(direct_ms["milestone_id"])
+        steps.append({
+            "provenance": "relationship:fact",
+            "statement": f"'{activity['name']}' is explicitly linked to the '{direct_ms['name']}' milestone.",
+        })
+        steps.append({
+            "provenance": "derived",
+            "statement": f"The '{direct_ms['name']}' milestone is currently {direct_ms['status']}.",
+        })
+        if direct_ms.get("contract_value") is not None:
+            steps.append({
+                "provenance": "derived",
+                "statement": f"Milestone value: {direct_ms['contract_value']}.",
+            })
+
+    # Phase G — indirect milestone(s): each direct dependent's own
+    # link, checked independently. Never presented as if the blocked
+    # activity itself owned the link. Deduplicated against the direct
+    # milestone above and against repeats among dependents themselves.
+    for d in dependents:
+        dep_ms = milestone_for_activity(snapshot, d["activity_id"])
+        if not dep_ms or dep_ms["milestone_id"] in seen_milestone_ids:
+            continue
+        seen_milestone_ids.add(dep_ms["milestone_id"])
+        milestone_found = True
+        steps.append({
+            "provenance": "relationship:fact",
+            "statement": f"'{d['name']}', which depends on '{activity['name']}', is explicitly linked to the '{dep_ms['name']}' milestone.",
+        })
+        steps.append({
+            "provenance": "derived",
+            "statement": f"The '{dep_ms['name']}' milestone is currently {dep_ms['status']}.",
+        })
+        if dep_ms.get("contract_value") is not None:
+            steps.append({
+                "provenance": "derived",
+                "statement": f"Milestone value: {dep_ms['contract_value']}.",
+            })
+
+    if not milestone_found:
+        # Handover/milestone exposure is never claimed unless a real
+        # Activity -> Milestone link exists (checked above, both
+        # directly and indirectly) — say so plainly rather than infer
+        # it from lifecycle stage, activity name, or any other proxy.
+        steps.append({
+            "provenance": "unknown",
+            "statement": "Handover exposure cannot yet be established from the available relationships.",
+        })
     return {"activity_id": activity_id, "activity_name": activity["name"], "steps": steps}
 
 

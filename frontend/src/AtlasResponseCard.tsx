@@ -114,6 +114,14 @@ function ScheduleImpactResponse({ data, projectId }: { data: any; projectId?: st
           {blocked.slice(0, 4).map((b: any, i: number) => {
             const reasons: any[] = Array.isArray(b.blocking_reason) ? b.blocking_reason : [];
             const dependents: any[] = Array.isArray(b.downstream_dependents) ? b.downstream_dependents : [];
+            // Phase G — milestone information lives only in consequence_chain
+            // (blocking_reason/downstream_dependents don't carry it). Pull
+            // out just the milestone-relevant lines, in the backend's own
+            // exact wording — never relabeled as a cost or loss here either.
+            const chainSteps: any[] = Array.isArray(b.consequence_chain?.steps) ? b.consequence_chain.steps : [];
+            const milestoneLines = chainSteps
+              .filter((s: any) => typeof s.statement === 'string' && s.statement.toLowerCase().includes('milestone'))
+              .map((s: any) => s.statement);
             return (
               <View key={b.activity_id || i} style={styles.actionRow}>
                 <Text style={styles.actionDot}>🔴</Text>
@@ -127,6 +135,9 @@ function ScheduleImpactResponse({ data, projectId }: { data: any; projectId?: st
                   {dependents.length > 0 && (
                     <Text style={styles.actionSubtext}>Blocks: {dependents.map((d: any) => d.name).join(', ')}</Text>
                   )}
+                  {milestoneLines.map((line: string, li: number) => (
+                    <Text key={li} style={styles.actionSubtext}>{line}</Text>
+                  ))}
                 </View>
               </View>
             );

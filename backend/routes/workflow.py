@@ -153,6 +153,31 @@ async def assign_workflow_activity(activity_id: str, req: AssignActivityRequest,
         _raise_for(e)
 
 
+class LinkMilestoneRequest(BaseModel):
+    milestone_id: str
+
+
+@router.post("/workflow-activities/{activity_id}/milestone")
+async def link_workflow_activity_milestone(activity_id: str, req: LinkMilestoneRequest,
+                                           user: dict = Depends(get_current_user)):
+    """Phase G — Cross-Domain Relationship Extension. Explicitly,
+    humanly recording that this activity contributes to a specific
+    commercial milestone. Same RBAC shape as /assign directly above:
+    a commercial-adjacent write, management/project_manager-only,
+    Client explicitly forbidden — matching every other
+    commercially-adjacent write route in Atlas (assignment, client
+    approval decisions, milestone/payment mutations in
+    routes/commercial.py)."""
+    if user["role"] == "client":
+        raise HTTPException(status_code=403, detail="Clients cannot link activities to milestones.")
+    if user["role"] not in ("management", "project_manager"):
+        raise HTTPException(status_code=403, detail="Only Project Managers/management can link an activity to a milestone.")
+    try:
+        return await workflow_engine.link_milestone(activity_id, req.milestone_id, actor=user)
+    except ValueError as e:
+        _raise_for(e)
+
+
 class ProductionInputsRequest(BaseModel):
     # Freeform dict of {parameter_key: value} - which keys are valid is
     # determined entirely by the activity's own production_model.inputs

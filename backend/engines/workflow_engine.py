@@ -40,7 +40,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Optional
 from core.db import db
-from engines import knowledge_engine, memory_engine
+from engines import knowledge_engine, memory_engine, commercial_engine
 
 STATUSES = {"not_started", "ready", "in_progress", "blocked", "completed"}
 
@@ -194,6 +194,19 @@ async def generate_workflow(project_id: str, template_id: str, *, actor: dict) -
             # existed — Preserve Existing Projects, unmodified.
             "production_model_inputs": {},
             "production_model_result": None,
+            # Phase G — Cross-Domain Relationship Extension. The one new
+            # field this phase introduces: which commercial milestone
+            # this activity contributes to, if any. Optional, defaults
+            # None — existing documents are read identically whether or
+            # not they carry this field, no migration required. Never
+            # set at generation time (activities and milestones are
+            # created via entirely separate flows with no shared key,
+            # confirmed in Stage 1/2A inspection) — only ever set
+            # explicitly via link_milestone() below, matching the exact
+            # discipline operational_items.affected_activity_ids already
+            # established in Phase E: never inferred, never set by an
+            # LLM.
+            "milestone_id": None,
             "created_at": now,
             "updated_at": now,
             "status_updated_by_user_id": actor["id"],
@@ -234,6 +247,50 @@ async def get_workflow_activity(activity_id: str) -> Optional[dict]:
     if doc:
         doc["expected_duration_days"] = resolve_expected_duration(doc)
     return doc
+
+
+class MilestoneNotFoundError(WorkflowNotFoundError):
+    pass
+
+
+class CrossProjectMilestoneError(WorkflowError):
+    pass
+
+
+async def link_milestone(activity_id: str, milestone_id: str, *, actor: dict) -> dict:
+    """Phase G — Cross-Domain Relationship Extension. Explicitly,
+    humanly recording that this activity contributes to a specific
+    commercial milestone. Never inferred, never set by an LLM, never
+    derived from activity/milestone naming or timing (confirmed in
+    Stage 1/2A inspection that no such derivation is reliable or
+    currently possible — activities and milestones are created via
+    entirely separate flows with no shared key).
+
+    Validated in full before any write, matching the exact discipline
+    of operations_engine.link_affected_activities()'s own Pre-Merge
+    Hardening fix: the activity must exist, the milestone must exist,
+    and they must belong to the same project — a cross-project or
+    nonexistent id rejects the whole request, never a partial write
+    (trivially satisfied here since this is a single-field set, but
+    the same-project check is not optional)."""
+    activity = await db.workflow_activities.find_one({"id": activity_id}, {"_id": 0})
+    if not activity:
+        raise WorkflowNotFoundError(f"Workflow activity '{activity_id}' not found")
+
+    milestone = await commercial_engine.get_milestone(milestone_id)
+    if not milestone:
+        raise MilestoneNotFoundError(f"Milestone '{milestone_id}' not found")
+
+    if activity["project_id"] != milestone["project_id"]:
+        raise CrossProjectMilestoneError(
+            f"Milestone '{milestone_id}' belongs to a different project and cannot be "
+            "linked to this activity")
+
+    await _assert_project_visible(activity["project_id"], actor)
+
+    await db.workflow_activities.update_one(
+        {"id": activity_id}, {"$set": {"milestone_id": milestone_id, "updated_at": _now()}})
+    return await get_workflow_activity(activity_id)
 
 
 async def get_activity_evidence(activity_id: str, *, user: dict) -> list[dict]:
