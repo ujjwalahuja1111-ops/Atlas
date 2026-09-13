@@ -32,6 +32,8 @@ export type WorkflowActivity = {
   planned_finish: string | null;
   actual_start: string | null;
   actual_finish: string | null;
+  // Phase G field, surfaced here for Phase N's own authoring UI.
+  milestone_id: string | null;
   created_at: string;
   updated_at: string;
   status_updated_by_user_id: string;
@@ -53,6 +55,17 @@ export async function apiGenerateWorkflow(projectId: string, templateId: string)
 
 export async function apiGetWorkflow(projectId: string): Promise<WorkflowActivity[]> {
   const r = await apiFetch(`${BACKEND}/api/projects/${projectId}/workflow`, { headers: await authHeaders() });
+  return handle(r);
+}
+
+// Phase N — Relationship Authoring. Calls the existing, unmodified
+// Phase G route exactly (POST /workflow-activities/{id}/milestone).
+// Same-project ownership, atomic rejection, and RBAC are all enforced
+// server-side by link_milestone(), completely unchanged by this phase.
+export async function apiLinkMilestone(activityId: string, milestoneId: string): Promise<WorkflowActivity> {
+  const r = await apiFetch(`${BACKEND}/api/workflow-activities/${activityId}/milestone`, {
+    method: 'POST', headers: await jsonHeaders(), body: JSON.stringify({ milestone_id: milestoneId }),
+  });
   return handle(r);
 }
 

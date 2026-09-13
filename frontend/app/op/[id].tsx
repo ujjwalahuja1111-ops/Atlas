@@ -16,8 +16,10 @@ import type { Role } from '@/src/api';
 import {
   apiGetItem, apiTransitionItem, apiCommentItem, apiRequestClarification, apiSetBlocker, apiClearBlocker,
   apiListUsers, apiAssignItem, apiEditItem, apiVoiceUpdate, apiTextUpdate, apiMarkDuplicate, apiListItems,
+  apiLinkAffectedActivities,
   type OperationalItem, type OperationalEvent, type AssignableUser,
 } from '@/src/ops_api';
+import { apiGetWorkflow, type WorkflowActivity } from '@/src/workflow_api';
 import { humanBlocker } from '../(tabs)/ops';
 
 const HEALTH_COLOR: Record<string, string> = {
@@ -73,6 +75,12 @@ export default function OpDetail() {
   const [showBlockerPicker, setShowBlockerPicker] = useState(false);
   const [showAssignPicker, setShowAssignPicker] = useState(false);
   const [users, setUsers] = useState<AssignableUser[]>([]);
+  // Phase N — Relationship Authoring. "Work affected": which project
+  // activities to offer, and which the user has tapped so far (not
+  // yet saved until they explicitly confirm).
+  const [showActivityPicker, setShowActivityPicker] = useState(false);
+  const [projectActivities, setProjectActivities] = useState<WorkflowActivity[]>([]);
+  const [selectedActivityIds, setSelectedActivityIds] = useState<string[]>([]);
   // V3.3 additions
   const [editing, setEditing] = useState<any | null>(null);
   const [showDupPicker, setShowDupPicker] = useState(false);
@@ -155,6 +163,28 @@ export default function OpDetail() {
     setBusy(true);
     try { await apiAssignItem(item.id, u.id); await load(); }
     catch (e) { console.warn(e); }
+    finally { setBusy(false); }
+  };
+  // Phase N — "Work affected." Opens the picker with this project's
+  // own activities (never another project's — the backend is still
+  // the final authority, but the picker itself only ever offers
+  // same-project options), pre-selecting whatever is already linked
+  // so re-opening the picker shows true current state, not a blank
+  // slate.
+  const openActivityPicker = async () => {
+    try { setProjectActivities(await apiGetWorkflow(item.project_id)); } catch { setProjectActivities([]); }
+    setSelectedActivityIds(item.affected_activity_ids || []);
+    setShowActivityPicker(true);
+  };
+  const toggleActivitySelection = (activityId: string) => {
+    setSelectedActivityIds((prev) =>
+      prev.includes(activityId) ? prev.filter((id) => id !== activityId) : [...prev, activityId]);
+  };
+  const confirmActivitySelection = async () => {
+    setShowActivityPicker(false);
+    setBusy(true);
+    try { await apiLinkAffectedActivities(item.id, selectedActivityIds); await load(); }
+    catch (e) { Alert.alert('Could not save', e instanceof Error ? e.message : 'Please try again.'); }
     finally { setBusy(false); }
   };
   const onComment = async () => {
@@ -448,6 +478,14 @@ export default function OpDetail() {
                     <Text style={[styles.actionLabel, { color: '#9C27B0' }]}>FLAG BLOCKER</Text>
                   </Pressable>
                 )}
+                <Pressable testID="link-affected-activities" onPress={openActivityPicker} disabled={busy}
+                  style={[styles.actionBtn, { borderColor: theme.color.info }]}>
+                  <Ionicons name="git-branch-outline" size={18} color={theme.color.info} />
+                  <Text style={[styles.actionLabel, { color: theme.color.info }]}>
+                    {(item.affected_activity_ids?.length || 0) > 0
+                      ? `WORK AFFECTED (${item.affected_activity_ids!.length})` : 'WORK AFFECTED'}
+                  </Text>
+                </Pressable>
               </View>
 
               {/* V3.3 secondary actions row */}
@@ -543,6 +581,31 @@ export default function OpDetail() {
                   <Text style={styles.blockerLabel}>{humanBlocker(b)}</Text>
                 </Pressable>
               ))}
+            </View>
+          )}
+
+          {showActivityPicker && (
+            <View style={styles.blockerPicker}>
+              <Text style={styles.blockerTitle}>Which work is this affecting?</Text>
+              {projectActivities.length === 0 ? (
+                <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No activities found for this project</Text>
+              ) : (
+                projectActivities.map((a) => {
+                  const selected = selectedActivityIds.includes(a.id);
+                  return (
+                    <Pressable key={a.id} testID={`pick-activity-${a.id}`}
+                      onPress={() => toggleActivitySelection(a.id)} style={styles.blockerRow}>
+                      <Ionicons name={selected ? 'checkbox' : 'square-outline'} size={16}
+                        color={selected ? theme.color.info : theme.color.textDim} />
+                      <Text style={styles.blockerLabel}>{a.name}{a.trade ? ` (${a.trade})` : ''}</Text>
+                    </Pressable>
+                  );
+                })
+              )}
+              <Pressable testID="confirm-activity-selection" onPress={confirmActivitySelection}
+                style={[styles.primary, { height: 44, marginTop: 8 }]}>
+                <Text style={[styles.primaryText, { fontSize: 14 }]}>CONFIRM</Text>
+              </Pressable>
             </View>
           )}
 

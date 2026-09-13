@@ -39,6 +39,7 @@ export type OperationalItem = {
   assigned_at: string | null; started_at: string | null;
   completed_at: string | null; verified_at: string | null; closed_at: string | null;
   blocker: { category: string; note?: string; set_at: string; set_by_user_name?: string } | null;
+  affected_activity_ids?: string[];
   health: OperationalHealth;
   last_updated_at: string;
   suggested_owner_role?: string | null;
@@ -248,6 +249,20 @@ export async function apiSetBlocker(id: string, category: string, note?: string)
   const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/blocker`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify({ category, note }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// Phase N — Relationship Authoring. Calls the existing, unmodified
+// Phase E route exactly (POST /operational-items/{id}/affected-activities).
+// No new backend validation - same-project ownership, atomic rejection,
+// and RBAC are all enforced server-side by link_affected_activities(),
+// completely unchanged by this phase.
+export async function apiLinkAffectedActivities(id: string, activityIds: string[]) {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/affected-activities`, {
+    method: 'POST', headers: await jheaders(),
+    body: JSON.stringify({ activity_ids: activityIds }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();

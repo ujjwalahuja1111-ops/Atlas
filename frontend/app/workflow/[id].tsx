@@ -8,8 +8,10 @@ import { DatePicker } from '@/src/DatePicker';
 import { apiListKnowledgeItems } from '@/src/knowledge_api';
 import {
   apiGetWorkflow, apiSetWorkflowActivityStatus, apiSetWorkflowActivitySchedule, apiGetActivityEvidence,
+  apiLinkMilestone,
   type WorkflowActivity, type WorkflowStatus, type WorkflowScheduleInput, type ActivityEvidenceEvent,
 } from '@/src/workflow_api';
+import { apiGetCommercialSummary, type Milestone } from '@/src/commercial_api';
 
 const STATUS_ORDER: WorkflowStatus[] = ['not_started', 'ready', 'in_progress', 'blocked', 'completed'];
 
@@ -44,6 +46,14 @@ export default function WorkflowViewer() {
   const [expandedEvidence, setExpandedEvidence] = useState<string | null>(null);
   const [evidenceByActivity, setEvidenceByActivity] = useState<Record<string, ActivityEvidenceEvent[]>>({});
   const [evidenceLoading, setEvidenceLoading] = useState<string | null>(null);
+  // Phase N — Relationship Authoring. "Milestone": which activity's
+  // picker is open, the project's own milestones (lazily fetched
+  // once, cached for this screen's session — same discipline as
+  // evidenceByActivity above), and the pending selection before the
+  // user explicitly confirms it.
+  const [expandedMilestone, setExpandedMilestone] = useState<string | null>(null);
+  const [projectMilestones, setProjectMilestones] = useState<Milestone[] | null>(null);
+  const [milestoneDraft, setMilestoneDraft] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -118,6 +128,36 @@ export default function WorkflowViewer() {
       await load();
     } catch (e: any) {
       Alert.alert('Could not save schedule', String(e?.message || e));
+    } finally { setBusyId(null); }
+  };
+
+  // Phase N — "Milestone." Same lazy-fetch-once pattern as
+  // toggleEvidence above.
+  const toggleMilestonePicker = async (activity: WorkflowActivity) => {
+    if (expandedMilestone === activity.id) {
+      setExpandedMilestone(null);
+      return;
+    }
+    setExpandedMilestone(activity.id);
+    setMilestoneDraft(activity.milestone_id || null);
+    if (projectMilestones === null && id) {
+      try {
+        const summary = await apiGetCommercialSummary(id);
+        setProjectMilestones(summary?.milestones || []);
+      } catch {
+        setProjectMilestones([]);
+      }
+    }
+  };
+  const saveMilestone = async (activity: WorkflowActivity) => {
+    if (!milestoneDraft) return;
+    setBusyId(activity.id);
+    try {
+      await apiLinkMilestone(activity.id, milestoneDraft);
+      setExpandedMilestone(null);
+      await load();
+    } catch (e: any) {
+      Alert.alert('Could not save milestone', String(e?.message || e));
     } finally { setBusyId(null); }
   };
 
@@ -245,6 +285,43 @@ export default function WorkflowViewer() {
                     </View>
                   )}
 
+                  {/* Phase N — Relationship Authoring: "Milestone" */}
+                  <Pressable testID={`workflow-milestone-toggle-${a.id}`} onPress={() => toggleMilestonePicker(a)}
+                    style={styles.scheduleToggle}>
+                    <Ionicons name="flag-outline" size={14} color={theme.color.textDim} />
+                    <Text style={styles.scheduleToggleText} numberOfLines={1}>
+                      {a.milestone_id
+                        ? (projectMilestones?.find((m) => m.id === a.milestone_id)?.name || 'Linked to a milestone')
+                        : 'No milestone linked — tap to connect'}
+                    </Text>
+                    <Ionicons name={expandedMilestone === a.id ? 'chevron-up' : 'chevron-down'} size={14} color={theme.color.textDim} />
+                  </Pressable>
+
+                  {expandedMilestone === a.id && (
+                    <View style={styles.scheduleBox}>
+                      {projectMilestones === null ? (
+                        <ActivityIndicator size="small" color={theme.color.textDim} />
+                      ) : projectMilestones.length === 0 ? (
+                        <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No milestones set up for this project yet</Text>
+                      ) : (
+                        projectMilestones.map((m) => (
+                          <Pressable key={m.id} testID={`pick-milestone-${m.id}`}
+                            onPress={() => setMilestoneDraft(m.id)} style={styles.milestoneOptionRow}>
+                            <Ionicons name={milestoneDraft === m.id ? 'radio-button-on' : 'radio-button-off'} size={16}
+                              color={milestoneDraft === m.id ? theme.color.info : theme.color.textDim} />
+                            <Text style={styles.milestoneOptionLabel}>{m.name}</Text>
+                          </Pressable>
+                        ))
+                      )}
+                      <Pressable testID={`milestone-save-${a.id}`} onPress={() => saveMilestone(a)}
+                        disabled={busyId === a.id || !milestoneDraft} style={styles.scheduleSaveBtn}>
+                        {busyId === a.id ? <ActivityIndicator size="small" color={theme.color.onBrand} /> : (
+                          <Text style={styles.scheduleSaveBtnText}>SAVE MILESTONE</Text>
+                        )}
+                      </Pressable>
+                    </View>
+                  )}
+
                   {/* Beta-04 — Completion Evidence */}
                   <Pressable testID={`workflow-evidence-toggle-${a.id}`} onPress={() => toggleEvidence(a)}
                     style={styles.scheduleToggle}>
@@ -342,6 +419,8 @@ const styles = StyleSheet.create({
                 padding: theme.spacing.sm, gap: theme.spacing.sm },
   scheduleRow: { flexDirection: 'row', gap: theme.spacing.sm },
   scheduleField: { flex: 1, gap: 4 },
+  milestoneOptionRow: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm, paddingVertical: 8 },
+  milestoneOptionLabel: { color: theme.color.text, fontSize: 14, flex: 1 },
   evidenceEmptyText: { color: theme.color.textDim, fontSize: 12, lineHeight: 18 },
   evidenceRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
   evidenceRowText: { color: theme.color.text, fontSize: 13, fontWeight: '600' },
