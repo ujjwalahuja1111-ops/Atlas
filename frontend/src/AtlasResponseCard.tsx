@@ -313,7 +313,31 @@ function DigestResponse({ data }: { data: any }) {
 const SECTION_LABEL: Record<string, string> = {
   query_health: 'Health', query_schedule_impact: 'Schedule',
   query_comparison: 'Comparison', query_digest: 'Recent Activity',
+  query_change_history: 'History',
 };
+
+function HistoryResponse({ data }: { data: any }) {
+  if (!data.events || data.events.length === 0) {
+    return <Text style={styles.bulletLine}>{data.message || 'No recorded changes found for this item.'}</Text>;
+  }
+  return (
+    <Section label={data.entity_name ? data.entity_name.toUpperCase() : 'HISTORY'}>
+      {data.events.map((e: any, i: number) => (
+        <View key={i} style={styles.actionRow}>
+          <Text style={styles.actionDot}>•</Text>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.actionText}>
+              {e.what}{e.from != null || e.to != null ? `: ${e.from ?? '—'} → ${e.to ?? '—'}` : ''}
+            </Text>
+            <Text style={styles.actionSubtext}>
+              {[e.who, e.source ? `via ${e.source}` : null].filter(Boolean).join(' · ')}
+            </Text>
+          </View>
+        </View>
+      ))}
+    </Section>
+  );
+}
 
 function ResponseSectionContent({ intent, result, projectId }: { intent: string; result: { ok: boolean; data?: any; error?: string }; projectId?: string }) {
   if (!result.ok) {
@@ -323,6 +347,7 @@ function ResponseSectionContent({ intent, result, projectId }: { intent: string;
   if (intent === 'query_schedule_impact') return <ScheduleImpactResponse data={result.data} projectId={projectId} />;
   if (intent === 'query_comparison') return <ComparisonResponse data={result.data} />;
   if (intent === 'query_digest') return <DigestResponse data={result.data} />;
+  if (intent === 'query_change_history') return <HistoryResponse data={result.data} />;
   return <Text style={styles.bulletLine}>No further detail available.</Text>;
 }
 

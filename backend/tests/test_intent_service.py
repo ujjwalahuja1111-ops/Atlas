@@ -572,3 +572,231 @@ async def test_multi_result_lead_in_never_names_an_engine_or_route():
     lead_in = result["lead_in"].lower()
     for forbidden in ("engine", "reasoning_engine", "explain_health", "route", "handler", "endpoint"):
         assert forbidden not in lead_in
+
+
+# ==========================================================================
+# Event & Provenance Retrieval — query_change_history.
+# Read-only presentation over the event history that already exists
+# (Source Foundation + Workflow Event Preservation) — no new event
+# architecture, no reconciliation, no integration.
+# ==========================================================================
+
+async def _make_bare_activity_for_history(project_id, name="Electrical First Fix"):
+    now_iso = __import__("datetime").datetime.now(__import__("datetime").timezone.utc).isoformat()
+    import uuid as _uuid
+    aid = f"wa_{_uuid.uuid4()}"
+    await _mock_db.workflow_activities.insert_one({
+        "id": aid, "project_id": project_id, "name": name, "trade": "Electrical",
+        "status": "not_started", "depends_on_activity_ids": [], "order": 0,
+        "default_duration_days": 4, "requires_inspection": False,
+        "planned_start": None, "planned_finish": None, "actual_start": None, "actual_finish": None,
+        "milestone_id": None, "created_at": now_iso, "updated_at": now_iso,
+    })
+    return aid
+
+
+# 1. Native-only history: events render chronologically, no unnecessary source label.
+async def test_change_history_native_only_no_source_label():
+    project = await _make_project("Change History Native Only Project")
+    aid = await _make_bare_activity_for_history(project["id"])
+    actor = {"id": ADMIN["id"], "name": ADMIN["name"]}
+    await workflow_engine.set_schedule(aid, {"planned_finish": "2026-09-15T00:00:00+00:00"}, actor=actor)
+    await workflow_engine.set_status(aid, "blocked", actor=actor)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Electrical First Fix"})
+    result = await intent_service.handle_intent(
+        "what changed on Electrical First Fix?", user=ADMIN, active_project_id=project["id"])
+    assert result["type"] == "result"
+    data = result["result"]["data"]
+    events = data["events"]
+    assert len(events) == 2
+    assert events[0]["when"] <= events[1]["when"]  # chronological
+    assert all(e["source"] is None for e in events)
+
+
+# 2. Imported-only history: external system shown when present.
+async def test_change_history_imported_shows_external_system():
+    project = await _make_project("Change History Imported Project")
+    aid = await _make_bare_activity_for_history(project["id"])
+    actor = {"id": ADMIN["id"], "name": ADMIN["name"]}
+    await workflow_engine.set_schedule(
+        aid, {"planned_finish": "2026-09-18T00:00:00+00:00"}, actor=actor,
+        source={"origin": "imported", "external_system": "primavera_p6"})
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Electrical First Fix"})
+    result = await intent_service.handle_intent(
+        "what changed on Electrical First Fix?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    assert len(events) == 1
+    assert events[0]["source"] == "primavera_p6"
+
+
+# 3. Mixed native/imported history: both claims visible, chronology preserved,
+#    neither declared correct.
+async def test_change_history_mixed_native_and_imported():
+    project = await _make_project("Change History Mixed Project")
+    aid = await _make_bare_activity_for_history(project["id"])
+    actor = {"id": ADMIN["id"], "name": ADMIN["name"]}
+    await workflow_engine.set_schedule(aid, {"planned_finish": "2026-09-15T00:00:00+00:00"}, actor=actor)
+    await workflow_engine.set_schedule(
+        aid, {"planned_finish": "2026-09-18T00:00:00+00:00"}, actor=actor,
+        source={"origin": "imported", "external_system": "primavera_p6"})
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Electrical First Fix"})
+    result = await intent_service.handle_intent(
+        "what changed on Electrical First Fix?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    assert len(events) == 2
+    assert events[0]["source"] is None
+    assert events[0]["to"] == "2026-09-15T00:00:00+00:00"
+    assert events[1]["source"] == "primavera_p6"
+    assert events[1]["to"] == "2026-09-18T00:00:00+00:00"
+    # No reconciliation field, no "winner", no authority claim anywhere
+    # in the response.
+    assert "winner" not in str(result).lower()
+    assert "authoritative" not in str(result).lower()
+
+
+# 4. Empty history: honest no-history response, never fabricated.
+async def test_change_history_empty_is_honest():
+    project = await _make_project("Change History Empty Project")
+    aid = await _make_bare_activity_for_history(project["id"], name="Plumbing First Fix")
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Plumbing First Fix"})
+    result = await intent_service.handle_intent(
+        "what changed on Plumbing First Fix?", user=ADMIN, active_project_id=project["id"])
+    data = result["result"]["data"]
+    assert data["events"] == []
+    assert data["message"] == "No recorded changes found for this item."
+
+
+# 5. Previous-value preservation: from/to values come from the actual events.
+async def test_change_history_from_to_values_are_real():
+    project = await _make_project("Change History From To Project")
+    aid = await _make_bare_activity_for_history(project["id"])
+    actor = {"id": ADMIN["id"], "name": ADMIN["name"]}
+    await workflow_engine.set_status(aid, "in_progress", actor=actor)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Electrical First Fix"})
+    result = await intent_service.handle_intent(
+        "when did this become in progress?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    status_event = next(e for e in events if e["what"] == "status")
+    assert status_event["from"] == "not_started"
+    assert status_event["to"] == "in_progress"
+
+
+# 6. Actor preservation: real actor surfaced when present.
+async def test_change_history_actor_preserved():
+    project = await _make_project("Change History Actor Project")
+    aid = await _make_bare_activity_for_history(project["id"])
+    real_actor = {"id": "u_ramesh", "name": "Ramesh Supervisor"}
+    await workflow_engine.set_status(aid, "blocked", actor=real_actor)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Electrical First Fix"})
+    result = await intent_service.handle_intent(
+        "who changed the status?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    assert events[0]["who"] == "Ramesh Supervisor"
+
+
+# 7. RBAC — milestone history restricted to management/PM, matching the
+#    existing commercial-events route's own real restriction; activity
+#    history follows the existing project-visibility-only rule.
+async def test_change_history_milestone_restricted_to_management_pm():
+    project = await _make_project("Change History Milestone RBAC Project")
+    await commercial_engine.create_contract(
+        actor=ADMIN, project_id=project["id"], client_id=None, original_contract_value=1000000,
+        contract_date="2026-01-01", duration_days=90)
+    await commercial_engine.create_milestone(
+        actor=ADMIN, project_id=project["id"], name="MEP Completion", sequence=1,
+        planned_percent=10, trigger="x")
+
+    supervisor = {"id": "u_intent_sup", "name": "Intent Supervisor", "role": "site_supervisor"}
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "MEP Completion"})
+    result = await intent_service.handle_intent(
+        "what changed on MEP Completion?", user=supervisor, active_project_id=project["id"])
+    assert result["result"]["ok"] is False
+    assert "account" in result["result"]["error"].lower()
+
+
+async def test_change_history_activity_visible_to_client_matching_existing_route():
+    """Not a new restriction invented for this phase — confirmed by
+    inspection that get_activity_evidence() (the existing, unmodified
+    function this reuses) has always been project-visibility-only,
+    with no role gate, unlike the commercial-events route."""
+    project = await _make_project("Change History Activity Client Project")
+    aid = await _make_bare_activity_for_history(project["id"])
+    actor = {"id": ADMIN["id"], "name": ADMIN["name"]}
+    await workflow_engine.set_status(aid, "blocked", actor=actor)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Electrical First Fix"})
+    result = await intent_service.handle_intent(
+        "what changed on Electrical First Fix?", user=CLIENT_USER, active_project_id=project["id"])
+    assert result["result"]["ok"] is True
+
+
+# 8. Multi-intent: history + health/consequence coexist through the
+#    existing Phase D composition.
+async def test_change_history_multi_intent_with_health():
+    project = await _make_project("Change History Multi Intent Project")
+    aid = await _make_bare_activity_for_history(project["id"])
+    actor = {"id": ADMIN["id"], "name": ADMIN["name"]}
+    await workflow_engine.set_status(aid, "blocked", actor=actor)
+
+    _mock_structuring({"intents": [
+        {"intent": "query_change_history", "confidence": "high"},
+        {"intent": "query_health", "confidence": "high"},
+    ], "project_reference": None, "comparison_scope": None, "entity_reference": "Electrical First Fix"})
+    result = await intent_service.handle_intent(
+        "what changed and why is Electrical First Fix blocked?", user=ADMIN, active_project_id=project["id"])
+    assert result["type"] == "multi_result"
+    intents_present = {s["intent"] for s in result["sections"]}
+    assert intents_present == {"query_change_history", "query_health"}
+    history_section = next(s for s in result["sections"] if s["intent"] == "query_change_history")
+    assert history_section["result"]["ok"] is True
+
+
+# No entity named at all - honest decline, never a fabricated project-wide answer.
+async def test_change_history_no_entity_named_is_honest():
+    project = await _make_project("Change History No Entity Project")
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None, "entity_reference": None})
+    result = await intent_service.handle_intent(
+        "what changed?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is False
+    assert "which" in result["result"]["error"].lower()
+
+
+# Ambiguous entity reference - honest decline, no guessing.
+async def test_change_history_ambiguous_entity_is_honest():
+    project = await _make_project("Change History Ambiguous Entity Project")
+    await _make_bare_activity_for_history(project["id"], name="Electrical First Fix")
+    await _make_bare_activity_for_history(project["id"], name="Electrical Second Fix")
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Electrical"})
+    result = await intent_service.handle_intent(
+        "what changed on Electrical?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is False
+    assert "more than one" in result["result"]["error"].lower()
+
+
+# 9. Regression: all existing intents behave exactly as before (covered
+# by the full existing test suite in this file re-passing unmodified).

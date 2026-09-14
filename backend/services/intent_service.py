@@ -40,7 +40,7 @@ from typing import Optional
 
 from core.llm_compat import LlmChat, UserMessage
 from core.settings import EMERGENT_LLM_KEY
-from engines import memory_engine, reasoning_engine
+from engines import memory_engine, reasoning_engine, workflow_engine, operations_engine, commercial_engine
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ LLM_MODEL = "gpt-4o"
 # taxonomy is deliberately absent here, not silently supported.
 SUPPORTED_INTENTS = (
     "query_health", "query_digest", "query_schedule_impact",
-    "query_comparison", "unresolved",
+    "query_comparison", "query_change_history", "unresolved",
 )
 
 # Phase D — the maximum number of intents a single question can select.
@@ -76,6 +76,7 @@ INTENT_LABEL = {
     "query_schedule_impact": "schedule",
     "query_comparison": "comparison",
     "query_digest": "recent activity",
+    "query_change_history": "history",
 }
 
 INTENT_SYSTEM_PROMPT = """You are Atlas's intent-structuring pass for a construction \
@@ -86,6 +87,11 @@ from this list — select only what's genuinely relevant, up to 3, ordered by re
 - query_digest: asking what's happening today/recently across their projects
 - query_schedule_impact: asking whether something affects the schedule/handover/a date
 - query_comparison: asking to compare this project against other projects
+- query_change_history: asking what CHANGED on a specific, named activity, milestone, or \
+operational item/issue — e.g. "what changed on electrical?", "when did this become \
+blocked?", "who changed the planned finish?", "what was the planned finish before?". \
+Requires a specific thing to be named or clearly implied in THIS question; a bare "what \
+changed?" with nothing named should NOT select this intent — classify it unresolved instead.
 - unresolved: the request does not clearly match any of the above, or is a write/\
 action request (creating, changing, or approving something) — Phase 1 supports \
 READ-ONLY QUERIES ONLY, so any request to create, change, approve, or take an action \
@@ -109,11 +115,13 @@ doesn't support, select only "unresolved" and nothing else.
 Return JSON only, in exactly this shape:
 {
   "intents": [
-    {"intent": "<one of the four query intents, or 'unresolved' alone>", "confidence": "high" | "medium" | "low"}
+    {"intent": "<one of the five query intents, or 'unresolved' alone>", "confidence": "high" | "medium" | "low"}
   ],
   "project_reference": "<any project name/identifier literally mentioned, or null>",
   "comparison_scope": "<for query_comparison only: what kind of projects to compare \
 against, e.g. 'residential', or null>",
+  "entity_reference": "<for query_change_history only: the specific activity, milestone, \
+or operational item name mentioned, or null>",
   "reasoning": "<one short sentence explaining the selection>"
 }
 Do not include any text outside the JSON object."""
@@ -189,6 +197,47 @@ async def _resolve_project(structured: dict, user: dict, active_project_id: Opti
         return {"status": "resolved", "project": visible_projects[0], "resolved_from": "only_project"}
 
     return {"status": "ambiguous", "candidates": visible_projects}
+
+
+async def _resolve_entity(project: dict, entity_reference: str, user: dict) -> dict:
+    """query_change_history's own entity resolution — deterministic,
+    non-fuzzy, reusing the EXACT substring-containment pattern
+    _resolve_project() above already established for project names
+    ("mention in name.lower()"), applied within the already-resolved
+    project's own scope across the three entity types the brief names:
+    workflow activities, milestones, operational items.
+
+    Searches all three existing, unmodified list functions and
+    combines the results — a genuine, deterministic mention-in-name
+    match, not similarity/edit-distance fuzzy matching. Returns the
+    same status vocabulary _resolve_project() uses (resolved/
+    ambiguous/not_found) so the caller can handle both identically.
+    """
+    mention = entity_reference.strip().lower()
+    if not mention:
+        return {"status": "not_found", "mention": entity_reference}
+
+    activities = await workflow_engine.list_workflow(project["id"], user=user)
+    milestones = await commercial_engine.list_milestones(project["id"])
+    # operational_items has no project_id filter on list_items() itself
+    # (confirmed by inspection: it filters by site_id only) - reusing
+    # the exact same client-side project_id filter
+    # routes/operational_items.py's own GET /operational-items route
+    # already applies after calling the same existing function, not a
+    # new raw-collection query.
+    all_items = await operations_engine.list_items()
+    items = [i for i in all_items if i.get("project_id") == project["id"]]
+
+    candidates = (
+        [{"type": "activity", "entity": a} for a in activities if mention in a["name"].lower()] +
+        [{"type": "milestone", "entity": m} for m in milestones if mention in m["name"].lower()] +
+        [{"type": "operational_item", "entity": i} for i in items if mention in i["title"].lower()]
+    )
+    if len(candidates) == 1:
+        return {"status": "resolved", "type": candidates[0]["type"], "entity": candidates[0]["entity"]}
+    if len(candidates) > 1:
+        return {"status": "ambiguous", "candidates": candidates}
+    return {"status": "not_found", "mention": entity_reference}
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +346,164 @@ async def _handle_query_digest(user: dict) -> dict:
     return {"ok": True, "data": results, "partial_errors": errors or None}
 
 
-PROJECT_SCOPED_INTENTS = {"query_health", "query_schedule_impact", "query_comparison"}
+_KIND_LABEL = {
+    "schedule_updated": "schedule", "status_updated": "status",
+    "milestone_linked": "milestone link", "activities_linked": "affected work",
+    "milestone_updated": "milestone", "milestone_status_changed": "milestone status",
+    "milestone_created": "milestone created", "milestone_closed": "milestone closed",
+    "contract_updated": "contract", "contract_status_changed": "contract status",
+    "budget_revised": "budget",
+}
+
+
+def _present_change_events(raw_events: list[dict]) -> list[dict]:
+    """Section C — generic, honest transformation from a raw event doc
+    (whatever shape the originating append_event/append_commercial_event/
+    insert_event call gave it) into plain-language change rows. Never
+    infers a from/to value that isn't actually present in the event's
+    own payload — an event whose shape this function doesn't recognize
+    is still shown, honestly, as "something happened," never silently
+    dropped and never given a fabricated field/value.
+
+    Deterministic: sorted chronologically (oldest first — "here is what
+    was recorded, in order," per Section E), no LLM involved.
+    """
+    rows: list[dict] = []
+    for e in raw_events:
+        when = e.get("server_created_at") or e.get("created_at")
+        who = e.get("actor_user_name")
+        # Section D — ONLY Source Foundation's own real source field
+        # (origin/external_system), never Phase E's unrelated
+        # recommendation-source concept or Capture's own event
+        # category. This event doc's own "source" key IS Source
+        # Foundation's field (confirmed: workflow/commercial events
+        # never carry any other field by this name) - shown only when
+        # genuinely present and genuinely tagged (source is not None
+        # AND has an origin), never fabricated for a native/untagged
+        # event.
+        src = e.get("source")
+        source_label = None
+        if isinstance(src, dict) and src.get("origin"):
+            source_label = src.get("external_system") or src.get("origin")
+
+        kind = e.get("kind", "")
+        payload = e.get("payload") or {}
+        changes = payload.get("changes")
+        if isinstance(changes, dict) and changes:
+            for field, delta in changes.items():
+                if not isinstance(delta, dict):
+                    continue
+                rows.append({
+                    "what": field, "from": delta.get("from"), "to": delta.get("to"),
+                    "when": when, "who": who, "source": source_label,
+                })
+        elif kind == "milestone_linked":
+            rows.append({
+                "what": "milestone", "from": payload.get("previous_milestone_id"),
+                "to": payload.get("milestone_id"), "when": when, "who": who, "source": source_label,
+            })
+        elif kind == "activities_linked":
+            rows.append({
+                "what": "affected work", "from": payload.get("previous_affected_activity_ids"),
+                "to": payload.get("affected_activity_ids"), "when": when, "who": who, "source": source_label,
+            })
+        elif e.get("prev_status") is not None or e.get("new_status") is not None:
+            rows.append({
+                "what": "status", "from": e.get("prev_status"), "to": e.get("new_status"),
+                "when": when, "who": who, "source": source_label,
+            })
+        else:
+            # Honest fallback — never fabricates a from/to this event
+            # doesn't actually have.
+            rows.append({
+                "what": _KIND_LABEL.get(kind, kind.replace("_", " ") or "change"),
+                "from": None, "to": None, "when": when, "who": who, "source": source_label,
+            })
+    rows.sort(key=lambda r: r["when"] or "")
+    return rows
+
+
+async def _handle_query_change_history(project: dict, user: dict, structured: dict) -> dict:
+    """Section A-F. Read-only presentation over the event history that
+    already exists — no new event architecture, no reconciliation, no
+    integration. Resolves a specific activity/milestone/operational
+    item within the project (Section 6), retrieves its history using
+    only the three existing, unmodified list functions (Section 2),
+    and presents it deterministically (Section C).
+    """
+    mention = (structured.get("entity_reference") or "").strip()
+    if not mention:
+        return {"ok": False, "error": (
+            "I need to know which activity, milestone, or issue you mean — "
+            "try naming it, e.g. \"what changed on Electrical First Fix?\""
+        )}
+
+    resolution = await _resolve_entity(project, mention, user)
+    if resolution["status"] == "not_found":
+        return {"ok": False, "error": f"I couldn't find anything matching \"{mention}\" in this project."}
+    if resolution["status"] == "ambiguous":
+        names = ", ".join(
+            c["entity"].get("name") or c["entity"].get("title", "?") for c in resolution["candidates"][:5])
+        return {"ok": False, "error": f"\"{mention}\" matches more than one thing ({names}) — "
+                                        "try being more specific."}
+
+    entity_type = resolution["type"]
+    entity = resolution["entity"]
+
+    if entity_type == "activity":
+        try:
+            raw_events = await workflow_engine.get_activity_evidence(entity["id"], user=user)
+        except workflow_engine.WorkflowError as e:
+            return {"ok": False, "error": str(e)}
+        # Filters to genuine mutation events only - Capture events
+        # (voice/photo/text/mixed) are a different concept (raw field
+        # observations, not structured changes) and are correctly left
+        # out of a "what changed" answer rather than presented as if
+        # they were.
+        raw_events = [e for e in raw_events if e.get("kind") in
+                      ("schedule_updated", "status_updated", "milestone_linked")]
+        entity_name = entity["name"]
+
+    elif entity_type == "operational_item":
+        item = await operations_engine.get_item(entity["id"])
+        if not item:
+            return {"ok": False, "error": "That item no longer exists."}
+        try:
+            await operations_engine.assert_item_visible(item, user)
+        except ValueError:
+            return {"ok": False, "error": "That item isn't visible on your account."}
+        raw_events = await operations_engine.list_events_for_item(entity["id"])
+        entity_name = entity["title"]
+
+    else:  # milestone
+        # Milestone/commercial events are Management/PM-only, matching
+        # the existing GET /projects/{id}/commercial/events route's
+        # own deliberate restriction exactly (its own budget/cost
+        # payload data is not safe for Client/Supervisor) - preserved
+        # here rather than relaxed.
+        if user.get("role") not in ("management", "project_manager"):
+            return {"ok": False, "error": "Milestone history isn't available on your account."}
+        try:
+            await commercial_engine.assert_project_visible(project["id"], user)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        all_events = await commercial_engine.list_commercial_events(project["id"])
+        raw_events = [e for e in all_events if e.get("entity_id") == entity["id"]]
+        entity_name = entity["name"]
+
+    if not raw_events:
+        return {"ok": True, "data": {
+            "entity_type": entity_type, "entity_name": entity_name, "events": [],
+            "message": "No recorded changes found for this item.",
+        }}
+
+    return {"ok": True, "data": {
+        "entity_type": entity_type, "entity_name": entity_name,
+        "events": _present_change_events(raw_events),
+    }}
+
+
+PROJECT_SCOPED_INTENTS = {"query_health", "query_schedule_impact", "query_comparison", "query_change_history"}
 
 
 async def handle_intent(user_input: str, *, user: dict, active_project_id: Optional[str] = None,
@@ -473,4 +679,6 @@ async def _dispatch_one(intent: str, structured: dict, user: dict, project: Opti
         return await _handle_query_schedule_impact(project, user)
     if intent == "query_comparison":
         return await _handle_query_comparison(project, user, structured)
+    if intent == "query_change_history":
+        return await _handle_query_change_history(project, user, structured)
     return {"ok": False, "error": "That's not something I can help with yet."}
