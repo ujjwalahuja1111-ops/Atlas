@@ -159,7 +159,8 @@ async def update_ai_proposal_decision(proposal_id: str, *, decision: str,
 async def append_event(*, item_id: str, kind: str, actor: dict,
                        prev_status: Optional[str] = None,
                        new_status: Optional[str] = None,
-                       payload: Optional[dict] = None) -> dict:
+                       payload: Optional[dict] = None,
+                       source: Optional[dict] = None) -> dict:
     doc = {
         "id": _new_id("oe_"),
         "operational_item_id": item_id,
@@ -169,6 +170,11 @@ async def append_event(*, item_id: str, kind: str, actor: dict,
         "prev_status": prev_status,
         "new_status": new_status,
         "payload": payload or {},
+        # Workflow Event Preservation / Source Foundation — same
+        # discipline as append_commercial_event()'s own source
+        # parameter: defaults to None, every existing call site
+        # (including link_affected_activities() below) is unaffected.
+        "source": source,
         "created_at": _iso(_now()),
     }
     return await _insert(db.operational_events, doc)
@@ -584,7 +590,8 @@ async def clear_blocker(*, item_id: str, actor: dict) -> dict:
 # construction relationships" requirement.
 # ---------------------------------------------------------------------------
 
-async def link_affected_activities(*, item_id: str, actor: dict, activity_ids: list[str]) -> dict:
+async def link_affected_activities(*, item_id: str, actor: dict, activity_ids: list[str],
+                                    source: Optional[dict] = None) -> dict:
     item = await get_item(item_id)
     if not item:
         raise ValueError("item not found")
@@ -613,7 +620,8 @@ async def link_affected_activities(*, item_id: str, actor: dict, activity_ids: l
     ev = await append_event(item_id=item_id, kind="activities_linked", actor=actor,
                             prev_status=item["status"], new_status=item["status"],
                             payload={"affected_activity_ids": activity_ids,
-                                     "previous_affected_activity_ids": item.get("affected_activity_ids") or []})
+                                     "previous_affected_activity_ids": item.get("affected_activity_ids") or []},
+                            source=source)
     item["affected_activity_ids"] = activity_ids
     item["last_updated_at"] = _iso(_now())
     item["last_derived_from_op_event_id"] = ev["id"]

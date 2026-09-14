@@ -274,7 +274,7 @@ class CrossProjectMilestoneError(WorkflowError):
     pass
 
 
-async def link_milestone(activity_id: str, milestone_id: str, *, actor: dict) -> dict:
+async def link_milestone(activity_id: str, milestone_id: str, *, actor: dict, source: Optional[dict] = None) -> dict:
     """Phase G — Cross-Domain Relationship Extension. Explicitly,
     humanly recording that this activity contributes to a specific
     commercial milestone. Never inferred, never set by an LLM, never
@@ -305,8 +305,18 @@ async def link_milestone(activity_id: str, milestone_id: str, *, actor: dict) ->
 
     await _assert_project_visible(activity["project_id"], actor)
 
+    previous_milestone_id = activity.get("milestone_id")
     await db.workflow_activities.update_one(
         {"id": activity_id}, {"$set": {"milestone_id": milestone_id, "updated_at": _now()}})
+    # Workflow Event Preservation — a relationship change (which
+    # milestone, not a field value), the smallest honest
+    # representation matching the exact before/after shape
+    # link_affected_activities() already uses for its own relationship
+    # change (previous_affected_activity_ids / affected_activity_ids).
+    await _append_workflow_event(
+        activity_id=activity_id, project_id=activity["project_id"], kind="milestone_linked",
+        actor=actor, payload={"milestone_id": milestone_id, "previous_milestone_id": previous_milestone_id},
+        source=source)
     return await get_workflow_activity(activity_id)
 
 
@@ -352,7 +362,52 @@ def _dependencies_satisfied(activity: dict, siblings_by_id: dict[str, dict]) -> 
 SCHEDULE_FIELDS = {"planned_start", "planned_finish", "actual_start", "actual_finish"}
 
 
-async def set_schedule(activity_id: str, updates: dict, *, actor: dict) -> dict:
+async def _append_workflow_event(*, activity_id: str, project_id: str, kind: str, actor: dict,
+                                  payload: Optional[dict] = None, source: Optional[dict] = None) -> dict:
+    """Workflow Event Preservation. Reuses the existing db.events ledger
+    (memory_engine.insert_event) exactly as it already exists — no new
+    collection, no new architecture. Mirrors
+    commercial_engine.append_commercial_event()'s own established shape
+    and conventions (kind always past tense, actor/payload/source/
+    created_at) as closely as this collection's own existing schema
+    allows.
+
+    Deliberately has no site_id: build_project_snapshot()'s own events
+    query filters by site_id (workflow activities have none — confirmed
+    by inspection, same finding link_affected_activities' own Phase E
+    hardening review already relied on), so these events never enter
+    the snapshot's own recent_events and never reach any CRE rule or
+    consequence chain. This is a deliberate design choice, not an
+    oversight: it guarantees no reasoning behavior can change as a
+    side effect of this phase, rather than requiring an audit of every
+    rule that touches recent_events. Retrievable via the existing
+    memory_engine.list_events_for_activity(activity_id), which queries
+    by activity_id, not site_id.
+
+    source defaults to None, matching append_commercial_event()'s own
+    default — every existing caller (none yet call this with source)
+    is unaffected; a future imported caller can pass one.
+    """
+    now = _now()
+    doc = {
+        "id": f"wfe_{uuid.uuid4()}",
+        "activity_id": activity_id,
+        "project_id": project_id,
+        "kind": kind,
+        "actor_user_id": actor["id"],
+        "actor_user_name": actor["name"],
+        "payload": payload or {},
+        "source": source,
+        # Matches db.events' own real, established convention exactly
+        # (confirmed from reality_engine.py's own Capture event
+        # construction) - the field list_events_for_activity() and
+        # build_project_snapshot() both already sort/expect.
+        "server_created_at": now,
+    }
+    return await memory_engine.insert_event(doc)
+
+
+async def set_schedule(activity_id: str, updates: dict, *, actor: dict, source: Optional[dict] = None) -> dict:
     """Sprint 6.1 — store execution targets (Planned/Actual Start/Finish)
     on a workflow activity. Deliberately pure data storage: no validation
     against status, no cross-field validation (e.g. finish-after-start),
@@ -374,8 +429,13 @@ async def set_schedule(activity_id: str, updates: dict, *, actor: dict) -> dict:
     upd = {k: v for k, v in updates.items() if k in SCHEDULE_FIELDS}
     if not upd:
         return activity
+    changes = {k: {"from": activity.get(k), "to": v} for k, v in upd.items() if activity.get(k) != v}
     upd["updated_at"] = _now()
     await db.workflow_activities.update_one({"id": activity_id}, {"$set": upd})
+    if changes:
+        await _append_workflow_event(
+            activity_id=activity_id, project_id=activity["project_id"], kind="schedule_updated",
+            actor=actor, payload={"changes": changes}, source=source)
     return await get_workflow_activity(activity_id)
 
 
@@ -494,7 +554,7 @@ async def set_production_inputs(activity_id: str, input_values: dict, *, actor: 
     return await get_workflow_activity(activity_id)
 
 
-async def set_status(activity_id: str, new_status: str, *, actor: dict) -> dict:
+async def set_status(activity_id: str, new_status: str, *, actor: dict, source: Optional[dict] = None) -> dict:
     """Transition a workflow activity's status, respecting dependencies.
 
     - in_progress / completed: blocked unless every dependency is already
@@ -554,6 +614,14 @@ async def set_status(activity_id: str, new_status: str, *, actor: dict) -> dict:
         {"id": activity_id},
         {"$set": updates},
     )
+    changes = {"status": {"from": activity.get("status"), "to": new_status}}
+    if "actual_start" in updates:
+        changes["actual_start"] = {"from": activity.get("actual_start"), "to": updates["actual_start"]}
+    if "actual_finish" in updates:
+        changes["actual_finish"] = {"from": activity.get("actual_finish"), "to": updates["actual_finish"]}
+    await _append_workflow_event(
+        activity_id=activity_id, project_id=activity["project_id"], kind="status_updated",
+        actor=actor, payload={"changes": changes}, source=source)
 
     if new_status == "completed":
         # Reuse the siblings already fetched above (guaranteed present:

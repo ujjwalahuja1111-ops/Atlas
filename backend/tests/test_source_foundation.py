@@ -29,9 +29,9 @@ _mock_db = _mock_client["atlas_source_foundation_test"]
 core_db.db = _mock_db
 core_db.client = _mock_client
 
-from engines import memory_engine, reasoning_engine, commercial_engine, workflow_engine  # noqa: E402
+from engines import memory_engine, reasoning_engine, commercial_engine, workflow_engine, operations_engine  # noqa: E402
 
-for _mod in (memory_engine, reasoning_engine, commercial_engine, workflow_engine):
+for _mod in (memory_engine, reasoning_engine, commercial_engine, workflow_engine, operations_engine):
     _mod.db = _mock_db
 
 pytestmark = pytest.mark.anyio
@@ -269,3 +269,190 @@ async def test_enterprise_shaped_project_activities_and_milestones_carry_importe
     result = await reasoning_engine.explain_health(project["id"], user=PM)
     assert result is not None
     assert isinstance(result["recommended_actions"], list)
+
+
+# ==========================================================================
+# Workflow Event Preservation — closes the specific gap the Source
+# Foundation review found: workflow_engine's own mutation functions
+# (set_schedule, set_status, link_milestone) previously performed a
+# direct $set with no event logged at all. Extends the existing
+# db.events ledger (memory_engine.insert_event) - no new collection,
+# no new architecture - so a future imported claim can never silently
+# destroy the previous claim without historical evidence.
+# ==========================================================================
+
+ADMIN = {"id": "u_sf_admin", "name": "SF Admin", "role": "management"}
+
+
+async def _make_bare_activity(project_id, name="Electrical First Fix", trade="Electrical"):
+    now = _now()
+    aid = f"wa_{uuid.uuid4()}"
+    await _mock_db.workflow_activities.insert_one({
+        "id": aid, "project_id": project_id, "name": name, "trade": trade,
+        "status": "not_started", "depends_on_activity_ids": [], "order": 0,
+        "default_duration_days": 4, "requires_inspection": False,
+        "planned_start": None, "planned_finish": None, "actual_start": None, "actual_finish": None,
+        "milestone_id": None, "created_at": _iso(now), "updated_at": _iso(now),
+    })
+    return aid
+
+
+# THE MOST IMPORTANT TEST — the exact scenario the brief specified.
+async def test_historical_preservation_two_claims_same_field_different_sources():
+    project = await _make_project("WEP Historical Preservation Project")
+    aid = await _make_bare_activity(project["id"])
+    actor = {"id": PM["id"], "name": PM["name"]}
+
+    await workflow_engine.set_schedule(aid, {"planned_finish": "2026-09-15T00:00:00+00:00"}, actor=actor)
+    await workflow_engine.set_schedule(
+        aid, {"planned_finish": "2026-09-18T00:00:00+00:00"}, actor=actor,
+        source={"origin": "imported", "external_system": "primavera_p6"})
+
+    # 1. Current entity value is the latest.
+    current = await workflow_engine.get_workflow_activity(aid)
+    assert current["planned_finish"] == "2026-09-18T00:00:00+00:00"
+
+    # 2-3. Historical event records preserve the change; the prior
+    # value remains represented.
+    events = await memory_engine.list_events_for_activity(aid)
+    schedule_events = [e for e in events if e["kind"] == "schedule_updated"]
+    assert len(schedule_events) == 2
+    native_event = next(e for e in schedule_events if e["source"] is None)
+    imported_event = next(e for e in schedule_events if e["source"] is not None)
+    assert native_event["payload"]["changes"]["planned_finish"] == {
+        "from": None, "to": "2026-09-15T00:00:00+00:00"}
+    # 4. The second claim's event carries imported source metadata.
+    assert imported_event["source"] == {"origin": "imported", "external_system": "primavera_p6"}
+    assert imported_event["payload"]["changes"]["planned_finish"] == {
+        "from": "2026-09-15T00:00:00+00:00", "to": "2026-09-18T00:00:00+00:00"}
+    # 5. No reconciliation/winner logic - this test only asserts both
+    # survive, never which one is "correct".
+    # 6. Existing native mutation behavior remains valid, confirmed by
+    # the native_event's own presence and correct shape above.
+
+
+async def test_status_change_preserved():
+    project = await _make_project("WEP Status Change Project")
+    aid = await _make_bare_activity(project["id"])
+    actor = {"id": PM["id"], "name": PM["name"]}
+    await workflow_engine.set_status(aid, "blocked", actor=actor)
+    events = await memory_engine.list_events_for_activity(aid)
+    status_events = [e for e in events if e["kind"] == "status_updated"]
+    assert len(status_events) == 1
+    assert status_events[0]["payload"]["changes"]["status"] == {"from": "not_started", "to": "blocked"}
+    assert status_events[0]["source"] is None
+
+
+async def test_planned_start_change_preserved():
+    project = await _make_project("WEP Planned Start Project")
+    aid = await _make_bare_activity(project["id"])
+    actor = {"id": PM["id"], "name": PM["name"]}
+    await workflow_engine.set_schedule(aid, {"planned_start": "2026-09-01T00:00:00+00:00"}, actor=actor)
+    events = await memory_engine.list_events_for_activity(aid)
+    schedule_events = [e for e in events if e["kind"] == "schedule_updated"]
+    assert schedule_events[0]["payload"]["changes"]["planned_start"] == {
+        "from": None, "to": "2026-09-01T00:00:00+00:00"}
+
+
+async def test_actual_dates_auto_fill_preserved_on_status_transition():
+    project = await _make_project("WEP Actual Dates Project")
+    aid = await _make_bare_activity(project["id"])
+    actor = {"id": PM["id"], "name": PM["name"]}
+    await workflow_engine.set_status(aid, "in_progress", actor=actor)
+    events = await memory_engine.list_events_for_activity(aid)
+    status_events = [e for e in events if e["kind"] == "status_updated"]
+    assert "actual_start" in status_events[0]["payload"]["changes"]
+    assert status_events[0]["payload"]["changes"]["actual_start"]["from"] is None
+
+
+async def test_milestone_relationship_change_preserved():
+    project = await _make_project("WEP Milestone Relationship Project")
+    aid = await _make_bare_activity(project["id"])
+    actor = {"id": PM["id"], "name": PM["name"]}
+    await commercial_engine.create_contract(
+        actor=PM, project_id=project["id"], client_id=None, original_contract_value=1000000,
+        contract_date="2026-01-01", duration_days=90)
+    ms1 = await commercial_engine.create_milestone(
+        actor=PM, project_id=project["id"], name="MEP", sequence=1, planned_percent=10, trigger="x")
+    await workflow_engine.link_milestone(aid, ms1["id"], actor=actor)
+    events = await memory_engine.list_events_for_activity(aid)
+    ms_events = [e for e in events if e["kind"] == "milestone_linked"]
+    assert len(ms_events) == 1
+    assert ms_events[0]["payload"] == {"milestone_id": ms1["id"], "previous_milestone_id": None}
+
+
+async def test_affected_activity_relationship_change_preserved():
+    project = await _make_project("WEP Affected Activity Relationship Project")
+    aid = await _make_bare_activity(project["id"])
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="client_approval", title="Kitchen Layout")
+    await operations_engine.link_affected_activities(item_id=item["id"], actor=PM, activity_ids=[aid])
+    item_events = await operations_engine.list_events_for_item(item["id"])
+    link_events = [e for e in item_events if e["kind"] == "activities_linked"]
+    assert len(link_events) == 1
+    assert link_events[0]["payload"]["affected_activity_ids"] == [aid]
+    assert link_events[0]["payload"]["previous_affected_activity_ids"] == []
+    assert link_events[0]["source"] is None
+
+
+async def test_preservation_events_never_enter_cre_snapshot():
+    """The design's own key safety property: these audit events must
+    never feed into CRE reasoning, confirmed directly rather than
+    assumed from the site_id-filtering design alone."""
+    project = await _make_project("WEP No Reasoning Change Project")
+    aid = await _make_bare_activity(project["id"])
+    actor = {"id": PM["id"], "name": PM["name"]}
+    await workflow_engine.set_schedule(aid, {"planned_finish": "2026-09-15T00:00:00+00:00"}, actor=actor)
+    await workflow_engine.set_status(aid, "blocked", actor=actor)
+    snapshot = await reasoning_engine.build_project_snapshot(project["id"])
+    matching = [e for e in snapshot["recent_events"] if e.get("activity_id") == aid]
+    assert matching == []
+
+
+async def test_failed_mutation_creates_no_event():
+    project = await _make_project("WEP Failed Mutation No Event Project")
+    aid = await _make_bare_activity(project["id"])
+    actor = {"id": PM["id"], "name": PM["name"]}
+    before = len(await memory_engine.list_events_for_activity(aid))
+    with pytest.raises(Exception):
+        await workflow_engine.set_status(aid, "not_a_real_status", actor=actor)
+    after = len(await memory_engine.list_events_for_activity(aid))
+    assert after == before
+
+
+async def test_dependency_blocked_status_transition_creates_no_event():
+    """A real, business-rule failure (not just a validation error) must
+    also create no event - the dependency is genuinely unsatisfied,
+    not merely malformed input."""
+    project = await _make_project("WEP Dependency Blocked No Event Project")
+    a1 = await _make_bare_activity(project["id"], name="Foundation", trade="Civil")
+    a2_now = _now()
+    a2 = f"wa_{uuid.uuid4()}"
+    await _mock_db.workflow_activities.insert_one({
+        "id": a2, "project_id": project["id"], "name": "Electrical", "trade": "Electrical",
+        "status": "not_started", "depends_on_activity_ids": [a1], "order": 1,
+        "default_duration_days": 4, "requires_inspection": False,
+        "planned_start": None, "planned_finish": None, "actual_start": None, "actual_finish": None,
+        "milestone_id": None, "created_at": _iso(a2_now), "updated_at": _iso(a2_now),
+    })
+    actor = {"id": PM["id"], "name": PM["name"]}
+    before = len(await memory_engine.list_events_for_activity(a2))
+    with pytest.raises(Exception):
+        await workflow_engine.set_status(a2, "completed", actor=actor)  # Foundation not completed yet
+    after = len(await memory_engine.list_events_for_activity(a2))
+    assert after == before
+
+
+async def test_no_genuine_change_creates_no_event():
+    """set_schedule with an update dict whose values already match the
+    current record must not fabricate a change event."""
+    project = await _make_project("WEP No Genuine Change Project")
+    aid = await _make_bare_activity(project["id"])
+    actor = {"id": PM["id"], "name": PM["name"]}
+    await workflow_engine.set_schedule(aid, {"planned_finish": "2026-09-15T00:00:00+00:00"}, actor=actor)
+    before = len(await memory_engine.list_events_for_activity(aid))
+    # Same value again - no genuine change.
+    await workflow_engine.set_schedule(aid, {"planned_finish": "2026-09-15T00:00:00+00:00"}, actor=actor)
+    after = len(await memory_engine.list_events_for_activity(aid))
+    assert after == before
