@@ -166,7 +166,8 @@ async def _notify_project_pms(*, project_id: str, title: str, body: str,
 
 async def append_commercial_event(*, project_id: str, kind: str, actor: dict,
                                    entity_type: str, entity_id: str,
-                                   payload: Optional[dict] = None) -> dict:
+                                   payload: Optional[dict] = None,
+                                   source: Optional[dict] = None) -> dict:
     doc = {
         "id": _new_id("ce_"),
         "project_id": project_id,
@@ -176,6 +177,19 @@ async def append_commercial_event(*, project_id: str, kind: str, actor: dict,
         "actor_user_id": actor["id"],
         "actor_user_name": actor["name"],
         "payload": payload or {},
+        # Source Foundation — an optional tag distinguishing a native
+        # claim (a human/Atlas action, the default — every existing
+        # call site is unaffected since this parameter defaults to
+        # None) from an imported one (a future import process would
+        # pass {"origin": "imported", "external_system": ...}).
+        # Orthogonal to this event's own existing meaning - actor,
+        # timestamp, kind, and payload are all unchanged and unrelated
+        # to this tag. Deliberately not defaulted to a full
+        # native-shaped dict here (unlike the entity-level source
+        # above) since most events remain None/untagged going forward
+        # too - only a caller that actually needs to distinguish
+        # claims populates it.
+        "source": source,
         "created_at": _iso(_now()),
     }
     return await _insert(db.commercial_events, doc)
@@ -350,6 +364,13 @@ async def create_milestone(*, actor: dict, project_id: str, name: str, sequence:
         "forecast_date": planned_date,
         "actual_date": None,
         "status": "pending",
+        # Source Foundation — same shape and discipline as
+        # workflow_activities' own source field: every milestone
+        # created through this path is, by construction, Atlas-native.
+        "source": {
+            "origin": "native", "external_system": None,
+            "external_id": None, "imported_at": None,
+        },
         "created_at": now,
         "updated_at": now,
     }

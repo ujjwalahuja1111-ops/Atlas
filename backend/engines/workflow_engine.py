@@ -207,6 +207,23 @@ async def generate_workflow(project_id: str, template_id: str, *, actor: dict) -
             # established in Phase E: never inferred, never set by an
             # LLM.
             "milestone_id": None,
+            # Source Foundation — provenance of the record itself,
+            # orthogonal to the fact/derived/inferred confidence
+            # vocabulary CRE already uses (that answers "how directly
+            # established"; this answers "where did this record come
+            # from"). Every activity generated through this path is,
+            # by construction, Atlas-native — never set to "imported"
+            # here. A future import path would construct this same
+            # shape with origin="imported" and the real external
+            # identity filled in; nothing about that requires changing
+            # this function. Optional in the same sense milestone_id
+            # is: existing documents predating this field are read
+            # identically whether or not they carry it - no existing
+            # reasoning path reads this field in this phase at all.
+            "source": {
+                "origin": "native", "external_system": None,
+                "external_id": None, "imported_at": None,
+            },
             "created_at": now,
             "updated_at": now,
             "status_updated_by_user_id": actor["id"],
