@@ -41,15 +41,15 @@ Return ONLY a JSON object with these keys:
 - type: one of ["voice_note", "photo", "material_request", "issue", "work_completed", "general"]
 - title: short English title (under 10 words)
 - summary: 1-2 line English summary
-- materials: list of {name, quantity, unit, required_date, priority, trade, area, reason, confidence}
-- labour: list of {trade, count, required_date, priority, area, reason, confidence}
-- equipment: list of {name, quantity, required_date, priority, reason, confidence}
+- materials: list of {name, quantity, unit, required_date, priority, trade, area, reason, attributed_to, confidence}
+- labour: list of {trade, count, required_date, priority, area, reason, attributed_to, confidence}
+- equipment: list of {name, quantity, required_date, priority, reason, attributed_to, confidence}
 - client_approvals: list of {what, required_date, priority, reason, confidence}
 - drawing_requests: list of {drawing, revision, priority, reason, confidence}
 - inspections: list of {what, required_date, priority, reason, confidence}
 - safety_observations: list of {observation, priority, area, confidence}
 - quality_observations: list of {observation, priority, area, confidence}
-- commitments: list of {what, owed_to, by_when, confidence}
+- commitments: list of {what, owed_to, by_when, attributed_to, confidence}
 - follow_ups: list of {what, when, confidence}
 - issues: list of short strings describing problems/blockers — empty if none
 - work_done: list of short strings describing completed work — empty if none
@@ -58,6 +58,9 @@ Return ONLY a JSON object with these keys:
 
 CRITICAL RULES:
 1. NEVER invent values. If a field is not mentioned, leave it as null or omit it from the object.
+1b. attributed_to: who or what made this specific claim (e.g. "supplier", "client", a named person)
+    — ONLY when the speaker is explicitly quoting or relaying someone else's statement. Leave null when
+    the speaker is reporting their own direct observation (e.g. their own count of materials on site).
 2. Each list entry must come from the speaker's actual words.
 3. confidence ∈ {"low","medium","high"} based on how clearly the speaker stated this requirement.
 4. priority ∈ {"low","normal","high","critical"} — only use "critical" for explicit emergencies (safety, stop-work).
@@ -464,7 +467,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                   confidence=_str(m.get("confidence")) or "high",
                   snippet=f"Material: {name} {qty_str} {unit}".strip(),
                   details={k: m.get(k) for k in ("name", "quantity", "unit", "required_date",
-                                                  "priority", "trade", "area", "reason", "confidence")})
+                                                  "priority", "trade", "area", "reason", "attributed_to", "confidence")})
 
     # ---- labour ----
     for lb in _list("labour"):
@@ -480,7 +483,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                   confidence=_str(lb.get("confidence")) or "high",
                   snippet=f"Labour: {cnt_str} {trade}".strip(),
                   details={k: lb.get(k) for k in ("trade", "count", "required_date",
-                                                  "priority", "area", "reason", "confidence")})
+                                                  "priority", "area", "reason", "attributed_to", "confidence")})
 
     # ---- equipment ----
     for e in _list("equipment"):
@@ -496,7 +499,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                   confidence=_str(e.get("confidence")) or "high",
                   snippet=f"Equipment: {qty_str} {name}".strip(),
                   details={k: e.get(k) for k in ("name", "equipment", "quantity",
-                                                  "required_date", "priority", "reason", "confidence")})
+                                                  "required_date", "priority", "reason", "attributed_to", "confidence")})
 
     # ---- client_approvals ----
     for c in _list("client_approvals"):
@@ -572,7 +575,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                   priority=c.get("priority"),
                   confidence=_str(c.get("confidence")) or "high",
                   snippet=f"Commitment: {what}",
-                  details={k: c.get(k) for k in ("what", "owed_to", "by_when", "confidence")})
+                  details={k: c.get(k) for k in ("what", "owed_to", "by_when", "attributed_to", "confidence")})
 
     # ---- follow_ups ----
     for f in _list("follow_ups"):

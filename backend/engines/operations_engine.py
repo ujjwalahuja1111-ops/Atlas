@@ -16,6 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone, timedelta
 from typing import Optional, Literal, Iterable
+from dateutil import parser as date_parser
 from core.db import db
 from engines import memory_engine
 from engines.reasoning_projections import TERMINAL_ITEM_STATUSES
@@ -1073,6 +1074,50 @@ async def site_requirements(site_id: str) -> dict:
 
 
 # ---------------- AI proposal accept ----------------
+def _normalize_date_phrase(phrase: Optional[str], *, reference: datetime) -> Optional[str]:
+    """Universal Operational Memory Pivot — the single fix the Universal
+    Capture Proof identified as the actual bottleneck: a relative date
+    phrase ("Thursday", "tomorrow") is genuinely extracted and stored
+    today, but never normalized, so no reasoning rule can compare it to
+    a clock (confirmed live: procurement.material_lead_time's own
+    _parse_iso() call returns None for the literal string "Thursday"
+    and silently skips the item — a construction-domain bug, not a
+    cross-domain one).
+
+    Reuses python-dateutil (already a transitive dependency; now
+    explicit in requirements.txt) rather than inventing a parser -
+    confirmed by direct testing that it already handles weekday names
+    ("Thursday" -> the next such day on/after `reference`, or the same
+    day if `reference` itself falls on it) and explicit dates
+    correctly. dateutil does not recognise "today"/"tomorrow"/
+    "yesterday" at all (confirmed by direct testing) — the one small,
+    explicit case this function adds on top of it.
+
+    Deterministic and honest: NEVER guesses. A phrase dateutil cannot
+    parse (e.g. "next Thursday", "asap") returns None, and the
+    caller's own responsibility is to leave the original raw phrase
+    stored unchanged in that case — this function never fabricates a
+    date and never silently drops the original text.
+    """
+    if not phrase or not isinstance(phrase, str):
+        return None
+    text = phrase.strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered == "today":
+        return reference.isoformat()
+    if lowered == "tomorrow":
+        return (reference + timedelta(days=1)).isoformat()
+    if lowered == "yesterday":
+        return (reference - timedelta(days=1)).isoformat()
+    try:
+        parsed = date_parser.parse(text, default=reference, fuzzy=False)
+    except (ValueError, OverflowError, TypeError):
+        return None
+    return parsed.isoformat()
+
+
 async def accept_ai_proposal(*, proposal_id: str, actor: dict,
                              edits: Optional[dict] = None) -> dict:
     prop = await get_ai_proposal(proposal_id)
@@ -1082,7 +1127,21 @@ async def accept_ai_proposal(*, proposal_id: str, actor: dict,
         raise ValueError(f"proposal already {prop['decision']}")
     edits = edits or {}
     details = prop.get("details") or {}
-    required_by = edits.get("required_by") or details.get("required_date")
+    required_by = edits.get("required_by") or details.get("required_date") or details.get("by_when")
+    # Universal Operational Memory Pivot — normalize the raw phrase
+    # against the ORIGINATING event's own timestamp (when the claim was
+    # actually made), not "now" (when a human happens to confirm it,
+    # which could be days later) - confirmed the correct reference
+    # point by the Universal Capture Proof's own trace. Only replaces
+    # required_by with the normalized value when parsing genuinely
+    # succeeds; otherwise the original raw phrase is preserved exactly
+    # as before this change, unchanged, never lost.
+    if required_by and "required_by" not in edits:
+        event = await memory_engine.get_event(prop.get("event_id")) if prop.get("event_id") else None
+        reference = _parse_iso(event["server_created_at"]) if event and event.get("server_created_at") else _now()
+        normalized = _normalize_date_phrase(required_by, reference=reference or _now())
+        if normalized:
+            required_by = normalized
     item = await create_item(
         actor=actor,
         site_id=prop["site_id"],
@@ -1115,6 +1174,17 @@ async def accept_ai_proposal(*, proposal_id: str, actor: dict,
             extra["unit"] = edits["unit"]
         elif details.get("unit"):
             extra["unit"] = details["unit"]
+        # Universal Operational Memory Pivot — distinguishes "who
+        # recorded this" (actor, already real) from "who the claim is
+        # attributed to" (the supplier, the client) — confirmed a
+        # genuine, real gap by the Universal Capture Proof (absent at
+        # the extraction level, not only storage). Same discipline as
+        # quantity/unit: only carried over at high confidence, only at
+        # creation time, never overwriting a human's own later edit.
+        if "attributed_to" in edits:
+            extra["attributed_to"] = edits["attributed_to"]
+        elif details.get("attributed_to"):
+            extra["attributed_to"] = details["attributed_to"]
     await db.operational_items.update_one({"id": item["id"]}, {"$set": extra})
     item.update(extra)
     decision = "edited" if edits else "accepted"
