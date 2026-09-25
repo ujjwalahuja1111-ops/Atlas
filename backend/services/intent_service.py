@@ -423,6 +423,54 @@ def _present_change_events(raw_events: list[dict]) -> list[dict]:
     return rows
 
 
+def _synthetic_creation_entry(item: dict) -> Optional[dict]:
+    """query_change_history completion — Section 1-10 of the brief.
+
+    An operational item's own creation-time fields (quantity, unit,
+    required_by, attributed_to) are real, persisted, and directly
+    fetchable (confirmed by the Universal Capture Proof) — but were
+    invisible to this one retrieval mechanism, since create_item()
+    never calls append_event() for the item's own initial fields (only
+    later, genuine field changes are event-logged). This synthesizes a
+    presentation-only entry from those already-persisted fields,
+    without writing or reading any event at all.
+
+    Structurally distinct from a real change row on purpose (Section
+    8): a real row is {what, from, to, when, who, source} - a claim
+    about a field changing. This has no "from" (nothing preceded
+    creation) and no single "to" either, since multiple fields may be
+    confirmed at once - forcing it into the same shape would
+    misleadingly imply each field "changed from nothing," which
+    Section 10 explicitly warns against. Instead:
+    {synthetic: true, what: "created", when, who, fields: {...}} -
+    fields holds only the keys genuinely present on the item, nothing
+    invented for keys that aren't.
+
+    Returns None (not an empty dict) when the item has none of the
+    four fields at all - nothing worth synthesizing, and the caller's
+    own "no recorded changes" message remains honest rather than
+    showing an empty, misleading entry.
+    """
+    fields: dict = {}
+    if item.get("quantity") is not None:
+        fields["quantity"] = item["quantity"]
+    if item.get("unit"):
+        fields["unit"] = item["unit"]
+    if item.get("required_by"):
+        fields["required_by"] = item["required_by"]
+    if item.get("attributed_to"):
+        fields["attributed_to"] = item["attributed_to"]
+    if not fields:
+        return None
+    return {
+        "synthetic": True,
+        "what": "created",
+        "when": item.get("created_at"),
+        "who": item.get("created_by_user_name"),
+        "fields": fields,
+    }
+
+
 async def _handle_query_change_history(project: dict, user: dict, structured: dict) -> dict:
     """Section A-F. Read-only presentation over the event history that
     already exists — no new event architecture, no reconciliation, no
@@ -449,6 +497,7 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
 
     entity_type = resolution["type"]
     entity = resolution["entity"]
+    synthetic_entry: Optional[dict] = None
 
     if entity_type == "activity":
         try:
@@ -474,6 +523,7 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
             return {"ok": False, "error": "That item isn't visible on your account."}
         raw_events = await operations_engine.list_events_for_item(entity["id"])
         entity_name = entity["title"]
+        synthetic_entry = _synthetic_creation_entry(item)
 
     else:  # milestone
         # Milestone/commercial events are Management/PM-only, matching
@@ -491,7 +541,12 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
         raw_events = [e for e in all_events if e.get("entity_id") == entity["id"]]
         entity_name = entity["name"]
 
-    if not raw_events:
+    events = _present_change_events(raw_events)
+    if synthetic_entry:
+        events = events + [synthetic_entry]
+    events.sort(key=lambda e: e.get("when") or "")
+
+    if not events:
         return {"ok": True, "data": {
             "entity_type": entity_type, "entity_name": entity_name, "events": [],
             "message": "No recorded changes found for this item.",
@@ -499,7 +554,7 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
 
     return {"ok": True, "data": {
         "entity_type": entity_type, "entity_name": entity_name,
-        "events": _present_change_events(raw_events),
+        "events": events,
     }}
 
 

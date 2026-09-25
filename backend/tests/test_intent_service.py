@@ -21,7 +21,9 @@ every other test builds its own minimal fixtures.
 Run from backend/:  python -m pytest tests/test_intent_service.py -q
 """
 import os
+import uuid
 import pytest
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, patch
 
 mongomock_motor = pytest.importorskip("mongomock_motor")
@@ -800,3 +802,266 @@ async def test_change_history_ambiguous_entity_is_honest():
 
 # 9. Regression: all existing intents behave exactly as before (covered
 # by the full existing test suite in this file re-passing unmodified).
+
+
+# ==========================================================================
+# query_change_history completion — synthetic "created" entry for
+# operational items. No new event, no new intent, no event-ledger
+# change - purely a presentation-layer addition over already-persisted
+# item fields.
+# ==========================================================================
+
+async def _make_item_with_fields(project_id, site_id, *, quantity=None, unit=None,
+                                  required_by=None, attributed_to=None, title="Test Item"):
+    item = await operations_engine.create_item(
+        actor=ADMIN, site_id=site_id, category="material_requirement",
+        title=title, required_by=required_by)
+    extra = {}
+    if quantity is not None:
+        extra["quantity"] = quantity
+    if unit:
+        extra["unit"] = unit
+    if attributed_to:
+        extra["attributed_to"] = attributed_to
+    if extra:
+        await _mock_db.operational_items.update_one({"id": item["id"]}, {"$set": extra})
+        item.update(extra)
+    return item
+
+
+# 1. Item with creation fields but no events - genuinely zero events
+#    only happens for a record inserted directly, bypassing
+#    create_item() (e.g. a legacy or externally-seeded item) - since a
+#    real create_item() call always logs its own "created" event
+#    (confirmed by reading the code directly: it already calls
+#    append_event(kind="created", ...) with category/title/origin_type
+#    - but never quantity/unit/required_by/attributed_to, which are
+#    set later, separately, in accept_ai_proposal(), with no
+#    corresponding event at all - confirming the real gap this feature
+#    closes).
+async def test_synthetic_entry_for_item_with_no_events():
+    project = await _make_project("QCH Synthetic No Events Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    now = datetime.now(timezone.utc).isoformat()
+    item_id = f"op_{uuid.uuid4()}"
+    await _mock_db.operational_items.insert_one({
+        "id": item_id, "category": "material_requirement", "title": "Procure 200 pieces tiles",
+        "description": "", "site_id": site["id"], "project_id": project["id"],
+        "origin_type": "manual", "origin_reference_id": None, "inherited_evidence_event_id": None,
+        "status": "open", "priority": "normal",
+        "created_by_user_id": ADMIN["id"], "created_by_user_name": ADMIN["name"],
+        "assigned_to_user_id": None, "assigned_to_user_name": None,
+        "created_at": now, "required_by": "2026-09-24T00:00:00+00:00", "target_start": None,
+        "quantity": 200, "unit": "pieces", "attributed_to": "supplier",
+        "blocker": None, "health": "on_track", "affected_activity_ids": [],
+    })
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Procure 200 pieces tiles"})
+    result = await intent_service.handle_intent(
+        "what changed on Procure 200 pieces tiles?", user=ADMIN, active_project_id=project["id"])
+    data = result["result"]["data"]
+    assert len(data["events"]) == 1
+    entry = data["events"][0]
+    assert entry["synthetic"] is True
+    assert entry["what"] == "created"
+    assert entry["fields"] == {
+        "quantity": 200, "unit": "pieces",
+        "required_by": "2026-09-24T00:00:00+00:00", "attributed_to": "supplier",
+    }
+    assert entry["when"] == now
+    assert entry["who"] == ADMIN["name"]
+
+
+# 2. Item with creation fields plus later status events - chronological
+#    ordering (also covers requirement 7).
+async def test_synthetic_entry_plus_later_status_event_chronological():
+    project = await _make_project("QCH Synthetic Plus Events Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await _make_item_with_fields(
+        project["id"], site["id"], quantity=80, unit="kg", attributed_to="food supplier",
+        title="Procure 80 kg chicken")
+    await operations_engine.append_event(
+        item_id=item["id"], kind="status_changed", actor=ADMIN,
+        prev_status="open", new_status="fulfilled")
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": item["title"]})
+    result = await intent_service.handle_intent(
+        f"what changed on {item['title']}?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    assert len(events) == 3
+    # The synthetic creation entry must sort first - it happened first.
+    assert events[0]["synthetic"] is True
+    assert events[0]["what"] == "created"
+    # events[1] is the real "created" event's own status transition
+    # (None -> open, logged by create_item() itself); events[2] is the
+    # later status_changed event this test explicitly triggered.
+    assert events[2].get("synthetic") is not True
+    assert events[2]["to"] == "fulfilled"
+    whens = [e["when"] for e in events]
+    assert whens == sorted(whens)
+
+
+# 3. Missing optional fields - only genuinely present fields appear.
+async def test_synthetic_entry_omits_missing_fields():
+    project = await _make_project("QCH Missing Fields Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await _make_item_with_fields(
+        project["id"], site["id"], quantity=50, title="Procure 50 bags cement")
+    # No unit, no required_by, no attributed_to set at all.
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": item["title"]})
+    result = await intent_service.handle_intent(
+        f"what changed on {item['title']}?", user=ADMIN, active_project_id=project["id"])
+    entry = result["result"]["data"]["events"][0]
+    assert entry["fields"] == {"quantity": 50}  # only the genuinely present field
+
+
+# 4. attributed_to present vs absent.
+async def test_synthetic_entry_attributed_to_present_vs_absent():
+    project = await _make_project("QCH Attribution Present Absent Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item_with = await _make_item_with_fields(
+        project["id"], site["id"], quantity=10, attributed_to="client", title="Item With Attribution")
+    item_without = await _make_item_with_fields(
+        project["id"], site["id"], quantity=10, title="Item Without Attribution")
+
+    for item, expect_present in [(item_with, True), (item_without, False)]:
+        _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                            "project_reference": None, "comparison_scope": None,
+                            "entity_reference": item["title"]})
+        result = await intent_service.handle_intent(
+            f"what changed on {item['title']}?", user=ADMIN, active_project_id=project["id"])
+        fields = result["result"]["data"]["events"][0]["fields"]
+        assert ("attributed_to" in fields) == expect_present
+
+
+# 5. required_by present vs absent.
+async def test_synthetic_entry_required_by_present_vs_absent():
+    project = await _make_project("QCH Required By Present Absent Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item_with = await _make_item_with_fields(
+        project["id"], site["id"], quantity=10, required_by="2026-10-01T00:00:00+00:00",
+        title="Item With Due Date")
+    item_without = await _make_item_with_fields(
+        project["id"], site["id"], quantity=10, title="Item Without Due Date")
+
+    for item, expect_present in [(item_with, True), (item_without, False)]:
+        _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                            "project_reference": None, "comparison_scope": None,
+                            "entity_reference": item["title"]})
+        result = await intent_service.handle_intent(
+            f"what changed on {item['title']}?", user=ADMIN, active_project_id=project["id"])
+        fields = result["result"]["data"]["events"][0]["fields"]
+        assert ("required_by" in fields) == expect_present
+
+
+# 6. RBAC / Client restrictions unchanged - operational item history
+#    remains project-visibility-only (not newly restricted, not newly
+#    opened, by this change).
+async def test_synthetic_entry_rbac_unchanged_for_client():
+    project = await _make_project("QCH RBAC Unchanged Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await _make_item_with_fields(
+        project["id"], site["id"], quantity=5, title="RBAC Test Item")
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": item["title"]})
+    result = await intent_service.handle_intent(
+        f"what changed on {item['title']}?", user=CLIENT_USER, active_project_id=project["id"])
+    # Same, pre-existing rule: activity/item history is project-
+    # visibility-only, so Client is allowed here - confirming this
+    # change did not alter that existing boundary either way.
+    assert result["result"]["ok"] is True
+    assert result["result"]["data"]["events"][0]["synthetic"] is True
+
+
+# 7. Chronological ordering - covered directly by test #2 above, and
+#    an additional case with the synthetic entry appearing correctly
+#    positioned against TWO later events.
+async def test_synthetic_entry_ordering_with_multiple_later_events():
+    project = await _make_project("QCH Multi Event Ordering Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await _make_item_with_fields(
+        project["id"], site["id"], quantity=20, title="Multi Event Item")
+    await operations_engine.append_event(
+        item_id=item["id"], kind="status_changed", actor=ADMIN,
+        prev_status="open", new_status="assigned")
+    await operations_engine.append_event(
+        item_id=item["id"], kind="status_changed", actor=ADMIN,
+        prev_status="assigned", new_status="fulfilled")
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": item["title"]})
+    result = await intent_service.handle_intent(
+        f"what changed on {item['title']}?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    assert len(events) == 4  # synthetic + real "created" status row + 2 explicit status changes
+    assert events[0]["synthetic"] is True  # creation always first
+    whens = [e["when"] for e in events]
+    assert whens == sorted(whens)
+
+
+# 8. No new event written as a side effect of calling
+#    query_change_history itself - confirmed against the real count,
+#    whatever it genuinely is (create_item()'s own real "created"
+#    event is already there before this feature is even exercised;
+#    the point is that READING history adds nothing further).
+async def test_synthetic_entry_writes_no_new_event():
+    project = await _make_project("QCH No Side Effect Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await _make_item_with_fields(
+        project["id"], site["id"], quantity=15, required_by="2026-09-30T00:00:00+00:00",
+        attributed_to="supplier", title="No Side Effect Item")
+
+    before_count = len(await operations_engine.list_events_for_item(item["id"]))
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": item["title"]})
+    # Call it twice - if the read itself were persisting anything, a
+    # second identical call would show a growing count.
+    await intent_service.handle_intent(
+        f"what changed on {item['title']}?", user=ADMIN, active_project_id=project["id"])
+    await intent_service.handle_intent(
+        f"what changed on {item['title']}?", user=ADMIN, active_project_id=project["id"])
+
+    after_count = len(await operations_engine.list_events_for_item(item["id"]))
+    assert after_count == before_count
+
+
+# No fields at all, and genuinely no events either (a directly-
+# inserted record, matching test #1's own approach) - the "no
+# recorded changes" message remains honest, not a misleading empty
+# synthetic entry.
+async def test_no_synthetic_entry_when_item_has_no_confirmable_fields():
+    project = await _make_project("QCH No Confirmable Fields Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    now = datetime.now(timezone.utc).isoformat()
+    item_id = f"op_{uuid.uuid4()}"
+    await _mock_db.operational_items.insert_one({
+        "id": item_id, "category": "general", "title": "Bare Item With Nothing",
+        "description": "", "site_id": site["id"], "project_id": project["id"],
+        "origin_type": "manual", "origin_reference_id": None, "inherited_evidence_event_id": None,
+        "status": "open", "priority": "normal",
+        "created_by_user_id": ADMIN["id"], "created_by_user_name": ADMIN["name"],
+        "assigned_to_user_id": None, "assigned_to_user_name": None,
+        "created_at": now, "required_by": None, "target_start": None,
+        "blocker": None, "health": "on_track", "affected_activity_ids": [],
+    })
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Bare Item With Nothing"})
+    result = await intent_service.handle_intent(
+        "what changed on Bare Item With Nothing?", user=ADMIN, active_project_id=project["id"])
+    data = result["result"]["data"]
+    assert data["events"] == []
+    assert data["message"] == "No recorded changes found for this item."
