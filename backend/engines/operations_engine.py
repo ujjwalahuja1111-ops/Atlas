@@ -1438,6 +1438,23 @@ async def _my_day_pm(user: dict, project_ids: list[str], now_iso: str) -> dict:
     projects_requiring_attention_ids = {i["project_id"] for i in in_scope if i["priority"] == "critical"}
     projects_requiring_attention_ids |= {a["project_id"] for a in delayed_activities}
 
+    # Follow Through — the exact due_today/overdue pattern the
+    # supervisor's own My Day already establishes (required_by
+    # compared against today/now), extended here to the PM's own
+    # project-wide scope rather than assignment-filtered. This is the
+    # real gap this sprint found: a commitment captured from "the
+    # supplier said 200 tiles Thursday" or "Rahul joins Monday" is
+    # never assigned to an internal Atlas user (accept_ai_proposal()
+    # never sets assigned_to_user_id, confirmed by inspection) - so it
+    # was invisible to the supervisor's own assignment-filtered
+    # due_today/overdue, and the PM's own project-wide view never had
+    # this breakdown at all, only priority-based grouping. Same field,
+    # same comparison, same sort - never a fabricated deadline: an
+    # item with no required_by simply never appears in either list.
+    today = now_iso[:10]
+    due_today = [i for i in in_scope if i.get("required_by") and str(i["required_by"])[:10] == today]
+    overdue = [i for i in in_scope if i.get("required_by") and str(i["required_by"]) < now_iso]
+
     return {
         "role": user["role"],
         "projects_requiring_attention": len(projects_requiring_attention_ids),
@@ -1445,6 +1462,8 @@ async def _my_day_pm(user: dict, project_ids: list[str], now_iso: str) -> dict:
         "blocked_activities": blocked_activities,
         "open_operational_items_count": len(in_scope),
         "upcoming_inspections": upcoming_inspections,
+        "due_today": sorted(due_today, key=_urgency_sort_key),
+        "overdue": sorted(overdue, key=_urgency_sort_key),
         "pending_approvals": sorted(pending_approvals, key=_urgency_sort_key),
         "high_priority_work": sorted(high_priority, key=_urgency_sort_key),
         "escalations": sorted(escalations, key=_urgency_sort_key),
