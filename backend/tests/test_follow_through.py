@@ -271,3 +271,160 @@ async def test_supervisor_view_unaffected_still_has_its_own_due_today():
     assert result["role"] == "site_supervisor"
     titles = [i["title"] for i in result["due_today"]]
     assert "My assigned item" in titles
+
+
+# ==========================================================================
+# Follow-Through Sprint 2 — Management portfolio attention.
+# Extends _my_day_admin() with the exact same due_today/overdue
+# pattern Sprint 1 already proved for _my_day_pm(), scoped across
+# every project Management can see (confirmed unrestricted) rather
+# than one project. resource_alerts (the existing, narrower,
+# construction-flavored count) is left completely unchanged.
+# ==========================================================================
+
+ADMIN = {"id": "u_ft_admin", "name": "FT Admin", "role": "management"}
+
+
+async def test_management_sees_due_today_across_the_portfolio():
+    """Confirms portfolio scope, not single-project: two DIFFERENT
+    projects, each with its own due-today item, both appear in one
+    Management call."""
+    project1 = await _make_project("FT Mgmt Portfolio Project 1")
+    site1 = await memory_engine.insert_site(project_id=project1["id"], name="Site 1")
+    project2 = await _make_project("FT Mgmt Portfolio Project 2")
+    site2 = await memory_engine.insert_site(project_id=project2["id"], name="Site 2")
+    today_str = _now().isoformat()
+    await _make_item_with_required_by(
+        project1["id"], site1["id"], required_by=today_str, title="Procure 200 pieces tiles")
+    await _make_item_with_required_by(
+        project2["id"], site2["id"], required_by=today_str, title="Procure 80 kg chicken")
+
+    result = await operations_engine.my_day(user=ADMIN)
+    assert result["role"] == "management"
+    due_titles = {i["title"] for i in result["due_today"]}
+    assert "Procure 200 pieces tiles" in due_titles
+    assert "Procure 80 kg chicken" in due_titles
+
+
+async def test_management_sees_overdue_unassigned_commitment():
+    project = await _make_project("FT Mgmt Overdue Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    yesterday = (_now() - timedelta(days=1)).isoformat()
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=yesterday, title="Rahul joins the release")
+
+    result = await operations_engine.my_day(user=ADMIN)
+    overdue_titles = [i["title"] for i in result["overdue"]]
+    assert "Rahul joins the release" in overdue_titles
+
+
+async def test_management_no_required_by_never_fabricated():
+    project = await _make_project("FT Mgmt No Deadline Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=None, title="Undated item")
+
+    result = await operations_engine.my_day(user=ADMIN)
+    all_titles = [i["title"] for i in result["due_today"]] + [i["title"] for i in result["overdue"]]
+    assert "Undated item" not in all_titles
+
+
+async def test_management_fulfilled_item_drops_out():
+    project = await _make_project("FT Mgmt Fulfilled Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    yesterday = (_now() - timedelta(days=1)).isoformat()
+    item = await _make_item_with_required_by(
+        project["id"], site["id"], required_by=yesterday, title="Fulfilled chicken")
+    await operations_engine.transition_status(item_id=item["id"], to_status="fulfilled", actor=ACTOR)
+
+    result = await operations_engine.my_day(user=ADMIN)
+    overdue_titles = [i["title"] for i in result["overdue"]]
+    assert "Fulfilled chicken" not in overdue_titles
+
+
+async def test_management_attribution_and_responsibility_distinct_and_honest():
+    project = await _make_project("FT Mgmt Attribution Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    supervisor = {"id": "u_ft_mgmt_sup", "name": "FT Mgmt Supervisor", "role": "site_supervisor"}
+    today_str = _now().isoformat()
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=today_str, title="Assigned and attributed tiles",
+        attributed_to="supplier", assigned_to=supervisor)
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=today_str, title="Neither assigned nor attributed")
+
+    result = await operations_engine.my_day(user=ADMIN)
+    attributed_entry = next(i for i in result["due_today"] if i["title"] == "Assigned and attributed tiles")
+    assert attributed_entry["attributed_to"] == "supplier"
+    assert attributed_entry["assigned_to_user_name"] == "FT Mgmt Supervisor"
+    assert attributed_entry["attributed_to"] != attributed_entry["assigned_to_user_name"]
+
+    bare_entry = next(i for i in result["due_today"] if i["title"] == "Neither assigned nor attributed")
+    assert bare_entry.get("attributed_to") is None
+    assert bare_entry.get("assigned_to_user_name") is None
+
+
+async def test_management_resource_alerts_unchanged():
+    """resource_alerts (the existing, narrower construction-flavored
+    count) must remain exactly as it was - this sprint adds the
+    missing universal breakdown alongside it, not a replacement.
+    resource_alerts is itself genuinely portfolio-wide (unchanged,
+    pre-existing behavior), so this asserts the correct, relative
+    thing - one more material_requirement item increases the count by
+    exactly one - rather than an absolute value that would depend on
+    every other test's own data in this shared mock database."""
+    before = (await operations_engine.my_day(user=ADMIN))["resource_alerts"]
+    project = await _make_project("FT Mgmt Resource Alerts Unchanged Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=None, title="Material item",
+        category="material_requirement")
+    after = (await operations_engine.my_day(user=ADMIN))["resource_alerts"]
+    assert after == before + 1
+
+
+async def test_management_cross_domain_all_three_appear():
+    project = await _make_project("FT Mgmt Cross Domain Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    today_str = _now().isoformat()
+    yesterday_str = (_now() - timedelta(days=1)).isoformat()
+
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=today_str, title="Procure 200 pieces tiles",
+        attributed_to="supplier")
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=yesterday_str, title="Rahul joins the release",
+        category="commitment")
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=today_str, title="Procure 80 kg chicken",
+        attributed_to="food supplier")
+
+    result = await operations_engine.my_day(user=ADMIN)
+    due_titles = {i["title"] for i in result["due_today"]}
+    overdue_titles = {i["title"] for i in result["overdue"]}
+    assert "Procure 200 pieces tiles" in due_titles
+    assert "Rahul joins the release" in overdue_titles
+    assert "Procure 80 kg chicken" in due_titles
+
+
+async def test_pm_and_supervisor_views_unaffected_by_admin_change():
+    """Regression: confirms Sprint 1's own PM extension and the
+    original supervisor view are both completely unaffected by this
+    sprint's own separate _my_day_admin() change."""
+    project = await _make_project("FT Regression Unaffected Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    today_str = _now().isoformat()
+    await _make_item_with_required_by(
+        project["id"], site["id"], required_by=today_str, title="Cross-role test item")
+
+    pm_result = await operations_engine.my_day(user=PM)
+    assert pm_result["role"] == "project_manager"
+    assert "Cross-role test item" in [i["title"] for i in pm_result["due_today"]]
+
+    supervisor = {"id": "u_ft_reg_sup", "name": "FT Reg Supervisor", "role": "site_supervisor"}
+    supervisor_result = await operations_engine.my_day(user=supervisor)
+    assert supervisor_result["role"] == "site_supervisor"
+    # Unassigned item correctly does NOT appear in the supervisor's own
+    # personal, assignment-filtered view - unchanged, pre-existing
+    # behavior.
+    assert "Cross-role test item" not in [i["title"] for i in supervisor_result["due_today"]]

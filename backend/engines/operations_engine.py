@@ -1672,6 +1672,35 @@ async def _my_day_admin(user: dict) -> dict:
         {"_id": 0},
     ).to_list(500)
 
+    # Follow-Through Sprint 2 — the same due_today/overdue pattern
+    # _my_day_pm() already established (Sprint 1), applied here across
+    # every project Management can see rather than one project's own
+    # scope. Management is confirmed unrestricted (memory_engine.
+    # list_projects returns every non-archived project for this role,
+    # not filtered by assigned_project_ids) — the correct portfolio
+    # scope for "what needs my attention" as a management user,
+    # matching portfolio_control_center's own established pattern of
+    # operating across the full portfolio.
+    #
+    # Deliberately NOT a copy of _my_day_pm()'s own single-project
+    # in_scope variable: that list is already filtered to the caller's
+    # own project_ids at that function's own call site. Here the
+    # equivalent set is computed directly, since _my_day_admin() has
+    # no such variable of its own today.
+    all_projects = await memory_engine.list_projects(user=user)
+    all_project_ids = [p["id"] for p in all_projects]
+    portfolio_open_items = await db.operational_items.find(
+        {"status": {"$nin": list(TERMINAL_ITEM_STATUSES)}, "project_id": {"$in": all_project_ids}},
+        {"_id": 0},
+    ).to_list(2000)
+    await attach_names(portfolio_open_items)
+    today = now_iso_for_admin = _iso(_now())
+    today_str = today[:10]
+    due_today = [i for i in portfolio_open_items
+                 if i.get("required_by") and str(i["required_by"])[:10] == today_str]
+    overdue = [i for i in portfolio_open_items
+               if i.get("required_by") and str(i["required_by"]) < now_iso_for_admin]
+
     return {
         "role": "management",
         "portfolio_health": portfolio["summary"],
@@ -1679,6 +1708,8 @@ async def _my_day_admin(user: dict) -> dict:
         "critical_issues": portfolio["summary"]["critical_operational_items"],
         "pending_approvals": portfolio["summary"]["pending_client_approvals"],
         "resource_alerts": len(everything_open),
+        "due_today": sorted(due_today, key=_urgency_sort_key),
+        "overdue": sorted(overdue, key=_urgency_sort_key),
     }
 
 
