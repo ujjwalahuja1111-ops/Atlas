@@ -498,6 +498,7 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
     entity_type = resolution["type"]
     entity = resolution["entity"]
     synthetic_entry: Optional[dict] = None
+    fulfillment_metrics: Optional[dict] = None
 
     if entity_type == "activity":
         try:
@@ -524,6 +525,14 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
         raw_events = await operations_engine.list_events_for_item(entity["id"])
         entity_name = entity["title"]
         synthetic_entry = _synthetic_creation_entry(item)
+        # Next Universal Memory Sprint — required_by (the promise) and
+        # completed_at (the actual outcome) both already exist on the
+        # item; nothing previously compared them. Computed only when
+        # both are genuinely present - never fabricated for an item
+        # still open or missing a deadline.
+        fulfillment_metrics = None
+        if item.get("required_by") and item.get("completed_at"):
+            fulfillment_metrics = operations_engine.compute_metrics(item)
 
     else:  # milestone
         # Milestone/commercial events are Management/PM-only, matching
@@ -542,6 +551,11 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
         entity_name = entity["name"]
 
     events = _present_change_events(raw_events)
+    if fulfillment_metrics is not None:
+        for row in events:
+            if row.get("what") == "status" and row.get("to") == "fulfilled":
+                row["fulfilled_on_time"] = fulfillment_metrics["fulfilled_on_time"]
+                row["days_late"] = fulfillment_metrics["days_late"]
     if synthetic_entry:
         events = events + [synthetic_entry]
     events.sort(key=lambda e: e.get("when") or "")

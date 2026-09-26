@@ -956,12 +956,33 @@ def compute_metrics(item: dict) -> dict:
     days_overdue = max(0, int((now - required).total_seconds() // 86400)) if (required and required < now) else 0
     ttc_hours = ((completed - assigned).total_seconds() / 3600) if (assigned and completed) else None
     verif_delay = ((verified - completed).total_seconds() / 3600) if (completed and verified) else None
+
+    # Next Universal Memory Sprint — the confirmed gap: required_by
+    # (the promise) and completed_at (the actual outcome) both already
+    # exist, and nothing anywhere compared them. Deterministic,
+    # date-only comparison (not full timestamps) — researched directly
+    # against Jira's own established due-date/resolved-date pattern
+    # and its own documented pitfall: comparing exact timestamps wrongly
+    # flags a same-calendar-day completion as "late" over a few hours'
+    # difference, which is not what "Thursday" as a deadline means in
+    # ordinary speech. fulfilled_on_time is None (not True/False) when
+    # either date is missing — never a fabricated judgment.
+    fulfilled_on_time = None
+    days_late = None
+    if required and completed:
+        required_date = required.date()
+        completed_date = completed.date()
+        fulfilled_on_time = completed_date <= required_date
+        days_late = max(0, (completed_date - required_date).days)
+
     return {
         "current_age_hours": round(age_hours, 2) if age_hours is not None else None,
         "time_remaining_hours": round(remaining_hours, 2) if remaining_hours is not None else None,
         "days_overdue": days_overdue,
         "time_to_complete_hours": round(ttc_hours, 2) if ttc_hours is not None else None,
         "verification_delay_hours": round(verif_delay, 2) if verif_delay is not None else None,
+        "fulfilled_on_time": fulfilled_on_time,
+        "days_late": days_late,
     }
 
 

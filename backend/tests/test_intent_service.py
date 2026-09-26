@@ -23,7 +23,7 @@ Run from backend/:  python -m pytest tests/test_intent_service.py -q
 import os
 import uuid
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, patch
 
 mongomock_motor = pytest.importorskip("mongomock_motor")
@@ -1065,3 +1065,110 @@ async def test_no_synthetic_entry_when_item_has_no_confirmable_fields():
     data = result["result"]["data"]
     assert data["events"] == []
     assert data["message"] == "No recorded changes found for this item."
+
+
+# ==========================================================================
+# Next Universal Memory Sprint — fulfilled_on_time/days_late annotation
+# on query_change_history's own "fulfilled" status row.
+# ==========================================================================
+
+async def test_change_history_fulfilled_row_annotated_when_late():
+    project = await _make_project("QCH Fulfillment Late Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    required = (datetime.now(timezone.utc) - timedelta(days=5)).isoformat()
+    item = await operations_engine.create_item(
+        actor=ADMIN, site_id=site["id"], category="material_requirement",
+        title="Late fulfillment item", required_by=required)
+    await operations_engine.transition_status(item_id=item["id"], to_status="assigned", actor=ADMIN)
+    await operations_engine.transition_status(item_id=item["id"], to_status="in_progress", actor=ADMIN)
+    await operations_engine.transition_status(item_id=item["id"], to_status="fulfilled", actor=ADMIN)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Late fulfillment item"})
+    result = await intent_service.handle_intent(
+        "what changed on Late fulfillment item?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    fulfilled_row = next(e for e in events if e.get("to") == "fulfilled")
+    assert fulfilled_row["fulfilled_on_time"] is False
+    assert fulfilled_row["days_late"] >= 5
+
+
+async def test_change_history_fulfilled_row_annotated_when_on_time():
+    project = await _make_project("QCH Fulfillment On Time Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    required = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat()
+    item = await operations_engine.create_item(
+        actor=ADMIN, site_id=site["id"], category="material_requirement",
+        title="On time fulfillment item", required_by=required)
+    await operations_engine.transition_status(item_id=item["id"], to_status="assigned", actor=ADMIN)
+    await operations_engine.transition_status(item_id=item["id"], to_status="in_progress", actor=ADMIN)
+    await operations_engine.transition_status(item_id=item["id"], to_status="fulfilled", actor=ADMIN)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "On time fulfillment item"})
+    result = await intent_service.handle_intent(
+        "what changed on On time fulfillment item?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    fulfilled_row = next(e for e in events if e.get("to") == "fulfilled")
+    assert fulfilled_row["fulfilled_on_time"] is True
+    assert fulfilled_row["days_late"] == 0
+
+
+async def test_change_history_no_required_by_no_annotation_fabricated():
+    project = await _make_project("QCH No Required By Fulfillment Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await operations_engine.create_item(
+        actor=ADMIN, site_id=site["id"], category="general", title="Undated fulfillment item")
+    await operations_engine.transition_status(item_id=item["id"], to_status="assigned", actor=ADMIN)
+    await operations_engine.transition_status(item_id=item["id"], to_status="in_progress", actor=ADMIN)
+    await operations_engine.transition_status(item_id=item["id"], to_status="fulfilled", actor=ADMIN)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Undated fulfillment item"})
+    result = await intent_service.handle_intent(
+        "what changed on Undated fulfillment item?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    fulfilled_row = next(e for e in events if e.get("to") == "fulfilled")
+    assert "fulfilled_on_time" not in fulfilled_row
+    assert "days_late" not in fulfilled_row
+
+
+async def test_change_history_open_item_no_fulfillment_annotation():
+    """An item that's still open (never fulfilled) must never show a
+    fulfilled_on_time annotation anywhere - regression against
+    fabricating a judgment for work that hasn't happened."""
+    project = await _make_project("QCH Still Open Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    required = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    item = await operations_engine.create_item(
+        actor=ADMIN, site_id=site["id"], category="material_requirement",
+        title="Still open item", required_by=required)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Still open item"})
+    result = await intent_service.handle_intent(
+        "what changed on Still open item?", user=ADMIN, active_project_id=project["id"])
+    events = result["result"]["data"]["events"]
+    assert all("fulfilled_on_time" not in e for e in events)
+
+
+async def test_change_history_activity_history_unaffected_by_fulfillment_feature():
+    """Regression: the fulfillment annotation is operational-item-only
+    - activity history must remain completely unaffected."""
+    project = await _make_project("QCH Activity Unaffected Project")
+    aid = await _make_bare_activity_for_history(project["id"])
+    actor = {"id": ADMIN["id"], "name": ADMIN["name"]}
+    await workflow_engine.set_status(aid, "blocked", actor=actor)
+
+    _mock_structuring({"intents": [{"intent": "query_change_history", "confidence": "high"}],
+                        "project_reference": None, "comparison_scope": None,
+                        "entity_reference": "Electrical First Fix"})
+    result = await intent_service.handle_intent(
+        "what changed on Electrical First Fix?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is True
+    events = result["result"]["data"]["events"]
+    assert all("fulfilled_on_time" not in e for e in events)
