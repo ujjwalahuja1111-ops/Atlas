@@ -28,6 +28,36 @@ CATEGORIES = {
     "quality_observation", "safety_observation",
     "commitment", "inspection", "follow_up", "general",
 }
+
+# Historical Operational Memory sprint — the smallest existing
+# defensible subset of CATEGORIES that genuinely represents something
+# an attributed/assigned actor OWES, with a deadline, that they either
+# met or didn't. Not a new category, not a new schema — a filter over
+# what already exists, established explicitly here rather than left
+# implicit.
+#
+# Included, each a real obligation owed BY the actor: material/labour/
+# equipment_requirement (a supplier/party promised to supply
+# something), commitment (named exactly for this), client_approval and
+# drawing_request (the client/architect owes a response or a
+# deliverable by a date — a different kind of obligation than a
+# material delivery, but still genuinely theirs to fulfill or miss).
+#
+# Excluded, and why: site_issue/quality_observation/safety_observation
+# are OBSERVATIONS of a problem, not a promise the attributed/assigned
+# party made — "exposed rebar" was never anyone's commitment, even
+# when someone is assigned to fix it; counting it as one of their
+# "commitments" would misrepresent what actually happened. inspection
+# is a scheduled checkpoint, not a party's own promise. follow_up is
+# meta — a reminder about some other, separate item — counting it
+# alongside the thing it reminds about would double-count the same
+# underlying obligation. general is an undefined catch-all with no
+# claimable semantic meaning at all.
+ACTOR_COMMITMENT_CATEGORIES = {
+    "material_requirement", "labour_requirement", "equipment_requirement",
+    "commitment", "client_approval", "drawing_request",
+}
+
 ORIGIN_TYPES = {
     "ai_proposal", "manual", "project_manager", "management",
     "client", "architect", "future_integration",
@@ -1006,7 +1036,8 @@ async def distinct_attributed_to(project_id: str) -> list[str]:
 
 async def actor_history(project_id: str, *, user: dict,
                         attributed_to: Optional[str] = None,
-                        assigned_to_user_id: Optional[str] = None) -> dict:
+                        assigned_to_user_id: Optional[str] = None,
+                        items_limit: int = 100, items_offset: int = 0) -> dict:
     """Historical Operational Memory sprint — descriptive, traceable
     aggregation of past commitments for one attributed actor within
     ONE project. Not a supplier rating, not a reliability score, not a
@@ -1031,6 +1062,21 @@ async def actor_history(project_id: str, *, user: dict,
     identically in every respect except the honesty note attached to
     the result, since they are genuinely different strengths of
     identity and the result says so rather than blurring them together.
+
+    Scoped to ACTOR_COMMITMENT_CATEGORIES only (see that constant's own
+    documentation) — so "total_commitments" has a truthful semantic
+    meaning: something the actor genuinely owed, not every operational
+    item that happens to name them.
+
+    Aggregate counts (total_commitments, fulfilled_count, on_time_count,
+    late_count, total_days_late, still_open_count) are always computed
+    over the COMPLETE matching set, with no cap — a project with
+    thousands of matching items still returns a correct total, never a
+    silently truncated one. items_limit/items_offset apply ONLY to the
+    traceable `items` list returned alongside the counts, which can
+    legitimately be paged without the counts themselves ever being
+    wrong; `items_total`/`has_more` in the result say plainly when more
+    exist than were returned.
     """
     if bool(attributed_to) == bool(assigned_to_user_id):
         raise ValueError("provide exactly one of attributed_to or assigned_to_user_id")
@@ -1043,7 +1089,7 @@ async def actor_history(project_id: str, *, user: dict,
     if user["role"] == "client":
         raise ValueError("Actor history is not available to the client role.")
 
-    query: dict = {"project_id": project_id}
+    query: dict = {"project_id": project_id, "category": {"$in": list(ACTOR_COMMITMENT_CATEGORIES)}}
     if attributed_to:
         query["attributed_to"] = attributed_to
         identity_note = ("Based on an exact text match of \"attributed to\" within this "
@@ -1054,7 +1100,10 @@ async def actor_history(project_id: str, *, user: dict,
         query["assigned_to_user_id"] = assigned_to_user_id
         identity_note = "Based on a real, registered Atlas user account."
 
-    matching = await db.operational_items.find(query, {"_id": 0}).to_list(500)
+    # No cap — the complete matching set, so every count below is
+    # correct regardless of how many items match. Historical memory
+    # must never silently under-report because of a hidden page size.
+    matching = await db.operational_items.find(query, {"_id": 0}).to_list(None)
     matching = [enrich(i) for i in matching]
 
     fulfilled = [i for i in matching if i["status"] in ("fulfilled", "verified", "closed")]
@@ -1062,6 +1111,9 @@ async def actor_history(project_id: str, *, user: dict,
     late = [i for i in fulfilled if i["metrics"]["fulfilled_on_time"] is False]
     total_days_late = sum(i["metrics"]["days_late"] or 0 for i in late)
     still_open = [i for i in matching if i["status"] not in ("fulfilled", "verified", "closed")]
+
+    items_total = len(matching)
+    page = matching[items_offset:items_offset + items_limit]
 
     return {
         "project_id": project_id,
@@ -1074,12 +1126,15 @@ async def actor_history(project_id: str, *, user: dict,
         "late_count": len(late),
         "total_days_late": total_days_late,
         "still_open_count": len(still_open),
+        "items_total": items_total,
+        "items_offset": items_offset,
+        "has_more": items_offset + len(page) < items_total,
         "items": [
             {"id": i["id"], "title": i.get("title"), "status": i["status"],
              "required_by": i.get("required_by"), "completed_at": i.get("completed_at"),
              "fulfilled_on_time": i["metrics"]["fulfilled_on_time"],
              "days_late": i["metrics"]["days_late"]}
-            for i in matching
+            for i in page
         ],
     }
 

@@ -255,3 +255,133 @@ async def test_cross_domain_construction_software_hospitality():
     assert software["on_time_count"] == 1
     # Same function, same shape, same fields - no construction-specific branching.
     assert set(construction.keys()) == set(hospitality.keys()) == set(software.keys())
+
+
+# ==========================================================================
+# Fix 1 — no silent truncation. Aggregate counts must be correct over
+# the COMPLETE matching set, however large; only the traceable `items`
+# list is paginated, explicitly, with has_more/items_total saying so.
+# ==========================================================================
+
+async def test_more_than_500_matching_items_produce_correct_total():
+    """The exact regression this fix targets: the previous .to_list(500)
+    would have silently truncated both the total and every derived
+    count for any actor with more than 500 matching items."""
+    project = await _make_project("HOM Over 500 Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    now = datetime.now(timezone.utc)
+    # 520 fulfilled-on-time items + 30 late items = 550 total, well
+    # past the old hard cap.
+    for i in range(520):
+        required = _iso(now - timedelta(days=1))
+        await _make_fulfilled_item(project["id"], site["id"], required_by=required,
+                                    completed_at=required, title=f"On time {i}",
+                                    attributed_to="Bulk Supplier")
+    for i in range(30):
+        required = _iso(now - timedelta(days=5))
+        late = _iso(now - timedelta(days=3))
+        await _make_fulfilled_item(project["id"], site["id"], required_by=required,
+                                    completed_at=late, title=f"Late {i}",
+                                    attributed_to="Bulk Supplier")
+
+    result = await operations_engine.actor_history(project["id"], user=PM, attributed_to="Bulk Supplier")
+    assert result["total_commitments"] == 550
+    assert result["fulfilled_count"] == 550
+    assert result["on_time_count"] == 520
+    assert result["late_count"] == 30
+    assert result["items_total"] == 550
+
+
+async def test_items_list_paginated_but_counts_remain_complete():
+    project = await _make_project("HOM Pagination Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    now = datetime.now(timezone.utc)
+    for i in range(150):
+        required = _iso(now)
+        await _make_fulfilled_item(project["id"], site["id"], required_by=required,
+                                    completed_at=required, title=f"Item {i}",
+                                    attributed_to="Paginated Supplier")
+
+    page1 = await operations_engine.actor_history(
+        project["id"], user=PM, attributed_to="Paginated Supplier", items_limit=100, items_offset=0)
+    assert page1["total_commitments"] == 150  # the count is always complete
+    assert len(page1["items"]) == 100  # the page is limited
+    assert page1["has_more"] is True
+    assert page1["items_total"] == 150
+
+    page2 = await operations_engine.actor_history(
+        project["id"], user=PM, attributed_to="Paginated Supplier", items_limit=100, items_offset=100)
+    assert len(page2["items"]) == 50
+    assert page2["has_more"] is False
+    assert page2["total_commitments"] == 150  # counts identical across pages - never recomputed partially
+
+
+# ==========================================================================
+# Fix 2 — semantic boundary. total_commitments must only reflect
+# ACTOR_COMMITMENT_CATEGORIES; observations and undefined catch-alls
+# must never be counted as if they were promises the actor made.
+# ==========================================================================
+
+async def test_site_issue_excluded_from_actor_commitments():
+    """A safety/quality observation assigned to someone is not their
+    "commitment" - it's a problem assigned to them to resolve, a
+    different thing entirely. Must not inflate their commitment count."""
+    project = await _make_project("HOM Site Issue Excluded Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    now = datetime.now(timezone.utc)
+    await _make_fulfilled_item(project["id"], site["id"], required_by=_iso(now), completed_at=_iso(now),
+                                title="Exposed rebar", attributed_to="ABC Supplier",
+                                category="site_issue")
+
+    result = await operations_engine.actor_history(project["id"], user=PM, attributed_to="ABC Supplier")
+    assert result["total_commitments"] == 0
+
+
+async def test_general_category_excluded_from_actor_commitments():
+    project = await _make_project("HOM General Excluded Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    now = datetime.now(timezone.utc)
+    await _make_fulfilled_item(project["id"], site["id"], required_by=_iso(now), completed_at=_iso(now),
+                                title="Vague note", attributed_to="ABC Supplier",
+                                category="general")
+
+    result = await operations_engine.actor_history(project["id"], user=PM, attributed_to="ABC Supplier")
+    assert result["total_commitments"] == 0
+
+
+async def test_follow_up_excluded_from_actor_commitments():
+    project = await _make_project("HOM Follow Up Excluded Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    now = datetime.now(timezone.utc)
+    await _make_fulfilled_item(project["id"], site["id"], required_by=_iso(now), completed_at=_iso(now),
+                                title="Follow up with supplier", attributed_to="ABC Supplier",
+                                category="follow_up")
+
+    result = await operations_engine.actor_history(project["id"], user=PM, attributed_to="ABC Supplier")
+    assert result["total_commitments"] == 0
+
+
+async def test_client_approval_and_material_requirement_both_included():
+    """The defensible core: material_requirement (a supplier's own
+    delivery promise) and client_approval (a client's own obligation
+    to respond) are genuinely different kinds of obligation but both
+    legitimately count as something the actor owed."""
+    project = await _make_project("HOM Mixed Valid Categories Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    now = datetime.now(timezone.utc)
+    await _make_fulfilled_item(project["id"], site["id"], required_by=_iso(now), completed_at=_iso(now),
+                                title="Deliver tiles", attributed_to="ABC Supplier",
+                                category="material_requirement")
+    await _make_fulfilled_item(project["id"], site["id"], required_by=_iso(now), completed_at=_iso(now),
+                                title="Approve layout", attributed_to="ABC Supplier",
+                                category="client_approval")
+
+    result = await operations_engine.actor_history(project["id"], user=PM, attributed_to="ABC Supplier")
+    assert result["total_commitments"] == 2
+
+
+async def test_actor_commitment_categories_is_a_strict_subset_of_categories():
+    """The filter must only ever reference real, existing category
+    values - never invent a new one."""
+    assert operations_engine.ACTOR_COMMITMENT_CATEGORIES.issubset(operations_engine.CATEGORIES)
+    assert operations_engine.ACTOR_COMMITMENT_CATEGORIES < operations_engine.CATEGORIES  # a strict subset, not everything
