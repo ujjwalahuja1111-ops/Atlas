@@ -1172,3 +1172,93 @@ async def test_change_history_activity_history_unaffected_by_fulfillment_feature
     assert result["result"]["ok"] is True
     events = result["result"]["data"]["events"]
     assert all("fulfilled_on_time" not in e for e in events)
+
+
+# ==========================================================================
+# Historical Operational Memory sprint — query_actor_history intent
+# layer. Deterministic resolution (real user substring match first,
+# then exact attributed_to match), no LLM involved beyond extracting
+# which name was mentioned.
+# ==========================================================================
+
+async def test_actor_history_intent_resolves_attributed_to():
+    project = await _make_project("QAH Attributed Resolution Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    item = await operations_engine.create_item(
+        actor=ADMIN, site_id=site["id"], category="material_requirement",
+        title="Tiles", required_by=datetime.now(timezone.utc).isoformat())
+    await _mock_db.operational_items.update_one(
+        {"id": item["id"]}, {"$set": {"status": "fulfilled",
+                                        "completed_at": datetime.now(timezone.utc).isoformat(),
+                                        "attributed_to": "ABC Supplier"}})
+
+    _mock_structuring({"intents": [{"intent": "query_actor_history", "confidence": "high"}],
+                        "project_reference": None, "attributed_actor_reference": "ABC Supplier"})
+    result = await intent_service.handle_intent(
+        "has ABC Supplier been late before?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is True
+    assert result["result"]["data"]["attributed_to"] == "ABC Supplier"
+    assert result["result"]["data"]["total_commitments"] == 1
+
+
+async def test_actor_history_intent_resolves_real_user():
+    project = await _make_project("QAH Real User Resolution Project")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    rahul = await memory_engine.upsert_user(phone="9999966001", name="Rahul Kumar", role="site_supervisor")
+    item = await operations_engine.create_item(
+        actor=ADMIN, site_id=site["id"], category="commitment",
+        title="Rahul joins", required_by=datetime.now(timezone.utc).isoformat(),
+        assigned_to_user=rahul)
+    await _mock_db.operational_items.update_one(
+        {"id": item["id"]}, {"$set": {"status": "fulfilled",
+                                        "completed_at": datetime.now(timezone.utc).isoformat()}})
+
+    _mock_structuring({"intents": [{"intent": "query_actor_history", "confidence": "high"}],
+                        "project_reference": None, "attributed_actor_reference": "Rahul"})
+    result = await intent_service.handle_intent(
+        "how has Rahul done?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is True
+    assert result["result"]["data"]["assigned_to_user_id"] == rahul["id"]
+    assert "real, registered" in result["result"]["data"]["identity_note"]
+
+
+async def test_actor_history_intent_no_name_declined():
+    project = await _make_project("QAH No Name Project")
+    _mock_structuring({"intents": [{"intent": "query_actor_history", "confidence": "high"}],
+                        "project_reference": None, "attributed_actor_reference": None})
+    result = await intent_service.handle_intent(
+        "has anyone been late?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is False
+    assert "which person" in result["result"]["error"].lower()
+
+
+async def test_actor_history_intent_ambiguous_user_name_declined():
+    project = await _make_project("QAH Ambiguous Name Project")
+    await memory_engine.upsert_user(phone="9999966002", name="Sam Patel", role="site_supervisor")
+    await memory_engine.upsert_user(phone="9999966003", name="Samuel Rao", role="site_supervisor")
+
+    _mock_structuring({"intents": [{"intent": "query_actor_history", "confidence": "high"}],
+                        "project_reference": None, "attributed_actor_reference": "Sam"})
+    result = await intent_service.handle_intent(
+        "has Sam been late?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is False
+    assert "more than one" in result["result"]["error"].lower()
+
+
+async def test_actor_history_intent_unrecorded_actor_honest_decline():
+    project = await _make_project("QAH Unrecorded Actor Project")
+    _mock_structuring({"intents": [{"intent": "query_actor_history", "confidence": "high"}],
+                        "project_reference": None, "attributed_actor_reference": "Nobody Ever Mentioned"})
+    result = await intent_service.handle_intent(
+        "has Nobody Ever Mentioned been late?", user=ADMIN, active_project_id=project["id"])
+    assert result["result"]["ok"] is False
+    assert "don't have any recorded commitments" in result["result"]["error"]
+
+
+async def test_actor_history_intent_client_denied():
+    project = await _make_project("QAH Client Denied Project")
+    _mock_structuring({"intents": [{"intent": "query_actor_history", "confidence": "high"}],
+                        "project_reference": None, "attributed_actor_reference": "ABC Supplier"})
+    result = await intent_service.handle_intent(
+        "has ABC Supplier been late?", user=CLIENT_USER, active_project_id=project["id"])
+    assert result["result"]["ok"] is False

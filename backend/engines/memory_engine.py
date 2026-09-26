@@ -318,6 +318,16 @@ async def get_user(user_id: str) -> Optional[dict]:
     return _backfill_user_defaults(d) if d else None
 
 
+async def find_users_by_name_substring(substring: str) -> list[dict]:
+    """Historical Operational Memory sprint — a small, deterministic
+    lookup (case-insensitive substring, the same precedent _resolve_
+    project/_resolve_entity already established in intent_service.py)
+    so the service layer never queries db.users directly."""
+    all_users = await db.users.find({}, {"_id": 0}).to_list(1000)
+    lowered = substring.lower()
+    return [_backfill_user_defaults(u) for u in all_users if lowered in (u.get("name") or "").lower()]
+
+
 async def set_user_approval(user_id: str, approval_status: str) -> Optional[dict]:
     """FAC-OPS-05 fix: approving a user (moving pending -> approved) now
     resets scope_projects to False (unrestricted) UNLESS the admin has

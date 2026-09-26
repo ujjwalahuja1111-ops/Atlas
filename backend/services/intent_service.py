@@ -51,7 +51,7 @@ LLM_MODEL = "gpt-4o"
 # taxonomy is deliberately absent here, not silently supported.
 SUPPORTED_INTENTS = (
     "query_health", "query_digest", "query_schedule_impact",
-    "query_comparison", "query_change_history", "unresolved",
+    "query_comparison", "query_change_history", "query_actor_history", "unresolved",
 )
 
 # Phase D — the maximum number of intents a single question can select.
@@ -77,6 +77,7 @@ INTENT_LABEL = {
     "query_comparison": "comparison",
     "query_digest": "recent activity",
     "query_change_history": "history",
+    "query_actor_history": "commitment history",
 }
 
 INTENT_SYSTEM_PROMPT = """You are Atlas's intent-structuring pass for a construction \
@@ -92,14 +93,21 @@ operational item/issue — e.g. "what changed on electrical?", "when did this be
 blocked?", "who changed the planned finish?", "what was the planned finish before?". \
 Requires a specific thing to be named or clearly implied in THIS question; a bare "what \
 changed?" with nothing named should NOT select this intent — classify it unresolved instead.
+- query_actor_history: asking about a specific NAMED person/supplier/contractor/party's \
+own past commitments within THIS project — e.g. "has the tile supplier been late before?", \
+"how many commitments has Rahul fulfilled?", "what's ABC Supplier's track record on this \
+project?". Requires a specific party to be named in THIS question. This is scoped to ONE \
+project only — a question asking to compare this actor's history ACROSS multiple projects, \
+or asking about a different project entirely, should be classified unresolved instead.
 - unresolved: the request does not clearly match any of the above, or is a write/\
 action request (creating, changing, or approving something) — Phase 1 supports \
 READ-ONLY QUERIES ONLY, so any request to create, change, approve, or take an action \
-must be classified unresolved. This also applies to any question asking whether a \
-problem has happened before, which other project had a similar issue, what happened \
-on a past project, or which project to learn from — Atlas does not have this \
-capability today, so these must be classified unresolved rather than answered with \
-an unrelated intent.
+must be classified unresolved. This also applies to any question asking which OTHER \
+project had a similar issue, what happened on a DIFFERENT/past project, which project \
+to learn from, or any pattern/comparison spanning more than one project — Atlas does \
+not have this capability today, so these must be classified unresolved rather than \
+answered with an unrelated intent. A named actor's own history WITHIN the current, \
+single project (see query_actor_history above) is different and IS supported.
 
 Rules for selecting intents:
 - A simple, single-topic question (e.g. "what's the project health?") should select \
@@ -115,13 +123,15 @@ doesn't support, select only "unresolved" and nothing else.
 Return JSON only, in exactly this shape:
 {
   "intents": [
-    {"intent": "<one of the five query intents, or 'unresolved' alone>", "confidence": "high" | "medium" | "low"}
+    {"intent": "<one of the six query intents, or 'unresolved' alone>", "confidence": "high" | "medium" | "low"}
   ],
   "project_reference": "<any project name/identifier literally mentioned, or null>",
   "comparison_scope": "<for query_comparison only: what kind of projects to compare \
 against, e.g. 'residential', or null>",
   "entity_reference": "<for query_change_history only: the specific activity, milestone, \
 or operational item name mentioned, or null>",
+  "attributed_actor_reference": "<for query_actor_history only: the specific person/\
+supplier/contractor/party name mentioned, or null>",
   "reasoning": "<one short sentence explaining the selection>"
 }
 Do not include any text outside the JSON object."""
@@ -572,7 +582,63 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
     }}
 
 
-PROJECT_SCOPED_INTENTS = {"query_health", "query_schedule_impact", "query_comparison", "query_change_history"}
+async def _handle_query_actor_history(project: dict, user: dict, structured: dict) -> dict:
+    """Historical Operational Memory sprint — a named actor's own past
+    commitments within THIS project only (Section 3 of that sprint's
+    own brief). Deterministic aggregation over operations_engine.
+    actor_history(); no LLM involvement beyond extracting which name
+    was mentioned, matching query_change_history's own established
+    discipline exactly.
+
+    Resolution order, deterministic, never fuzzy: (1) a real,
+    registered Atlas user whose name contains the mentioned text
+    (case-insensitive substring, the same precedent _resolve_project/
+    _resolve_entity already established) — the stronger identity;
+    (2) otherwise, an exact-string match against attributed_to — the
+    honest, weaker identity the actor_history() docstring itself
+    explains. Ambiguous matches are declined, never guessed.
+    """
+    mention = (structured.get("attributed_actor_reference") or "").strip()
+    if not mention:
+        return {"ok": False, "error": (
+            "I need to know which person, supplier, or contractor you mean — "
+            "try naming them directly, e.g. \"has the tile supplier been late before?\"")}
+
+    lowered = mention.lower()
+
+    # Step 1 — a real, registered Atlas user (the stronger identity).
+    name_matches = await memory_engine.find_users_by_name_substring(mention)
+    if len(name_matches) > 1:
+        names = ", ".join(sorted(u["name"] for u in name_matches))
+        return {"ok": False, "error": f"\"{mention}\" matches more than one person ({names}) — "
+                                       "try being more specific."}
+    if len(name_matches) == 1:
+        try:
+            result = await operations_engine.actor_history(
+                project["id"], user=user, assigned_to_user_id=name_matches[0]["id"])
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+        return {"ok": True, "data": result}
+
+    # Step 2 — fall back to an exact attributed_to string match (the
+    # honest, weaker identity) only among strings actually present on
+    # this project's own items, so an unmatched name is declined
+    # rather than silently returning an empty, misleading zero-count
+    # result for a name that was never recorded at all.
+    distinct = await operations_engine.distinct_attributed_to(project["id"])
+    exact_matches = [v for v in distinct if v and v.lower() == lowered]
+    if not exact_matches:
+        return {"ok": False, "error": f"I don't have any recorded commitments attributed to \"{mention}\" "
+                                       "on this project."}
+    try:
+        result = await operations_engine.actor_history(
+            project["id"], user=user, attributed_to=exact_matches[0])
+    except ValueError as e:
+        return {"ok": False, "error": str(e)}
+    return {"ok": True, "data": result}
+
+
+PROJECT_SCOPED_INTENTS = {"query_health", "query_schedule_impact", "query_comparison", "query_change_history", "query_actor_history"}
 
 
 async def handle_intent(user_input: str, *, user: dict, active_project_id: Optional[str] = None,
@@ -750,4 +816,6 @@ async def _dispatch_one(intent: str, structured: dict, user: dict, project: Opti
         return await _handle_query_comparison(project, user, structured)
     if intent == "query_change_history":
         return await _handle_query_change_history(project, user, structured)
+    if intent == "query_actor_history":
+        return await _handle_query_actor_history(project, user, structured)
     return {"ok": False, "error": "That's not something I can help with yet."}

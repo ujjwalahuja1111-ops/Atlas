@@ -994,6 +994,96 @@ def enrich(item: dict) -> dict:
     return item
 
 
+async def distinct_attributed_to(project_id: str) -> list[str]:
+    """Historical Operational Memory sprint — the distinct, real
+    attributed_to strings actually present on this project's own
+    items, so the service layer can check whether a mentioned name was
+    ever genuinely recorded before running an aggregation for it,
+    without querying db directly."""
+    return await db.operational_items.distinct(
+        "attributed_to", {"project_id": project_id, "attributed_to": {"$ne": None}})
+
+
+async def actor_history(project_id: str, *, user: dict,
+                        attributed_to: Optional[str] = None,
+                        assigned_to_user_id: Optional[str] = None) -> dict:
+    """Historical Operational Memory sprint — descriptive, traceable
+    aggregation of past commitments for one attributed actor within
+    ONE project. Not a supplier rating, not a reliability score, not a
+    ranking: "across N recorded commitments, K were late," with every
+    number traceable back to the real items it came from.
+
+    Deliberately does NOT attempt cross-project identity resolution.
+    The identity investigation behind this sprint found no supplier/
+    vendor/external-party entity model anywhere in Atlas — attributed_to
+    is raw, LLM-extracted free text with no canonicalization step, so
+    "ABC Supplier" in one project and "ABC Supplier" in another carry
+    no guarantee of referring to the same real party. Aggregating
+    across projects on that basis would silently claim a stronger
+    identity than the data actually supports. Scoping to one project
+    is the honest boundary, not an arbitrary one — it also means this
+    function's own RBAC is the same as every other project-scoped
+    query in this file, with no new access-control surface.
+
+    Exactly one of attributed_to (exact string match — the free-text,
+    unvalidated case) or assigned_to_user_id (a real, registered Atlas
+    account — the reliable case) must be given; the two are handled
+    identically in every respect except the honesty note attached to
+    the result, since they are genuinely different strengths of
+    identity and the result says so rather than blurring them together.
+    """
+    if bool(attributed_to) == bool(assigned_to_user_id):
+        raise ValueError("provide exactly one of attributed_to or assigned_to_user_id")
+
+    project = await memory_engine.get_project(project_id)
+    if not project:
+        raise ValueError(f"Project '{project_id}' not found")
+    if memory_engine._is_project_scoped(user) and project_id not in (user.get("assigned_project_ids") or []):
+        raise ValueError(f"Project '{project_id}' not found")
+    if user["role"] == "client":
+        raise ValueError("Actor history is not available to the client role.")
+
+    query: dict = {"project_id": project_id}
+    if attributed_to:
+        query["attributed_to"] = attributed_to
+        identity_note = ("Based on an exact text match of \"attributed to\" within this "
+                          "project only — not a verified, cross-project identity. Different "
+                          "phrasing for the same real party (or the same phrasing for two "
+                          "different parties) would not be reconciled.")
+    else:
+        query["assigned_to_user_id"] = assigned_to_user_id
+        identity_note = "Based on a real, registered Atlas user account."
+
+    matching = await db.operational_items.find(query, {"_id": 0}).to_list(500)
+    matching = [enrich(i) for i in matching]
+
+    fulfilled = [i for i in matching if i["status"] in ("fulfilled", "verified", "closed")]
+    on_time = [i for i in fulfilled if i["metrics"]["fulfilled_on_time"] is True]
+    late = [i for i in fulfilled if i["metrics"]["fulfilled_on_time"] is False]
+    total_days_late = sum(i["metrics"]["days_late"] or 0 for i in late)
+    still_open = [i for i in matching if i["status"] not in ("fulfilled", "verified", "closed")]
+
+    return {
+        "project_id": project_id,
+        "attributed_to": attributed_to,
+        "assigned_to_user_id": assigned_to_user_id,
+        "identity_note": identity_note,
+        "total_commitments": len(matching),
+        "fulfilled_count": len(fulfilled),
+        "on_time_count": len(on_time),
+        "late_count": len(late),
+        "total_days_late": total_days_late,
+        "still_open_count": len(still_open),
+        "items": [
+            {"id": i["id"], "title": i.get("title"), "status": i["status"],
+             "required_by": i.get("required_by"), "completed_at": i.get("completed_at"),
+             "fulfilled_on_time": i["metrics"]["fulfilled_on_time"],
+             "days_late": i["metrics"]["days_late"]}
+            for i in matching
+        ],
+    }
+
+
 # ---------------- Sprint-2: project+site name denormalisation ----------------
 async def _name_maps(site_ids: set[str], project_ids: set[str]) -> tuple[dict, dict]:
     """Fetch site+project names in two bulk queries. Cheap and cache-friendly."""
