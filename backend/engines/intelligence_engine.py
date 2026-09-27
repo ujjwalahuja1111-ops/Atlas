@@ -33,23 +33,23 @@ PROMPT_VERSION = "1.1"
 LLM_MODEL = "gpt-4o"
 STT_MODEL = "whisper-1"
 
-EVENT_SYSTEM_PROMPT = """You are the Intelligence layer of Project Atlas, a Construction Intelligence Platform for an Indian construction company. Site supervisors speak in Hindi, Punjabi, Hinglish or English.
+EVENT_SYSTEM_PROMPT = """You are the Intelligence layer of Atlas, an operational memory and follow-through platform used across multiple kinds of operations — construction sites, restaurant/food operations, warehouses, small shops and trading businesses, and software/office teams. Field staff may speak in Hindi, Punjabi, Hinglish or English.
 
-You receive: an optional voice transcript, optional photo(s), and optional typed text from a site supervisor. Recognise CONSTRUCTION INTENT — a single utterance may contain MULTIPLE independent requirements. Extract every distinct intent.
+You receive: an optional voice transcript, optional photo(s), and optional typed text from someone reporting on their own operation. Recognise OPERATIONAL INTENT — a single utterance may contain MULTIPLE independent requirements. Extract every distinct intent, whatever the domain — a kitchen short on chicken, a warehouse missing cartons, a shop's own damaged stock, and a construction site's own missing tiles are all the same kind of fact.
 
 Return ONLY a JSON object with these keys:
 - type: one of ["voice_note", "photo", "material_request", "issue", "work_completed", "general"]
 - title: short English title (under 10 words)
 - summary: 1-2 line English summary
-- materials: list of {name, quantity, unit, required_date, priority, trade, area, reason, attributed_to, confidence}
-- labour: list of {trade, count, required_date, priority, area, reason, attributed_to, confidence}
-- equipment: list of {name, quantity, required_date, priority, reason, attributed_to, confidence}
-- client_approvals: list of {what, required_date, priority, reason, confidence}
-- drawing_requests: list of {drawing, revision, priority, reason, confidence}
-- inspections: list of {what, required_date, priority, reason, confidence}
-- safety_observations: list of {observation, priority, area, confidence}
-- quality_observations: list of {observation, priority, area, confidence}
-- commitments: list of {what, owed_to, by_when, attributed_to, confidence}
+- materials: any physical supply, stock, ingredient, or goods requirement — list of {name, quantity, unit, required_date, priority, trade, area, reason, attributed_to, confidence}
+- labour: any staffing or people requirement (a shortage, a person committing to a task) — list of {trade, count, required_date, priority, area, reason, attributed_to, confidence}
+- equipment: any tool, machine, or device requirement (available or needed) — list of {name, quantity, required_date, priority, reason, attributed_to, confidence}
+- client_approvals: any approval or sign-off owed by someone before work can proceed — list of {what, required_date, priority, reason, confidence}
+- drawing_requests: any document, spec, or design artifact someone owes — list of {drawing, revision, priority, reason, confidence}
+- inspections: any scheduled check or verification — list of {what, required_date, priority, reason, confidence}
+- safety_observations: any observed safety hazard or risk — list of {observation, priority, area, confidence}
+- quality_observations: any observed defect, damage, or quality problem — list of {observation, priority, area, confidence}
+- commitments: any promise someone made, of any kind not already covered above — list of {what, owed_to, by_when, attributed_to, confidence}
 - follow_ups: list of {what, when, confidence}
 - issues: list of short strings describing problems/blockers — empty if none
 - work_done: list of short strings describing completed work — empty if none
@@ -60,7 +60,7 @@ CRITICAL RULES:
 1. NEVER invent values. If a field is not mentioned, leave it as null or omit it from the object.
 1b. attributed_to: who or what made this specific claim (e.g. "supplier", "client", a named person)
     — ONLY when the speaker is explicitly quoting or relaying someone else's statement. Leave null when
-    the speaker is reporting their own direct observation (e.g. their own count of materials on site).
+    the speaker is reporting their own direct observation (e.g. their own count of stock on hand).
 2. Each list entry must come from the speaker's actual words.
 3. confidence ∈ {"low","medium","high"} based on how clearly the speaker stated this requirement.
 4. priority ∈ {"low","normal","high","critical"} — only use "critical" for explicit emergencies (safety, stop-work).
