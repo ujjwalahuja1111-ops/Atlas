@@ -10,6 +10,7 @@ Every read excludes Mongo's _id.
 """
 from __future__ import annotations
 import uuid
+import re
 import hashlib
 import base64
 from datetime import datetime, timezone
@@ -322,10 +323,27 @@ async def find_users_by_name_substring(substring: str) -> list[dict]:
     """Historical Operational Memory sprint — a small, deterministic
     lookup (case-insensitive substring, the same precedent _resolve_
     project/_resolve_entity already established in intent_service.py)
-    so the service layer never queries db.users directly."""
-    all_users = await db.users.find({}, {"_id": 0}).to_list(1000)
-    lowered = substring.lower()
-    return [_backfill_user_defaults(u) for u in all_users if lowered in (u.get("name") or "").lower()]
+    so the service layer never queries db.users directly.
+
+    Matches at the database level via a case-insensitive $regex,
+    rather than fetching users and filtering in Python — this is not
+    merely a style choice: find() with no explicit sort makes no
+    ordering guarantee, so any fixed to_list(N) cap risks silently
+    omitting a genuinely matching user whose document happens to fall
+    outside the first N returned, exactly the class of correctness bug
+    already fixed in actor_history()'s own aggregate counts. Pushing
+    the match into the query itself removes the cap entirely rather
+    than raising it to a larger arbitrary number. The substring is
+    externally-derived (ultimately LLM-extracted free text), so it is
+    escaped with re.escape() before use — a name containing regex
+    metacharacters (e.g. "O'Brien (Sr.)") must be matched literally,
+    never interpreted as a pattern.
+    """
+    pattern = re.escape(substring)
+    docs = await db.users.find(
+        {"name": {"$regex": pattern, "$options": "i"}}, {"_id": 0}
+    ).to_list(None)
+    return [_backfill_user_defaults(u) for u in docs]
 
 
 async def set_user_approval(user_id: str, approval_status: str) -> Optional[dict]:
