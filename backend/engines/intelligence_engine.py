@@ -114,7 +114,7 @@ async def _structure(transcript: str, text_input: Optional[str], photo_b64s: lis
     if transcript:
         parts.append(f"Voice transcript:\n{transcript}")
     if text_input:
-        parts.append(f"Typed text from supervisor:\n{text_input}")
+        parts.append(f"Typed text from field staff:\n{text_input}")
     if not parts:
         parts.append("(No voice or text — interpret photos only.)")
     parts.append("Return JSON only.")

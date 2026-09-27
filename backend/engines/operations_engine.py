@@ -1336,6 +1336,16 @@ async def accept_ai_proposal(*, proposal_id: str, actor: dict,
             extra["quantity"] = edits["quantity"]
         elif details.get("quantity") is not None:
             extra["quantity"] = details["quantity"]
+        elif details.get("count") is not None:
+            # Multi-Industry Validation follow-up — labour's own
+            # proposals store a staffing count under "count", not
+            # "quantity" (confirmed by re-reading _emit_proposals_
+            # from_structured()'s own labour emission) — without this,
+            # a real, correctly-extracted number ("2 backend
+            # engineers", "3 kitchen staff") was silently never
+            # promoted onto the confirmed item, found by the golden-
+            # corpus pipeline test rather than assumed safe.
+            extra["quantity"] = details["count"]
         if "unit" in edits:
             extra["unit"] = edits["unit"]
         elif details.get("unit"):
