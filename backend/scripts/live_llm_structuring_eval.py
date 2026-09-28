@@ -1,104 +1,92 @@
-"""Multi-Industry Validation Follow-up — Natural-Language Structuring Proof.
+"""Layer B: live LLM structuring evaluation (validation infrastructure only).
 
-LAYER B: live LLM evaluation. Sends the golden corpus's own natural-
-language text through the REAL, unmodified intelligence_engine._structure()
-function — the actual EVENT_SYSTEM_PROMPT, the actual model call — and
-evaluates the REAL model's own output against the same fact-level
-`expect` checks Layer A uses (eval/golden_corpus.py's own
-evaluate_case(), unchanged).
+Sends the golden corpus's natural-language text through the REAL, unmodified
+intelligence_engine._structure() - the actual EVENT_SYSTEM_PROMPT and the
+actual model call - and judges the model's own output with the transparent
+evaluator in eval/evaluator.py.
 
-This is NOT part of normal CI (see tests/test_golden_corpus_pipeline.py
-for the deterministic, credential-free layer). It requires a real
-EMERGENT_LLM_KEY/OPENAI_API_KEY to be configured in the environment.
+Run from the backend/ folder (see eval/README.md for copy-paste commands):
 
-Run manually from backend/, with real credentials configured:
-    python -m scripts.live_llm_structuring_eval
+    python -m scripts.live_llm_structuring_eval                 # all cases, 1 run
+    python -m scripts.live_llm_structuring_eval --runs 3        # repeat to spot model variance
     python -m scripts.live_llm_structuring_eval --domain restaurant
-    python -m scripts.live_llm_structuring_eval --case restaurant_1_confirmed_and_shortfall
+    python -m scripts.live_llm_structuring_eval --case shop_5_hinglish_supplier_promise
 
-If no key is configured, this script exits immediately with a clear
-message rather than silently skip cases or fabricate a result -
-Layer B's own evaluation is either genuinely executed against the real
-model, or it does not run at all, and the difference must never be
-ambiguous to whoever reads its output.
+It prints, for every failed case: the input, the expected facts, the exact
+field that failed with the actual value AND its type, and the COMPLETE raw
+model output. Everything (all runs, all raw outputs) is also saved under
+eval/output/, which is git-ignored.
+
+If no real credential is configured it prints "LAYER B NOT EXECUTED", writes
+nothing and exits with status 2 - it never reports a result it did not get.
+The API key is read from the environment / backend/.env, is never printed,
+and is redacted from anything saved.
 """
 from __future__ import annotations
+
 import argparse
 import asyncio
-import json
 import os
 import sys
+from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(BACKEND_DIR))
 
-from core.settings import EMERGENT_LLM_KEY  # noqa: E402
-from engines.intelligence_engine import _structure  # noqa: E402
-from eval.golden_corpus import CORPUS, evaluate_case  # noqa: E402
-
-
-def _has_real_credentials() -> bool:
-    return bool(EMERGENT_LLM_KEY) and EMERGENT_LLM_KEY not in ("", "sk-test", "test")
-
-
-async def _run_case(case: dict) -> dict:
-    """Calls the REAL _structure() - the exact function reality_engine.
-    capture()'s own background worker calls - with this case's own
-    natural-language text. No mocking, no simulation."""
-    structured = await _structure(transcript="", text_input=case["text"], photo_b64s=[])
-    result = evaluate_case(structured, case["expect"])
-    return {"id": case["id"], "domain": case["domain"], "text": case["text"],
-            "structured": structured, "eval": result}
+# core.settings requires these at import time; structuring never touches the
+# database. Defaults only fill gaps - real values in your environment win.
+os.environ.setdefault("MONGO_URL", "mongodb://localhost:27017")
+os.environ.setdefault("DB_NAME", "atlas_live_eval")
+os.environ.setdefault("JWT_SECRET", "not-used-by-the-evaluation")
 
 
-async def main(domain_filter: str = None, case_filter: str = None):
-    if not _has_real_credentials():
-        print("LAYER B NOT EXECUTED — no real LLM credentials configured "
-              "(EMERGENT_LLM_KEY is unset or a placeholder).")
-        print("This is not a passed or failed evaluation — it did not run. "
-              "Configure real credentials and re-run this script directly "
-              "to genuinely evaluate the live model.")
-        return
+def _parse(argv=None) -> argparse.Namespace:
+    p = argparse.ArgumentParser(description="Live multi-industry structuring evaluation")
+    p.add_argument("--runs", type=int, default=1,
+                   help="times to run every case (1-10). Use 3 to separate model variance "
+                        "from consistent failures.")
+    p.add_argument("--domain", choices=["construction", "restaurant", "warehouse", "shop", "software"])
+    p.add_argument("--case", help="run a single case id")
+    p.add_argument("--out", default=str(BACKEND_DIR / "eval" / "output"),
+                   help="folder for saved raw outputs (git-ignored by default)")
+    p.add_argument("--verbose", action="store_true", help="also print raw output for passing cases")
+    return p.parse_args(argv)
+
+
+def main(argv=None) -> int:
+    args = _parse(argv)
+    if not 1 <= args.runs <= 10:
+        print("--runs must be between 1 and 10")
+        return 1
+
+    # Windows consoles default to a legacy encoding that cannot print Hindi/
+    # Unicode model output; make printing safe.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+    from core.settings import EMERGENT_LLM_KEY  # loads backend/.env
+    from eval.golden_corpus import CORPUS
+    from eval.live_runner import execute, LIVE_SOURCE_LABEL
 
     cases = CORPUS
-    if domain_filter:
-        cases = [c for c in cases if c["domain"] == domain_filter]
-    if case_filter:
-        cases = [c for c in cases if c["id"] == case_filter]
+    if args.domain:
+        cases = [c for c in cases if c["domain"] == args.domain]
+    if args.case:
+        cases = [c for c in cases if c["id"] == args.case]
     if not cases:
         print("No matching cases.")
-        return
+        return 1
 
-    print(f"LAYER B — LIVE LLM EVALUATION — {len(cases)} case(s), real model calls, real credentials.")
-    print()
+    # Import only after the credential check would matter: importing the engine
+    # is harmless, but the real call happens inside execute() and only with a key.
+    from engines.intelligence_engine import _structure
 
-    results = []
-    for case in cases:
-        try:
-            r = await _run_case(case)
-        except Exception as e:
-            r = {"id": case["id"], "domain": case["domain"], "text": case["text"],
-                 "structured": None, "eval": {"passed": False, "results": [],
-                                               "error": f"{type(e).__name__}: {e}"}}
-        results.append(r)
-        status = "PASS" if r["eval"].get("passed") else "FAIL"
-        print(f"[{status}] {r['id']} ({r['domain']})")
-        print(f"  text: {r['text']!r}")
-        if r["eval"].get("error"):
-            print(f"  ERROR: {r['eval']['error']}")
-        else:
-            for item in r["eval"]["results"]:
-                mark = "ok" if item["matched"] else "MISSING"
-                print(f"  [{mark}] list={item['list']} constraints={item['constraints']}")
-        print()
-
-    passed = sum(1 for r in results if r["eval"].get("passed"))
-    print(f"TOTAL: {passed}/{len(results)} cases passed against the real, live model.")
+    result = asyncio.run(execute(cases=cases, runs=args.runs, structure_fn=_structure,
+                                 api_key=EMERGENT_LLM_KEY, out_dir=Path(args.out),
+                                 verbose=args.verbose, source_label=LIVE_SOURCE_LABEL))
+    return 0 if result["executed"] else 2
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--domain", default=None,
-                         choices=["construction", "restaurant", "warehouse", "shop", "software"])
-    parser.add_argument("--case", default=None)
-    args = parser.parse_args()
-    asyncio.run(main(domain_filter=args.domain, case_filter=args.case))
+    sys.exit(main())

@@ -117,15 +117,17 @@ def _post_pipeline_expect(expect: list[dict]) -> list[dict]:
     check: a date `contains_any` check becomes a not-null check
     (confirms normalization happened), since the stored value is a
     real ISO date, not the original phrase. Every other check
-    (quantity, unit, attributed_to, is_null) is unchanged."""
-    transformed = []
-    for exp in expect:
+    (quantity, unit, attributed_to, is_null, all_entries, free text) is
+    unchanged. Recurses into any_of alternatives."""
+    def transform(exp: dict) -> dict:
+        if "any_of" in exp:
+            return {**exp, "any_of": [transform(a) for a in exp["any_of"]]}
         new_exp = dict(exp)
         for field in ("required_date", "by_when"):
-            if field in new_exp and "contains_any" in new_exp[field]:
+            if field in new_exp and isinstance(new_exp[field], dict) and "contains_any" in new_exp[field]:
                 new_exp[field] = {"contains_any": ["__NORMALIZED_DATE_PRESENT__"]}
-        transformed.append(new_exp)
-    return transformed
+        return new_exp
+    return [transform(e) for e in expect]
 
 
 CATEGORY_TO_LIST = {
@@ -140,30 +142,24 @@ CATEGORY_TO_LIST = {
 @pytest.mark.parametrize("case", CORPUS, ids=[c["id"] for c in CORPUS])
 async def test_golden_case_pipeline_preserves_facts(case):
     """For every corpus case: run gold_structured through the real
-    pipeline, then re-check the SAME expect list (unchanged evaluator)
-    against what actually landed in storage."""
+    pipeline, then re-check the SAME expect list (same evaluator) against
+    what actually landed in storage.
+
+    issues/work_done are free-text lists that _emit_proposals_from_
+    structured() has no emission branch for (confirmed earlier: they stay
+    presentation-only text inside the structuring output), so they are
+    carried straight across from the structured output rather than pretended
+    to round-trip through storage."""
     items = await _run_case_through_pipeline(case)
 
-    # issues/work_done are free-text lists, not operational_items in
-    # the same sense (confirmed: _emit_proposals_from_structured() has
-    # no emission branch for issues/work_done - they remain
-    # presentation-only free text within the AI structuring output,
-    # unchanged by this sprint). Their own expect check is validated
-    # directly against gold_structured, matching what Layer A can
-    # actually prove about the pipeline for this kind of entry.
-    if any(exp.get("__free_text__") for exp in case["expect"]):
-        result = evaluate_case(case["gold_structured"], case["expect"])
-        assert result["passed"], f"{case['id']}: {result}"
-        return
-
-    # Reconstruct a structured-like view of everything that survived
-    # into real, stored items, merged across all items this case
-    # produced (a case may produce more than one item).
     merged: dict = {}
     for item in items:
         piece = _item_to_structured_like(item, CATEGORY_TO_LIST)
         for k, v in piece.items():
             merged.setdefault(k, []).extend(v)
+    for free_text_key in ("issues", "work_done"):
+        if case["gold_structured"].get(free_text_key):
+            merged[free_text_key] = list(case["gold_structured"][free_text_key])
 
     result = evaluate_case(merged, _post_pipeline_expect(case["expect"]))
     assert result["passed"], f"{case['id']} failed after pipeline round-trip: {result}"

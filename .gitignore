@@ -13,3 +13,6 @@ frontend/node_modules/
 .env
 .env.*
 backend/.env
+
+# Local live-evaluation outputs (raw model output; never commit)
+backend/eval/output/
