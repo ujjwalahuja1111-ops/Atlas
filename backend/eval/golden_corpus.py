@@ -1,7 +1,8 @@
 """Golden multi-industry natural-language corpus (reviewed).
 
-Validation infrastructure only. Nothing here changes Atlas's behaviour and
-the EVENT_SYSTEM_PROMPT is deliberately NOT touched or tuned to this corpus.
+Nothing in this module changes Atlas's behaviour. The corpus was not written
+to fit the prompt; any later prompt change is made from live-run evidence and
+recorded in git history, never by editing an expectation to raise a score.
 
 Shared by:
   - tests/test_golden_corpus_pipeline.py  (Layer A: deterministic, credential-free)
@@ -100,11 +101,17 @@ CORPUS: list[dict] = [
     {
         "id": "construction_1_supplier_delivery", "domain": "construction",
         "text": "Supplier says he'll send 200 tiles by Thursday, probably.",
-        "expect": [entry("materials", quantity=eq(200), unit=has("tile"),
+        "expect": [entry("materials", quantity=eq(200), name=has("tile"),
                          required_date=has("thursday"), attributed_to=has("supplier"))],
-        "review": _review("A", False,
+        "review": _review("A", True,
                           "Goods with a quantity, a date and an explicitly relayed claim "
-                          "('Supplier says'). 'probably' hedges the promise, not the facts."),
+                          "('Supplier says'). 'probably' hedges the promise, not the facts. "
+                          "Corrected after the live run: the first version required unit to "
+                          "contain 'tile', but for individually counted goods the noun is the "
+                          "item's NAME and 'pieces'/'units'/'tiles' are all correct units "
+                          "(the live model answered 'pieces'). The item is now identified by "
+                          "name; quantity, date and attribution are still required.",
+                          "unit contains 'tile'"),
         "gold_structured": {**_blank_structured(), "materials": [
             {"name": "tiles", "quantity": 200, "unit": "tiles", "required_date": "Thursday",
              "priority": "normal", "attributed_to": "supplier", "confidence": "high"}]},
@@ -247,7 +254,9 @@ CORPUS: list[dict] = [
                           "A supplier's delivery promise is both a goods fact (materials) and "
                           "a promise (commitments). There is no quantity, so nothing forces the "
                           "materials shape. Either keeps the promise, the date and the "
-                          "attribution.",
+                          "attribution. (Since the routing clarification goods deliveries are "
+                          "expected in materials; commitments stays acceptable here only "
+                          "because no quantity is at stake.)",
                           "materials only"),
         "gold_structured": {**_blank_structured(), "materials": [
             {"name": "vegetables", "quantity": None, "unit": None, "required_date": "tomorrow",
@@ -287,7 +296,7 @@ CORPUS: list[dict] = [
     {
         "id": "warehouse_1_cartons_expected", "domain": "warehouse",
         "text": "400 cartons expected Tuesday from the distributor.",
-        "expect": [entry("materials", quantity=eq(400), unit=has("carton"),
+        "expect": [entry("materials", quantity=eq(400), name=has("carton"),
                          required_date=has("tuesday"))],
         "review": _review("B", True,
                           "The first version also required attributed_to = distributor. The "
@@ -295,8 +304,11 @@ CORPUS: list[dict] = [
                           "where the goods come from. The prompt attributes a claim ONLY when "
                           "the speaker explicitly quotes or relays someone's statement, so "
                           "requiring attribution here contradicted the prompt's own rule. "
-                          "Attribution is left unconstrained (either value is acceptable).",
-                          "also required attributed_to contains 'distributor'"),
+                          "Attribution is left unconstrained (either value is acceptable). "
+                          "Corrected after the live run: unit no longer has to contain "
+                          "'carton' (the live model answered 'units' or null); for counted "
+                          "goods the noun is the item's name, which is now what is checked.",
+                          "also required attributed_to contains 'distributor' and unit contains 'carton'"),
         "gold_structured": {**_blank_structured(), "materials": [
             {"name": "cartons", "quantity": 400, "unit": "cartons", "required_date": "Tuesday",
              "priority": "normal", "attributed_to": "distributor", "confidence": "high"}]},
@@ -437,7 +449,9 @@ CORPUS: list[dict] = [
                           "promises 'not already covered above', so a supplier's promise to "
                           "send goods belongs in materials as much as in commitments. The "
                           "first version demanded commitments only. The Hinglish aspect "
-                          "(relayed claim + a 'kal' date) is unchanged.",
+                          "(relayed claim + a 'kal' date) is unchanged. (Since the routing "
+                          "clarification goods deliveries are expected in materials; "
+                          "commitments stays acceptable only because no quantity is at stake.)",
                           "commitments only"),
         "gold_structured": {**_blank_structured(), "commitments": [
             {"what": "send goods", "owed_to": None, "by_when": "tomorrow",

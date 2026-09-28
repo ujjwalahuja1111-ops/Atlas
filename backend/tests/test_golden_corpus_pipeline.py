@@ -98,6 +98,10 @@ def _item_to_structured_like(item: dict, category_to_list: dict) -> dict:
     validating post-pipeline - honestly confirming "a date was
     successfully normalized," not pretending the original phrase
     survived verbatim."""
+    if item.get("category") == "site_issue":
+        # free-text `issues` are emitted as site_issue proposals (see
+        # _emit_proposals_from_structured); the stored title is the text.
+        return {"issues": [item.get("title") or ""]}
     list_key = category_to_list.get(item.get("category"))
     if not list_key:
         return {}
@@ -145,11 +149,10 @@ async def test_golden_case_pipeline_preserves_facts(case):
     pipeline, then re-check the SAME expect list (same evaluator) against
     what actually landed in storage.
 
-    issues/work_done are free-text lists that _emit_proposals_from_
-    structured() has no emission branch for (confirmed earlier: they stay
-    presentation-only text inside the structuring output), so they are
-    carried straight across from the structured output rather than pretended
-    to round-trip through storage."""
+    Free-text `issues` are emitted as site_issue proposals and round-trip
+    through storage like every other list (an earlier version of this test
+    wrongly said they had no emission branch and copied them across
+    unchecked; that was incorrect and has been removed)."""
     items = await _run_case_through_pipeline(case)
 
     merged: dict = {}
@@ -157,9 +160,6 @@ async def test_golden_case_pipeline_preserves_facts(case):
         piece = _item_to_structured_like(item, CATEGORY_TO_LIST)
         for k, v in piece.items():
             merged.setdefault(k, []).extend(v)
-    for free_text_key in ("issues", "work_done"):
-        if case["gold_structured"].get(free_text_key):
-            merged[free_text_key] = list(case["gold_structured"][free_text_key])
 
     result = evaluate_case(merged, _post_pipeline_expect(case["expect"]))
     assert result["passed"], f"{case['id']} failed after pipeline round-trip: {result}"

@@ -41,7 +41,7 @@ Return ONLY a JSON object with these keys:
 - type: one of ["voice_note", "photo", "material_request", "issue", "work_completed", "general"]
 - title: short English title (under 10 words)
 - summary: 1-2 line English summary
-- materials: any physical supply, stock, ingredient, or goods requirement — list of {name, quantity, unit, required_date, priority, trade, area, reason, attributed_to, confidence}
+- materials: any physical supply, stock, ingredient, or goods requirement — including goods someone has promised or confirmed to deliver — list of {name, quantity, unit, required_date, priority, trade, area, reason, attributed_to, confidence}
 - labour: any staffing or people requirement (a shortage, a person committing to a task) — list of {trade, count, required_date, priority, area, reason, attributed_to, confidence}
 - equipment: any tool, machine, or device requirement (available or needed) — list of {name, quantity, required_date, priority, reason, attributed_to, confidence}
 - client_approvals: any approval or sign-off owed by someone before work can proceed — list of {what, required_date, priority, reason, confidence}
@@ -49,7 +49,7 @@ Return ONLY a JSON object with these keys:
 - inspections: any scheduled check or verification — list of {what, required_date, priority, reason, confidence}
 - safety_observations: any observed safety hazard or risk — list of {observation, priority, area, confidence}
 - quality_observations: any observed defect, damage, or quality problem — list of {observation, priority, area, confidence}
-- commitments: any promise someone made, of any kind not already covered above — list of {what, owed_to, by_when, attributed_to, confidence}
+- commitments: any other promise someone made — work to be done or an action to be taken — that is not a delivery of goods and not already covered above — list of {what, owed_to, by_when, attributed_to, confidence}
 - follow_ups: list of {what, when, confidence}
 - issues: list of short strings describing problems/blockers — empty if none
 - work_done: list of short strings describing completed work — empty if none
@@ -62,9 +62,21 @@ CRITICAL RULES:
     — ONLY when the speaker is explicitly quoting or relaying someone else's statement. Leave null when
     the speaker is reporting their own direct observation (e.g. their own count of stock on hand).
 2. Each list entry must come from the speaker's actual words.
-3. confidence ∈ {"low","medium","high"} based on how clearly the speaker stated this requirement.
+3. confidence ∈ {"low","medium","high"} based on how clearly the speaker stated the facts themselves (what, how much,
+    when, who). A hedge about whether it will actually happen ("probably", "hopefully", "should") does NOT lower it;
+    vagueness about the facts ("we might be short on something soon") does.
 4. priority ∈ {"low","normal","high","critical"} — only use "critical" for explicit emergencies (safety, stop-work).
 5. A single utterance may produce multiple entries across multiple lists.
+6. Record each fact ONCE, in the single best list — never the same fact in two lists. When someone promises or
+    confirms a delivery of goods, that is ONE `materials` entry: put the quantity, unit and required_date on it and
+    set attributed_to to whoever made the promise. Do NOT also add a `commitments` entry for the same delivery.
+    Two different quantities or dates in one sentence are two separate `materials` entries.
+7. Dates: write the speaker's own day words in required_date / by_when / when, exactly as spoken ("today",
+    "tomorrow", "Thursday"). If a day word is in another language, write its English meaning ("kal" -> "tomorrow"
+    or "yesterday", whichever the sentence means). NEVER convert a day word into a calendar date or ISO timestamp —
+    you do not know today's date, and Atlas works out the real date itself. Write a calendar date only if the speaker
+    literally said one. If a clock time is mentioned ("7 AM"), leave it out of the date field and put it in
+    reason / what.
 
 Be strict: output ONLY valid JSON, no markdown, no commentary."""
 
