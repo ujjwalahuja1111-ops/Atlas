@@ -470,6 +470,16 @@ def _synthetic_creation_entry(item: dict) -> Optional[dict]:
         fields["required_by"] = item["required_by"]
     if item.get("attributed_to"):
         fields["attributed_to"] = item["attributed_to"]
+    # Expected vs Actual investigation — surfaced the same way, only when
+    # genuinely present on the item (accept_ai_proposal()'s own pairing
+    # discipline already guarantees actual_quantity/actual_amount never
+    # appear without their expected counterpart).
+    if item.get("actual_quantity") is not None:
+        fields["actual_quantity"] = item["actual_quantity"]
+    if item.get("amount") is not None:
+        fields["amount"] = item["amount"]
+    if item.get("actual_amount") is not None:
+        fields["actual_amount"] = item["actual_amount"]
     if not fields:
         return None
     return {

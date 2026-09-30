@@ -102,15 +102,21 @@ BASELINE_KEYS = {"type", "title", "summary", "materials", "labour", "equipment",
                  "commitments", "follow_ups", "issues", "work_done", "urgency", "language_detected"}
 
 BASELINE_FIELDS = {
-    "materials": "name quantity unit required_date priority trade area reason attributed_to confidence",
+    # Expected vs Actual investigation added actual_quantity (materials,
+    # equipment) and amount/actual_amount (commitments) - the smallest
+    # extension for explicit, same-statement expected-vs-actual variance
+    # (see test_actual_quantity_only_paired_with_quantity_* below for the
+    # safety discipline). Every other field, and every other list, is
+    # unchanged from the prior baseline.
+    "materials": "name quantity actual_quantity unit required_date priority trade area reason attributed_to confidence",
     "labour": "trade count required_date priority area reason attributed_to confidence",
-    "equipment": "name quantity required_date priority reason attributed_to confidence",
+    "equipment": "name quantity actual_quantity required_date priority reason attributed_to confidence",
     "client_approvals": "what required_date priority reason confidence",
     "drawing_requests": "drawing revision priority reason confidence",
     "inspections": "what required_date priority reason confidence",
     "safety_observations": "observation priority area confidence",
     "quality_observations": "observation priority area confidence",
-    "commitments": "what owed_to by_when attributed_to confidence",
+    "commitments": "what owed_to by_when amount actual_amount attributed_to confidence",
     "follow_ups": "what when confidence",
 }
 

@@ -41,15 +41,15 @@ Return ONLY a JSON object with these keys:
 - type: one of ["voice_note", "photo", "material_request", "issue", "work_completed", "general"]
 - title: short English title (under 10 words)
 - summary: 1-2 line English summary
-- materials: any physical supply, stock, ingredient, or goods requirement — including goods someone has promised or confirmed to deliver — list of {name, quantity, unit, required_date, priority, trade, area, reason, attributed_to, confidence}
+- materials: any physical supply, stock, ingredient, or goods requirement — including goods someone has promised or confirmed to deliver — list of {name, quantity, actual_quantity, unit, required_date, priority, trade, area, reason, attributed_to, confidence}
 - labour: any staffing or people requirement (a shortage, a person committing to a task) — list of {trade, count, required_date, priority, area, reason, attributed_to, confidence}
-- equipment: any tool, machine, or device requirement (available or needed) — list of {name, quantity, required_date, priority, reason, attributed_to, confidence}
+- equipment: any tool, machine, or device requirement (available or needed) — list of {name, quantity, actual_quantity, required_date, priority, reason, attributed_to, confidence}
 - client_approvals: any approval or sign-off owed by someone before work can proceed — list of {what, required_date, priority, reason, confidence}
 - drawing_requests: any document, spec, or design artifact someone owes — list of {drawing, revision, priority, reason, confidence}
 - inspections: any scheduled check or verification — list of {what, required_date, priority, reason, confidence}
 - safety_observations: any observed safety hazard or risk — list of {observation, priority, area, confidence}
 - quality_observations: any observed defect, damage, or quality problem — list of {observation, priority, area, confidence}
-- commitments: any other promise someone made — work to be done or an action to be taken — that is not a delivery of goods and not already covered above — list of {what, owed_to, by_when, attributed_to, confidence}
+- commitments: any other promise someone made — work to be done or an action to be taken — that is not a delivery of goods and not already covered above — list of {what, owed_to, by_when, amount, actual_amount, attributed_to, confidence}
 - follow_ups: list of {what, when, confidence}
 - issues: list of short strings describing problems/blockers — empty if none
 - work_done: list of short strings describing completed work — empty if none
@@ -77,6 +77,12 @@ CRITICAL RULES:
     you do not know today's date, and Atlas works out the real date itself. Write a calendar date only if the speaker
     literally said one. If a clock time is mentioned ("7 AM"), leave it out of the date field and put it in
     reason / what.
+8. actual_quantity (materials/equipment) and actual_amount (commitments): ONLY when the SAME sentence states both
+    what was expected/promised AND what actually happened, arrived, or was paid — e.g. "of the 200 tiles promised,
+    only 180 arrived" (quantity 200, actual_quantity 180), "of the 10 lakh payable, 4 lakh has been paid" (amount
+    1000000, actual_amount 400000). Leave null when only one number is stated, or when a later, separate message
+    reports an outcome with no explicit reference back to the earlier promise — do NOT guess which earlier promise
+    a bare "180 arrived" belongs to.
 
 Be strict: output ONLY valid JSON, no markdown, no commentary."""
 
@@ -478,7 +484,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                   priority=m.get("priority"),
                   confidence=_str(m.get("confidence")) or "high",
                   snippet=f"Material: {name} {qty_str} {unit}".strip(),
-                  details={k: m.get(k) for k in ("name", "quantity", "unit", "required_date",
+                  details={k: m.get(k) for k in ("name", "quantity", "actual_quantity", "unit", "required_date",
                                                   "priority", "trade", "area", "reason", "attributed_to", "confidence")})
 
     # ---- labour ----
@@ -510,7 +516,7 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                   priority=e.get("priority"),
                   confidence=_str(e.get("confidence")) or "high",
                   snippet=f"Equipment: {qty_str} {name}".strip(),
-                  details={k: e.get(k) for k in ("name", "equipment", "quantity",
+                  details={k: e.get(k) for k in ("name", "equipment", "quantity", "actual_quantity",
                                                   "required_date", "priority", "reason", "attributed_to", "confidence")})
 
     # ---- client_approvals ----
@@ -587,7 +593,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                   priority=c.get("priority"),
                   confidence=_str(c.get("confidence")) or "high",
                   snippet=f"Commitment: {what}",
-                  details={k: c.get(k) for k in ("what", "owed_to", "by_when", "attributed_to", "confidence")})
+                  details={k: c.get(k) for k in ("what", "owed_to", "by_when", "amount", "actual_amount",
+                                                  "attributed_to", "confidence")})
 
     # ---- follow_ups ----
     for f in _list("follow_ups"):
@@ -612,6 +619,25 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                       suggested_owner_role="site_engineer",
                       confidence="high",
                       snippet=f"Issue: {text[:120]}",
+                      details={"raw": text})
+
+    # ---- work_done: completed-work facts, previously silently dropped ----
+    # (no emission branch existed at all - confirmed by direct inspection in
+    # a prior investigation). Routes to the existing "general" category
+    # (already the established catch-all, e.g. the AI-unavailable fallback)
+    # rather than inventing a new one. Deliberately independent of any
+    # earlier commitment item - never auto-closes or links to one, since no
+    # explicit reference exists in a bare "X delivered" statement.
+    work_done = structured.get("work_done") or []
+    if isinstance(work_done, list):
+        for wd in work_done:
+            text = _str(wd)
+            if not text:
+                continue
+            await add("general", text,
+                      suggested_owner_role="project_manager",
+                      confidence="high",
+                      snippet=f"Completed: {text[:120]}",
                       details={"raw": text})
 
     return count

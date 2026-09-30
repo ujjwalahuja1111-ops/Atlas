@@ -1005,6 +1005,20 @@ def compute_metrics(item: dict) -> dict:
         fulfilled_on_time = completed_date <= required_date
         days_late = max(0, (completed_date - required_date).days)
 
+    # Expected vs Actual investigation — variance is computed here, on
+    # read, never stored: the two source numbers (quantity/actual_quantity,
+    # amount/actual_amount) are the only things ever written, so this can
+    # never go stale if either is edited later, and it can never be
+    # fabricated for an item that has only one of the pair (accept_ai_
+    # proposal() only ever stores actual_quantity/actual_amount alongside
+    # its own expected counterpart in the first place).
+    quantity_remaining = None
+    if item.get("quantity") is not None and item.get("actual_quantity") is not None:
+        quantity_remaining = item["quantity"] - item["actual_quantity"]
+    amount_remaining = None
+    if item.get("amount") is not None and item.get("actual_amount") is not None:
+        amount_remaining = item["amount"] - item["actual_amount"]
+
     return {
         "current_age_hours": round(age_hours, 2) if age_hours is not None else None,
         "time_remaining_hours": round(remaining_hours, 2) if remaining_hours is not None else None,
@@ -1013,6 +1027,8 @@ def compute_metrics(item: dict) -> dict:
         "verification_delay_hours": round(verif_delay, 2) if verif_delay is not None else None,
         "fulfilled_on_time": fulfilled_on_time,
         "days_late": days_late,
+        "quantity_remaining": quantity_remaining,
+        "amount_remaining": amount_remaining,
     }
 
 
@@ -1133,7 +1149,9 @@ async def actor_history(project_id: str, *, user: dict,
             {"id": i["id"], "title": i.get("title"), "status": i["status"],
              "required_by": i.get("required_by"), "completed_at": i.get("completed_at"),
              "fulfilled_on_time": i["metrics"]["fulfilled_on_time"],
-             "days_late": i["metrics"]["days_late"]}
+             "days_late": i["metrics"]["days_late"],
+             "quantity_remaining": i["metrics"]["quantity_remaining"],
+             "amount_remaining": i["metrics"]["amount_remaining"]}
             for i in page
         ],
     }
@@ -1350,6 +1368,16 @@ async def accept_ai_proposal(*, proposal_id: str, actor: dict,
             extra["unit"] = edits["unit"]
         elif details.get("unit"):
             extra["unit"] = details["unit"]
+        # Expected vs Actual investigation — actual_quantity is only ever
+        # carried over alongside quantity itself: both numbers must come
+        # from the SAME structured output (the prompt's own rule 8 only
+        # fills actual_quantity when the same sentence states both the
+        # expected and the actual number), so a bare, unpaired
+        # actual_quantity is never stored - it would be meaningless
+        # without a known expected value to compare against, and never a
+        # fabricated link to some other item's own quantity.
+        if "quantity" in extra and details.get("actual_quantity") is not None:
+            extra["actual_quantity"] = details["actual_quantity"]
         # Universal Operational Memory Pivot — distinguishes "who
         # recorded this" (actor, already real) from "who the claim is
         # attributed to" (the supplier, the client) — confirmed a
@@ -1361,6 +1389,15 @@ async def accept_ai_proposal(*, proposal_id: str, actor: dict,
             extra["attributed_to"] = edits["attributed_to"]
         elif details.get("attributed_to"):
             extra["attributed_to"] = details["attributed_to"]
+        # Expected vs Actual investigation — the same pattern applied to
+        # money on commitments (e.g. "10 lakh payable"). amount is the
+        # expected/payable figure; actual_amount (e.g. "4 lakh paid") is
+        # only ever carried over paired with amount, for the identical
+        # reason as actual_quantity above.
+        if details.get("amount") is not None:
+            extra["amount"] = details["amount"]
+        if "amount" in extra and details.get("actual_amount") is not None:
+            extra["actual_amount"] = details["actual_amount"]
     await db.operational_items.update_one({"id": item["id"]}, {"$set": extra})
     item.update(extra)
     decision = "edited" if edits else "accepted"
