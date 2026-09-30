@@ -264,6 +264,63 @@ async def test_live_fixture_model_made_iso_date_is_stored_as_past_date_and_looks
     assert item["id"] in overdue_ids
 
 
+# ==========================================================================
+# ISSUES ROUTING: priority is no longer force-set, unlike before
+# ==========================================================================
+
+async def test_issue_priority_follows_the_utterance_not_a_hardcoded_value():
+    """Real pipeline harm found while investigating damage-routing drift
+    (shop_2/warehouse_6 live evidence): an observation the model classified
+    as `issues` was ALWAYS stored priority "high", regardless of the
+    model's own urgency judgment or its own per-entry priority field on
+    every other list - while the identical fact filed under
+    `quality_observations` correctly kept the model's own priority. This
+    silently inflated my_day()'s own high_priority_work with routine
+    observations whenever the model chose `issues`, a confirmed
+    inconsistency with every other list's own existing default (`prio =
+    priority or global_urgency or "normal"` in intelligence_engine.add()).
+    Fixed by removing the hardcoded value so `issues` uses the SAME
+    fallback every other list already uses - not by trying to force the
+    model's own list choice, since the prompt already says "damage" under
+    quality_observations and live evidence showed the model still
+    sometimes chooses issues anyway."""
+    st = _blank(issues=["8 units came in damaged from the last batch"], urgency="normal")
+    _, items = await _pipeline("8 units came in damaged from the last batch.", st, MONDAY, "issuelow")
+    assert items[0]["category"] == "site_issue"
+    assert items[0]["priority"] == "normal"   # follows the utterance's own urgency, not forced high
+
+
+async def test_issue_priority_still_reflects_high_urgency_utterances():
+    st = _blank(issues=["forklift is completely broken, nothing can move"], urgency="high")
+    _, items = await _pipeline("Forklift is completely broken, nothing can move.", st, MONDAY, "issuehigh")
+    assert items[0]["priority"] == "high"   # a genuinely urgent utterance is still high - not suppressed
+
+
+async def test_issue_priority_defaults_to_normal_with_no_urgency_signal_at_all():
+    st = _blank(issues=["dispatch delayed by rain"])   # urgency left at _blank()'s own "normal" default
+    _, items = await _pipeline("Dispatch delayed by rain.", st, MONDAY, "issuedefault")
+    assert items[0]["priority"] == "normal"
+
+
+async def test_quality_observation_priority_was_and_remains_the_models_own_value():
+    """Regression guard: this fix touches only the `issues` emission branch;
+    quality_observations already respected the model's own priority and
+    must continue to."""
+    st = _blank(quality_observations=[{"observation": "minor scuff on 2 cartons", "priority": "low",
+                                       "area": "receiving", "confidence": "high"}])
+    _, items = await _pipeline("Minor scuff on 2 cartons.", st, MONDAY, "qualow")
+    assert items[0]["category"] == "quality_observation"
+    assert items[0]["priority"] == "low"
+
+
+async def test_issue_never_appears_in_actor_history_unaffected_by_this_fix():
+    """site_issue was already excluded from ACTOR_COMMITMENT_CATEGORIES;
+    confirms this fix does not change that."""
+    project, _ = await _pipeline("Dispatch delayed by rain.",
+                                 _blank(issues=["dispatch delayed by rain"]), MONDAY, "issuehistory")
+    assert "site_issue" not in operations_engine.ACTOR_COMMITMENT_CATEGORIES
+
+
 async def test_same_promise_with_the_day_word_stored_as_a_future_date_not_overdue():
     st = _blank(commitments=[{"what": "deliver goods", "owed_to": None, "by_when": "tomorrow",
                               "attributed_to": "supplier", "confidence": "high"}])

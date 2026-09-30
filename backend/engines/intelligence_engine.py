@@ -610,7 +610,6 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
                 continue
             await add("site_issue", text,
                       suggested_owner_role="site_engineer",
-                      priority="high",
                       confidence="high",
                       snippet=f"Issue: {text[:120]}",
                       details={"raw": text})
