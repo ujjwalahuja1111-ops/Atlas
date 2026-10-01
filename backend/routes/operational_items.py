@@ -508,3 +508,27 @@ async def mark_duplicate(item_id: str, req: MarkDuplicateReq,
         return operations_engine.enrich(item)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class MarkSupersededReq(BaseModel):
+    superseded_by_item_id: str
+    note: Optional[str] = None
+
+
+@router.post("/operational-items/{item_id}/supersede")
+async def mark_superseded(item_id: str, req: MarkSupersededReq,
+                          user: dict = Depends(get_current_user)):
+    """Negative Evidence + Correction/Supersession investigation.
+    Explicitly, humanly recording that this item's own claim has been
+    corrected or replaced by a different, later item. Never inferred,
+    never set by an LLM - mirrors mark_duplicate's own exact pattern."""
+    _forbid_client(user, "mark items as superseded")
+    await _get_visible_item_or_404(item_id, user)
+    try:
+        item = await operations_engine.mark_superseded(
+            item_id=item_id, actor=user,
+            superseded_by_item_id=req.superseded_by_item_id, note=req.note,
+        )
+        return operations_engine.enrich(item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

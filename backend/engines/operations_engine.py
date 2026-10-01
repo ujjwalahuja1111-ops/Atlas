@@ -64,7 +64,7 @@ ORIGIN_TYPES = {
 }
 STATUSES = ["open", "assigned", "acknowledged", "in_progress",
             "fulfilled", "verified", "closed", "reopened",
-            "archived", "cancelled", "duplicate"]
+            "archived", "cancelled", "duplicate", "superseded"]
 HEALTHS = ["on_track", "due_soon", "overdue", "blocked", "waiting_external", "completed"]
 PRIORITIES = ["low", "normal", "high", "critical"]
 
@@ -76,22 +76,23 @@ PRIORITIES = ["low", "normal", "high", "critical"]
 # all. "open" -> "cancelled" already existed and now doubles as "reject".
 TRANSITIONS = {
     "open":         {"assigned", "acknowledged", "in_progress", "fulfilled", "closed",
-                     "archived", "cancelled", "duplicate"},
+                     "archived", "cancelled", "duplicate", "superseded"},
     "assigned":     {"acknowledged", "in_progress", "open", "closed",
-                     "archived", "cancelled", "duplicate"},
+                     "archived", "cancelled", "duplicate", "superseded"},
     "acknowledged": {"in_progress", "fulfilled", "closed",
-                     "archived", "cancelled", "duplicate"},
+                     "archived", "cancelled", "duplicate", "superseded"},
     "in_progress":  {"fulfilled", "closed",
-                     "archived", "cancelled", "duplicate"},
+                     "archived", "cancelled", "duplicate", "superseded"},
     "fulfilled":    {"verified", "in_progress", "closed",
-                     "archived"},
+                     "archived", "superseded"},
     "verified":     {"closed", "reopened", "archived"},
     "closed":       {"reopened", "archived"},
     "reopened":     {"assigned", "in_progress", "open", "closed",
-                     "archived", "cancelled", "duplicate"},
+                     "archived", "cancelled", "duplicate", "superseded"},
     "archived":     {"open", "reopened"},
     "cancelled":    {"open", "reopened"},
     "duplicate":    {"open", "reopened"},
+    "superseded":   {"open", "reopened"},
 }
 
 # When this event kind happens, set this lifecycle field
@@ -387,6 +388,12 @@ async def create_item(*, actor: dict, site_id: str,
         # changes what the item's own status means. Computed once here
         # (the source event is immutable, so this can never go stale).
         "has_evidence": False,
+
+        # Negative Evidence + Correction/Supersession investigation —
+        # mirrors duplicate_of_item_id's own existing precedent exactly:
+        # never set here, never by AI inference, only via the new,
+        # explicit mark_superseded() below.
+        "superseded_by_item_id": None,
     }
     if inherited_evidence_event_id:
         source_event = await memory_engine.get_event(inherited_evidence_event_id)
@@ -932,31 +939,47 @@ async def request_clarification(*, item_id: str, actor: dict, note: str) -> dict
     return item
 
 
-async def mark_duplicate(*, item_id: str, actor: dict,
-                         duplicate_of_item_id: str,
-                         note: Optional[str] = None) -> dict:
-    """Mark item as a duplicate of another. Status moves to 'duplicate'.
-    History is preserved; the canonical target is recorded in projection
-    and in the ledger payload."""
+async def mark_superseded(*, item_id: str, actor: dict,
+                          superseded_by_item_id: str,
+                          note: Optional[str] = None) -> dict:
+    """Records that this item's own claim has been explicitly corrected or
+    replaced by a different, later item. Status moves to 'superseded'.
+    History is preserved in full: the item itself, every prior event on
+    it, and the original claim's own fields (quantity, required_by,
+    attributed_to, etc.) are never altered or deleted - only a new event
+    and this one reference field are added.
+
+    Deliberately never called from the AI structuring pipeline and never
+    inferred from text content alone (not even strong words like
+    "actually" or "correction") - identifying WHICH earlier item a
+    correction refers to is not something Atlas can safely guess (see the
+    investigation's own report on why). This function exists so a human
+    (or a future, explicitly human-confirmed UI flow) can record that
+    relationship once it is actually known, mirroring mark_duplicate()'s
+    own exact, already-proven pattern for exactly this kind of
+    never-automatic relationship.
+    """
     item = await get_item(item_id)
     if not item:
         raise ValueError("item not found")
-    target = await get_item(duplicate_of_item_id)
+    target = await get_item(superseded_by_item_id)
     if not target:
-        raise ValueError("duplicate target not found")
-    if item_id == duplicate_of_item_id:
-        raise ValueError("cannot mark item as duplicate of itself")
+        raise ValueError("superseding item not found")
+    if item_id == superseded_by_item_id:
+        raise ValueError("an item cannot supersede itself")
+    if item.get("project_id") != target.get("project_id"):
+        raise ValueError("an item can only be superseded by another item in the same project")
     prev = item["status"]
-    if "duplicate" not in TRANSITIONS.get(prev, set()):
-        raise ValueError(f"transition {prev} → duplicate not allowed")
-    ev = await append_event(item_id=item_id, kind="duplicate_of", actor=actor,
-                            prev_status=prev, new_status="duplicate",
-                            payload={"duplicate_of_item_id": duplicate_of_item_id,
-                                     "duplicate_of_title": target.get("title"),
+    if "superseded" not in TRANSITIONS.get(prev, set()):
+        raise ValueError(f"transition {prev} → superseded not allowed")
+    ev = await append_event(item_id=item_id, kind="superseded", actor=actor,
+                            prev_status=prev, new_status="superseded",
+                            payload={"superseded_by_item_id": superseded_by_item_id,
+                                     "superseded_by_title": target.get("title"),
                                      "note": note})
     now_iso = _iso(_now())
-    item["status"] = "duplicate"
-    item["duplicate_of_item_id"] = duplicate_of_item_id
+    item["status"] = "superseded"
+    item["superseded_by_item_id"] = superseded_by_item_id
     item["last_updated_at"] = now_iso
     item["last_derived_from_op_event_id"] = ev["id"]
     item["health"] = derive_health(item)
@@ -973,7 +996,7 @@ EXTERNAL_BLOCKER_CATS = {
 
 def derive_health(item: dict) -> str:
     status = item.get("status")
-    if status in ("verified", "closed", "fulfilled"):
+    if status in ("verified", "closed", "fulfilled", "superseded", "duplicate"):
         return "completed"
     blk = item.get("blocker")
     if blk:
@@ -1150,7 +1173,8 @@ async def actor_history(project_id: str, *, user: dict,
     on_time = [i for i in fulfilled if i["metrics"]["fulfilled_on_time"] is True]
     late = [i for i in fulfilled if i["metrics"]["fulfilled_on_time"] is False]
     total_days_late = sum(i["metrics"]["days_late"] or 0 for i in late)
-    still_open = [i for i in matching if i["status"] not in ("fulfilled", "verified", "closed")]
+    still_open = [i for i in matching if i["status"] not in
+                 ("fulfilled", "verified", "closed", "superseded", "duplicate")]
     # Verification State investigation — fulfilled_count already correctly
     # counts verified/closed items too (they ARE fulfilled, just also
     # confirmed), so its own meaning is unchanged. verified_count answers
@@ -1245,7 +1269,8 @@ async def attach_names_single(doc: dict) -> dict:
 async def operational_center(*, site_id: Optional[str] = None) -> dict:
     items = await list_items(site_id=site_id, limit=1000)
     items = [enrich(i) for i in items]
-    open_items = [i for i in items if i["status"] not in ("verified", "closed", "fulfilled")]
+    open_items = [i for i in items if i["status"] not in
+                 ("verified", "closed", "fulfilled", "superseded", "duplicate")]
     overdue = [i for i in open_items if i["health"] == "overdue"]
     high_priority = [i for i in open_items if i["priority"] in ("high", "critical")]
     awaiting_verification = [i for i in items if i["status"] == "fulfilled"]
@@ -1282,7 +1307,8 @@ async def site_requirements(site_id: str) -> dict:
     """Living checklist for a site — every requirement, fulfilled or not."""
     items = await list_items(site_id=site_id, limit=1000)
     requirements = [enrich(i) for i in items if i["category"] in REQUIREMENT_CATEGORIES]
-    pending = [r for r in requirements if r["status"] not in ("verified", "closed", "fulfilled")]
+    pending = [r for r in requirements if r["status"] not in
+              ("verified", "closed", "fulfilled", "superseded", "duplicate")]
     fulfilled = [r for r in requirements if r["status"] == "fulfilled"]
     verified = [r for r in requirements if r["status"] in ("verified", "closed")]
     return {

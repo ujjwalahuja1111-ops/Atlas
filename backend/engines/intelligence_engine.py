@@ -50,8 +50,8 @@ Return ONLY a JSON object with these keys:
 - safety_observations: any observed safety hazard or risk — list of {observation, priority, area, confidence}
 - quality_observations: any observed defect, damage, or quality problem — list of {observation, priority, area, confidence}
 - commitments: any other promise someone made — work to be done or an action to be taken, including a stated monetary fact (payable, paid, due, invoiced) — that is not a delivery of goods and not already covered above — list of {what, owed_to, by_when, amount, actual_amount, attributed_to, confidence}
-- follow_ups: list of {what, when, confidence}
-- issues: list of short strings describing problems/blockers — empty if none
+- follow_ups: something expected that has not happened yet — nothing arrived, nothing was received, something is still pending or awaited — with no suggestion that anything is actually wrong. Use this, not issues, for an absence or a delay with no stated problem. list of {what, when, confidence}
+- issues: list of short strings describing problems/blockers — something is actually wrong (broken, damaged, stuck, refused) — empty if none
 - work_done: list of short strings describing completed work — empty if none
 - urgency: one of ["low", "normal", "high"]
 - language_detected: best guess

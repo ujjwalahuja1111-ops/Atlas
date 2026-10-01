@@ -417,6 +417,12 @@ def _present_change_events(raw_events: list[dict]) -> list[dict]:
                 "what": "affected work", "from": payload.get("previous_affected_activity_ids"),
                 "to": payload.get("affected_activity_ids"), "when": when, "who": who, "source": source_label,
             })
+        elif kind == "superseded":
+            rows.append({
+                "what": "superseded_by", "from": None, "to": payload.get("superseded_by_item_id"),
+                "to_title": payload.get("superseded_by_title"), "when": when, "who": who,
+                "source": source_label,
+            })
         elif e.get("prev_status") is not None or e.get("new_status") is not None:
             rows.append({
                 "what": "status", "from": e.get("prev_status"), "to": e.get("new_status"),
