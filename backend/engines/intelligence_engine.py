@@ -49,7 +49,7 @@ Return ONLY a JSON object with these keys:
 - inspections: any scheduled check or verification — list of {what, required_date, priority, reason, confidence}
 - safety_observations: any observed safety hazard or risk — list of {observation, priority, area, confidence}
 - quality_observations: any observed defect, damage, or quality problem — list of {observation, priority, area, confidence}
-- commitments: any other promise someone made — work to be done or an action to be taken — that is not a delivery of goods and not already covered above — list of {what, owed_to, by_when, amount, actual_amount, attributed_to, confidence}
+- commitments: any other promise someone made — work to be done or an action to be taken, including a stated monetary fact (payable, paid, due, invoiced) — that is not a delivery of goods and not already covered above — list of {what, owed_to, by_when, amount, actual_amount, attributed_to, confidence}
 - follow_ups: list of {what, when, confidence}
 - issues: list of short strings describing problems/blockers — empty if none
 - work_done: list of short strings describing completed work — empty if none
@@ -83,6 +83,10 @@ CRITICAL RULES:
     1000000, actual_amount 400000). Leave null when only one number is stated, or when a later, separate message
     reports an outcome with no explicit reference back to the earlier promise — do NOT guess which earlier promise
     a bare "180 arrived" belongs to.
+9. amount/actual_amount are a remembered MONETARY OPERATIONAL FACT — what someone said about money, not a formal
+    invoice, payment record, or ledger entry. Record a bare number with no currency symbols or separators (e.g.
+    "10 lakh" or "₹10,00,000" -> 1000000). If only a rupee sign and digits are given with no words, still record the
+    plain number.
 
 Be strict: output ONLY valid JSON, no markdown, no commentary."""
 

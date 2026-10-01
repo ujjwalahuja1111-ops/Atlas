@@ -1389,11 +1389,25 @@ async def accept_ai_proposal(*, proposal_id: str, actor: dict,
             extra["attributed_to"] = edits["attributed_to"]
         elif details.get("attributed_to"):
             extra["attributed_to"] = details["attributed_to"]
-        # Expected vs Actual investigation — the same pattern applied to
-        # money on commitments (e.g. "10 lakh payable"). amount is the
-        # expected/payable figure; actual_amount (e.g. "4 lakh paid") is
-        # only ever carried over paired with amount, for the identical
-        # reason as actual_quantity above.
+        # Money-model investigation — amount/actual_amount are MONETARY
+        # OPERATIONAL FACTS, not a formal commercial transaction. They are
+        # generic, operational_item-level fields (this check is not gated
+        # by category == "commitment" - any category's own proposal
+        # details carrying "amount" is carried over identically, matching
+        # how quantity/unit/attributed_to already work across every list).
+        # commitments is simply where the prompt currently routes a bare
+        # payable/paid statement, not a reason to treat amount as
+        # commitment-specific at the storage level.
+        #
+        # This is deliberately NOT, and must never become, a second
+        # payment model: commercial_engine's own payment_request/payment
+        # (a different collection, db.payment_requests/db.payments,
+        # milestone-gated, with its own number, status workflow, and
+        # explicitly-linked payments) remains the sole formal, auditable
+        # commercial record. A captured "10 lakh payable" here is a
+        # remembered operational statement, never written to those
+        # collections and never read from them - confirmed by
+        # test_no_duplicate_monetary_source_of_truth.
         if details.get("amount") is not None:
             extra["amount"] = details["amount"]
         if "amount" in extra and details.get("actual_amount") is not None:

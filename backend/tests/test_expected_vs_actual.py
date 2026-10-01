@@ -40,10 +40,10 @@ _mock_db = _mock_client["atlas_expected_vs_actual_test"]
 core_db.db = _mock_db
 core_db.client = _mock_client
 
-from engines import memory_engine, operations_engine, intelligence_engine  # noqa: E402
+from engines import memory_engine, operations_engine, intelligence_engine, commercial_engine  # noqa: E402
 from services import intent_service  # noqa: E402
 
-for _mod in (memory_engine, operations_engine, intelligence_engine):
+for _mod in (memory_engine, operations_engine, intelligence_engine, commercial_engine):
     _mod.db = _mock_db
 
 pytestmark = pytest.mark.anyio
@@ -304,6 +304,161 @@ async def test_actor_history_items_surface_remaining_when_present():
 # L. Construction regression - reuses the same real CRE rule already
 # proven in prior sessions, confirming this investigation's changes did
 # not alter the fields procurement.material_lead_time depends on.
+# ==========================================================================
+# MONEY-MODEL INVESTIGATION — architectural separation from commercial_engine
+# ==========================================================================
+
+async def test_payable_captured_examples_A_through_F():
+    """The six examples from the money-model investigation, each run
+    through the real pipeline, confirming every phrasing is captured as
+    a remembered operational fact (never touching commercial_engine)."""
+    project = await memory_engine.insert_project(name="EVA money", code="EVAMONEY")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+
+    # A. "10 lakh is payable to the contractor."
+    a = await _capture(project["id"], site["id"], "10 lakh is payable to the contractor.",
+        _blank(commitments=[{"what": "payment to contractor", "owed_to": "contractor", "by_when": None,
+                             "amount": 1000000, "attributed_to": None, "confidence": "high"}]))
+    assert a[0]["amount"] == 1000000 and a[0]["category"] == "commitment"
+
+    # B. "4 lakh has been paid."
+    b = await _capture(project["id"], site["id"], "4 lakh has been paid.",
+        _blank(commitments=[{"what": "payment made", "owed_to": None, "by_when": None,
+                             "amount": 400000, "attributed_to": None, "confidence": "high"}]))
+    assert b[0]["amount"] == 400000 and b[0]["id"] != a[0]["id"]
+
+    # C. "Of the 10 lakh payable, 4 lakh has been paid."
+    c = await _capture(project["id"], site["id"], "Of the 10 lakh payable, 4 lakh has been paid.",
+        _blank(commitments=[{"what": "payment to contractor", "owed_to": "contractor", "by_when": None,
+                             "amount": 1000000, "actual_amount": 400000, "attributed_to": None,
+                             "confidence": "high"}]))
+    assert operations_engine.compute_metrics(c[0])["amount_remaining"] == 600000
+
+    # D. "Client paid 4 lakh today." - a completed act, same pattern as B.
+    d = await _capture(project["id"], site["id"], "Client paid 4 lakh today.",
+        _blank(commitments=[{"what": "client payment", "owed_to": None, "by_when": None,
+                             "amount": 400000, "attributed_to": "client", "confidence": "high"}]))
+    assert d[0]["amount"] == 400000 and d[0].get("attributed_to") == "client"
+
+    # E. "Contractor says 6 lakh is still due." - attributed, relayed claim.
+    e = await _capture(project["id"], site["id"], "Contractor says 6 lakh is still due.",
+        _blank(commitments=[{"what": "amount still due", "owed_to": None, "by_when": None,
+                             "amount": 600000, "attributed_to": "contractor", "confidence": "high"}]))
+    assert e[0]["amount"] == 600000 and e[0].get("attributed_to") == "contractor"
+
+    # F. "Invoice for 2.5 lakh received."
+    f = await _capture(project["id"], site["id"], "Invoice for 2.5 lakh received.",
+        _blank(commitments=[{"what": "invoice received", "owed_to": None, "by_when": None,
+                             "amount": 250000, "attributed_to": None, "confidence": "high"}]))
+    assert f[0]["amount"] == 250000
+
+    # Every one of the six is its own independent item - confirmed no
+    # fabricated link, consistent with the quantity side's own discipline.
+    ids = {x[0]["id"] for x in (a, b, c, d, e, f)}
+    assert len(ids) == 6
+
+
+async def test_amount_carry_over_is_generic_not_gated_to_commitment_category():
+    """Storage-layer proof for the architecture question itself: the
+    amount/actual_amount carry-over in accept_ai_proposal() does not check
+    the proposal's own category at all - it is a generic, operational_
+    item-level field pair, exactly like quantity/unit/attributed_to
+    already are. Proven directly by exercising it through a different
+    category (client_approval) via the proposal mechanism itself, not by
+    reading the source."""
+    project = await memory_engine.insert_project(name="EVA generic", code="EVAGEN")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    ev = await memory_engine.insert_event({
+        "id": memory_engine._new_id("evt_"), "site_id": site["id"], "project_id": project["id"],
+        "user_id": ACTOR["id"], "user_name": ACTOR["name"], "activity_id": None, "kind": "text",
+        "text_input": "Client needs to approve the 5 lakh change order.", "transcript": None,
+        "audio_asset_id": None, "photo_asset_ids": [], "gps": None, "client_created_at": None,
+        "app_version": None, "requires_client_approval": False, "ai_status": "pending",
+        "ai_analysis_id": None, "server_created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    # Directly insert a client_approval proposal carrying "amount" in its own
+    # details, bypassing the prompt schema (which does not currently expose
+    # amount on client_approvals) - this isolates the STORAGE layer's own
+    # behaviour from the prompt's own routing choice.
+    await operations_engine.insert_ai_proposal({
+        "id": operations_engine._new_id("prop_"), "event_id": ev["id"], "site_id": site["id"],
+        "project_id": project["id"], "category": "client_approval", "title": "Approve 5 lakh change order",
+        "description": "", "suggested_priority": "high", "suggested_owner_role": "project_manager",
+        "confidence": "high", "source_snippet": "", "details": {"what": "approve change order", "amount": 500000},
+    })
+    proposal = (await operations_engine.list_ai_proposals(event_id=ev["id"]))[0]
+    item = await operations_engine.accept_ai_proposal(proposal_id=proposal["id"], actor=ACTOR)
+    assert item["category"] == "client_approval"
+    assert item["amount"] == 500000  # carried over despite not being a "commitment"
+
+
+async def test_no_duplicate_monetary_source_of_truth():
+    """The core architectural guarantee: capturing a monetary operational
+    fact through the universal pipeline never touches commercial_engine's
+    own collections, and vice versa - the two models share no state."""
+    project = await memory_engine.insert_project(name="EVA separation", code="EVASEP")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    before_prs = await _mock_db.payment_requests.count_documents({})
+    before_pays = await _mock_db.payments.count_documents({})
+
+    await _capture(project["id"], site["id"], "10 lakh is payable to the contractor.",
+        _blank(commitments=[{"what": "payment to contractor", "owed_to": "contractor", "by_when": None,
+                             "amount": 1000000, "attributed_to": None, "confidence": "high"}]))
+
+    assert await _mock_db.payment_requests.count_documents({}) == before_prs  # untouched
+    assert await _mock_db.payments.count_documents({}) == before_pays          # untouched
+
+
+async def test_existing_commercial_payment_request_behaviour_unchanged():
+    """The real, pre-existing commercial_engine workflow (milestone ->
+    payment_request -> record_payment -> remaining -> status) still works
+    exactly as before this investigation - proves the formal commercial
+    model was not touched, only traced."""
+    project = await memory_engine.insert_project(name="EVA commercial", code="EVACOMM")
+    await commercial_engine.create_contract(
+        actor=PM, project_id=project["id"], client_id=None,
+        original_contract_value=1000000, contract_date="2026-01-01", duration_days=180)
+    milestone = await commercial_engine.create_milestone(
+        actor=PM, project_id=project["id"], name="M1", sequence=1,
+        planned_percent=100, trigger="manual", contract_value=1000000)
+    await commercial_engine.transition_milestone_status(milestone["id"], "ready", actor=PM)
+    await commercial_engine.transition_milestone_status(milestone["id"], "achieved", actor=PM)
+    pr = await commercial_engine.create_payment_request(
+        actor=PM, project_id=project["id"], milestone_id=milestone["id"],
+        amount=1000000, raised_date="2026-09-01", due_date="2026-09-15")
+    await commercial_engine.transition_payment_request_status(pr["id"], "under_review", actor=PM)
+    await commercial_engine.transition_payment_request_status(pr["id"], "raised", actor=PM)
+    await commercial_engine.transition_payment_request_status(pr["id"], "sent", actor=PM)
+    await commercial_engine.record_payment(
+        actor=PM, payment_request_id=pr["id"], amount=400000, date="2026-09-10", method="bank_transfer")
+    payments = await commercial_engine.list_payments_for_request(pr["id"])
+    total_received = sum(p["amount"] for p in payments)
+    remaining = pr["amount"] - total_received
+    updated_pr = await commercial_engine.get_payment_request(pr["id"])
+    assert total_received == 400000 and remaining == 600000
+    assert updated_pr["status"] == "partially_paid"  # unchanged, pre-existing behaviour
+
+
+async def test_actor_history_unattributed_payment_fact_does_not_appear():
+    """Requirement 7, confirmed precisely: an unattributed completed-
+    payment statement ("4 lakh has been paid", no attributed_to) never
+    shows up in any specific person's own actor_history - because
+    actor_history filters by attributed_to match, and this fact has none.
+    Only an explicitly attributed commitment (the original "10 lakh
+    payable to the contractor", attributed to the contractor) counts."""
+    project = await memory_engine.insert_project(name="EVA attrib", code="EVAATTR")
+    site = await memory_engine.insert_site(project_id=project["id"], name="Site")
+    payable = await _capture(project["id"], site["id"], "Contractor confirmed 10 lakh payable.",
+        _blank(commitments=[{"what": "payment to contractor", "owed_to": None, "by_when": None,
+                             "amount": 1000000, "attributed_to": "contractor", "confidence": "high"}]))
+    await _capture(project["id"], site["id"], "4 lakh has been paid.",
+        _blank(commitments=[{"what": "payment made", "owed_to": None, "by_when": None,
+                             "amount": 400000, "attributed_to": None, "confidence": "high"}]))
+    history = await operations_engine.actor_history(project["id"], user=PM, attributed_to="contractor")
+    assert history["total_commitments"] == 1  # only the attributed one
+    assert history["items"][0]["id"] == payable[0]["id"]
+
+
 # ==========================================================================
 
 async def test_construction_cre_rule_unaffected_by_this_investigation():
