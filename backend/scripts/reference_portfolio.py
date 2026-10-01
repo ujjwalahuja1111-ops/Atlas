@@ -717,7 +717,7 @@ async def complete_rp001_operations(*, residual_fraction: float = 0.06) -> dict:
             await ops.transition_status(item_id=item["id"], to_status="in_progress", actor=admin)
             await ops.transition_status(item_id=item["id"], to_status="fulfilled", actor=admin, note=note)
             if item["category"] in ("material_requirement", "safety_observation"):
-                await ops.transition_status(item_id=item["id"], to_status="verified", actor=admin,
+                await ops.transition_status(item_id=item["id"], to_status="verified", actor=supervisor,
                                             note="Verified during closeout review.")
             resolved += 1
         except ValueError:
@@ -786,7 +786,7 @@ async def record_missing_rp001_inspections() -> dict:
         await ops.transition_status(item_id=item["id"], to_status="acknowledged", actor=admin)
         await ops.transition_status(item_id=item["id"], to_status="fulfilled", actor=admin,
                                     note=rng.choice(_INSPECTION_NOTE_TEMPLATES))
-        await ops.transition_status(item_id=item["id"], to_status="verified", actor=admin,
+        await ops.transition_status(item_id=item["id"], to_status="verified", actor=supervisor,
                                     note="Verified during closeout review.")
         recorded += 1
 

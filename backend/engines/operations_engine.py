@@ -380,7 +380,18 @@ async def create_item(*, actor: dict, site_id: str,
         # matching the brief's own "never use an LLM to create
         # construction relationships" requirement.
         "affected_activity_ids": [],
+
+        # Verification State investigation — has_evidence records only
+        # whether the capture this item came from had a photo attached;
+        # it is NOT a claim that the photo proves anything, and it never
+        # changes what the item's own status means. Computed once here
+        # (the source event is immutable, so this can never go stale).
+        "has_evidence": False,
     }
+    if inherited_evidence_event_id:
+        source_event = await memory_engine.get_event(inherited_evidence_event_id)
+        if source_event and source_event.get("photo_asset_ids"):
+            doc["has_evidence"] = True
     # Initial ledger event
     initial = await append_event(item_id=item_id, kind="created", actor=actor,
                                  prev_status=None, new_status=initial_status,
@@ -484,6 +495,19 @@ async def transition_status(*, item_id: str, to_status: str, actor: dict,
     allowed = TRANSITIONS.get(cur, set())
     if to_status not in allowed:
         raise ValueError(f"transition {cur} → {to_status} not allowed")
+
+    # Verification State investigation — a verbal claim of completion is
+    # not independent verification (confirmed live before this change:
+    # the same actor could mark an item "fulfilled" and then immediately
+    # "verified" with no guard at all). "verified" already exists as a
+    # distinct status with its own verified_by/verified_at fields; the
+    # gap was never a missing field, only a missing guard. This is the
+    # one new rule: whoever marked the item fulfilled cannot also be the
+    # one who verifies it.
+    if to_status == "verified" and item.get("completed_by_user_id") == actor["id"]:
+        raise ValueError(
+            "The person who marked this item fulfilled cannot also verify it — "
+            "verification requires a different person.")
 
     # event kind mapping
     kind_map = {"acknowledged": "acknowledged", "in_progress": "started",
@@ -1127,6 +1151,13 @@ async def actor_history(project_id: str, *, user: dict,
     late = [i for i in fulfilled if i["metrics"]["fulfilled_on_time"] is False]
     total_days_late = sum(i["metrics"]["days_late"] or 0 for i in late)
     still_open = [i for i in matching if i["status"] not in ("fulfilled", "verified", "closed")]
+    # Verification State investigation — fulfilled_count already correctly
+    # counts verified/closed items too (they ARE fulfilled, just also
+    # confirmed), so its own meaning is unchanged. verified_count answers
+    # the separate question this investigation exists to make answerable:
+    # of those, how many were independently confirmed rather than merely
+    # claimed.
+    verified = [i for i in fulfilled if i["status"] in ("verified", "closed")]
 
     items_total = len(matching)
     page = matching[items_offset:items_offset + items_limit]
@@ -1138,6 +1169,7 @@ async def actor_history(project_id: str, *, user: dict,
         "identity_note": identity_note,
         "total_commitments": len(matching),
         "fulfilled_count": len(fulfilled),
+        "verified_count": len(verified),
         "on_time_count": len(on_time),
         "late_count": len(late),
         "total_days_late": total_days_late,
@@ -1151,7 +1183,9 @@ async def actor_history(project_id: str, *, user: dict,
              "fulfilled_on_time": i["metrics"]["fulfilled_on_time"],
              "days_late": i["metrics"]["days_late"],
              "quantity_remaining": i["metrics"]["quantity_remaining"],
-             "amount_remaining": i["metrics"]["amount_remaining"]}
+             "amount_remaining": i["metrics"]["amount_remaining"],
+             "has_evidence": i.get("has_evidence", False),
+             "verified_at": i.get("verified_at")}
             for i in page
         ],
     }

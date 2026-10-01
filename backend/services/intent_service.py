@@ -480,6 +480,11 @@ def _synthetic_creation_entry(item: dict) -> Optional[dict]:
         fields["amount"] = item["amount"]
     if item.get("actual_amount") is not None:
         fields["actual_amount"] = item["actual_amount"]
+    # Verification State investigation — has_evidence is also a genuine
+    # creation-time fact. Only surfaced when True: "no evidence" is the
+    # default, unremarkable state and not worth a change-history line.
+    if item.get("has_evidence"):
+        fields["has_evidence"] = True
     if not fields:
         return None
     return {
