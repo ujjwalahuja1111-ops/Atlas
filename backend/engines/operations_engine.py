@@ -939,6 +939,38 @@ async def request_clarification(*, item_id: str, actor: dict, note: str) -> dict
     return item
 
 
+async def mark_duplicate(*, item_id: str, actor: dict,
+                         duplicate_of_item_id: str,
+                         note: Optional[str] = None) -> dict:
+    """Mark item as a duplicate of another. Status moves to 'duplicate'.
+    History is preserved; the canonical target is recorded in projection
+    and in the ledger payload."""
+    item = await get_item(item_id)
+    if not item:
+        raise ValueError("item not found")
+    target = await get_item(duplicate_of_item_id)
+    if not target:
+        raise ValueError("duplicate target not found")
+    if item_id == duplicate_of_item_id:
+        raise ValueError("cannot mark item as duplicate of itself")
+    prev = item["status"]
+    if "duplicate" not in TRANSITIONS.get(prev, set()):
+        raise ValueError(f"transition {prev} \u2192 duplicate not allowed")
+    ev = await append_event(item_id=item_id, kind="duplicate_of", actor=actor,
+                            prev_status=prev, new_status="duplicate",
+                            payload={"duplicate_of_item_id": duplicate_of_item_id,
+                                     "duplicate_of_title": target.get("title"),
+                                     "note": note})
+    now_iso = _iso(_now())
+    item["status"] = "duplicate"
+    item["duplicate_of_item_id"] = duplicate_of_item_id
+    item["last_updated_at"] = now_iso
+    item["last_derived_from_op_event_id"] = ev["id"]
+    item["health"] = derive_health(item)
+    await _save_item(item)
+    return item
+
+
 async def mark_superseded(*, item_id: str, actor: dict,
                           superseded_by_item_id: str,
                           note: Optional[str] = None) -> dict:
@@ -969,6 +1001,40 @@ async def mark_superseded(*, item_id: str, actor: dict,
         raise ValueError("an item cannot supersede itself")
     if item.get("project_id") != target.get("project_id"):
         raise ValueError("an item can only be superseded by another item in the same project")
+
+    # D. Idempotency — an identical repeat (same item, same target) is a
+    # safe no-op: no new event, no state change, the already-superseded
+    # item returned as-is. A repeat with a DIFFERENT target still falls
+    # through to the ordinary transition check below, which rejects it
+    # (superseded is not a source state in TRANSITIONS) - changing the
+    # target after the fact is a genuine, ambiguous change, not a retry.
+    if item.get("status") == "superseded" and item.get("superseded_by_item_id") == superseded_by_item_id:
+        return item
+
+    # C. Target state — the superseding target must itself be live/
+    # current. Pointing "the current position" at an item that is itself
+    # already superseded, a duplicate, cancelled, or archived would make
+    # the relationship a dead end rather than a correction. No new
+    # lifecycle semantics invented: these are exactly the existing
+    # terminal/non-current statuses TRANSITIONS already treats as such.
+    if target.get("status") in ("superseded", "duplicate", "cancelled", "archived"):
+        raise ValueError(
+            f"'{target.get('title')}' is itself {target['status']} and cannot be the current "
+            "position for a correction — point to a live item instead.")
+
+    # B. Cycle — no separate cycle-detection walk is needed. The C.
+    # check above already makes every cycle impossible, at any depth:
+    # a cycle requires some earlier item in the chain to be reused as a
+    # target again (A -> B -> ... -> A), but reaching that earlier item
+    # as a source already set its own status to "superseded" (that is
+    # what mark_superseded does to item_id below) - and C. already
+    # refuses any target whose status is "superseded". So the two-item
+    # case (A -> B, B -> A) and every deeper chain are both already
+    # rejected by the one target-state rule above; a dedicated graph
+    # walk here would never find anything the check above hadn't
+    # already caught, and was confirmed, by tracing it directly, to
+    # never execute a meaningful iteration.
+
     prev = item["status"]
     if "superseded" not in TRANSITIONS.get(prev, set()):
         raise ValueError(f"transition {prev} → superseded not allowed")

@@ -417,3 +417,207 @@ async def test_cross_industry_software_actor_correction():
     old_item = await operations_engine.get_item(old[0]["id"])
     assert old_item["attributed_to"] == "Rahul"
     assert new[0]["attributed_to"] == "Priya"
+
+
+# ==========================================================================
+# PATCH HARDENING — supersession relationship invariants
+#
+# Traced before changing anything: self-rejection already existed
+# (confirmed live). Three genuine gaps were confirmed live and fixed:
+#   B. CYCLE: A->B then B->A succeeded, creating a 2-cycle where neither
+#      item is current.
+#   C. TARGET STATE: an item could be "superseded by" a target that was
+#      itself already superseded/duplicate/cancelled/archived - pointing
+#      "the current position" at a dead end.
+#   D. IDEMPOTENCY: an identical repeat call raised rather than being a
+#      safe no-op.
+# B and C turned out to be the SAME fix: once a superseding target must
+# be live (not superseded/duplicate/cancelled/archived), a cycle of any
+# depth becomes mathematically impossible - closing a cycle always
+# requires reusing an already-superseded item as a target, which the
+# target-state rule alone already forbids. No separate graph-traversal
+# code was added; proven live (not merely asserted) for 2- and 3-item
+# cycles and a valid, non-cyclic chain.
+#
+# This pass also found and fixed an unrelated, pre-existing regression
+# from the original supersession commit: mark_duplicate() itself had
+# been accidentally deleted when mark_superseded() was inserted above
+# it (confirmed by diff against the prior commit) - restored verbatim.
+# test_duplicate_mechanism_still_works guards against this specifically,
+# since no existing test exercised operations_engine.mark_duplicate()
+# directly before this pass.
+# ==========================================================================
+
+async def test_self_supersede_rejected():
+    project, site = await _new_project("hard_self")
+    item = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="A")
+    with pytest.raises(ValueError, match="cannot supersede itself"):
+        await operations_engine.mark_superseded(
+            item_id=item["id"], actor=PM, superseded_by_item_id=item["id"])
+
+
+async def test_two_item_cycle_rejected():
+    project, site = await _new_project("hard_cycle2")
+    a = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="A")
+    b = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="B")
+    await operations_engine.mark_superseded(item_id=a["id"], actor=PM, superseded_by_item_id=b["id"])
+    with pytest.raises(ValueError, match="itself superseded"):
+        await operations_engine.mark_superseded(item_id=b["id"], actor=PM, superseded_by_item_id=a["id"])
+    # A's own claim must remain exactly as it was - the rejected attempt
+    # must not have mutated anything.
+    a_after = await operations_engine.get_item(a["id"])
+    assert a_after["status"] == "superseded" and a_after["superseded_by_item_id"] == b["id"]
+    b_after = await operations_engine.get_item(b["id"])
+    assert b_after["status"] == "open" and b_after.get("superseded_by_item_id") is None
+
+
+async def test_three_item_cycle_rejected():
+    """A deeper chain attempting to close a cycle (A->B, B->C, C->A) is
+    rejected too, by the same target-state rule - no separate cycle
+    walk needed, proven here rather than assumed."""
+    project, site = await _new_project("hard_cycle3")
+    a = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="A")
+    b = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="B")
+    c = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="C")
+    await operations_engine.mark_superseded(item_id=a["id"], actor=PM, superseded_by_item_id=b["id"])
+    await operations_engine.mark_superseded(item_id=b["id"], actor=PM, superseded_by_item_id=c["id"])
+    with pytest.raises(ValueError, match="itself superseded"):
+        await operations_engine.mark_superseded(item_id=c["id"], actor=PM, superseded_by_item_id=a["id"])
+
+
+async def test_valid_sequential_correction_chain_A_to_B_to_C():
+    """A legitimate, non-cyclic correction chain (each correction pointing
+    forward to a genuinely new, live item) must keep working."""
+    project, site = await _new_project("hard_chain")
+    a = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="200 units")
+    b = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="220 units")
+    c = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="210 units")
+    a2 = await operations_engine.mark_superseded(item_id=a["id"], actor=PM, superseded_by_item_id=b["id"])
+    b2 = await operations_engine.mark_superseded(item_id=b["id"], actor=PM, superseded_by_item_id=c["id"])
+    c_final = await operations_engine.get_item(c["id"])
+    assert a2["status"] == "superseded" and a2["superseded_by_item_id"] == b["id"]
+    assert b2["status"] == "superseded" and b2["superseded_by_item_id"] == c["id"]
+    assert c_final["status"] == "open"  # C is the current, live position
+    assert c_final.get("superseded_by_item_id") is None
+
+
+@pytest.mark.parametrize("bad_status", ["superseded", "duplicate", "cancelled", "archived"])
+async def test_invalid_target_state_rejected(bad_status):
+    project, site = await _new_project(f"hard_target_{bad_status}")
+    source = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="source")
+    target = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="target")
+    if bad_status in ("superseded", "duplicate"):
+        other = await operations_engine.create_item(
+            actor=PM, site_id=site["id"], category="material_requirement", title="other")
+        if bad_status == "superseded":
+            await operations_engine.mark_superseded(item_id=target["id"], actor=PM,
+                                                     superseded_by_item_id=other["id"])
+        else:
+            await operations_engine.mark_duplicate(item_id=target["id"], actor=PM,
+                                                    duplicate_of_item_id=other["id"])
+    else:
+        await operations_engine.transition_status(item_id=target["id"], to_status=bad_status, actor=PM)
+    with pytest.raises(ValueError, match=f"itself {bad_status}"):
+        await operations_engine.mark_superseded(item_id=source["id"], actor=PM,
+                                                 superseded_by_item_id=target["id"])
+    # the rejected attempt must not have mutated the source item
+    source_after = await operations_engine.get_item(source["id"])
+    assert source_after["status"] == "open"
+
+
+async def test_repeated_identical_supersession_is_a_safe_noop():
+    project, site = await _new_project("hard_idem")
+    source = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="source")
+    target = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="target")
+    first = await operations_engine.mark_superseded(item_id=source["id"], actor=PM,
+                                                     superseded_by_item_id=target["id"], note="first")
+    events_after_first = await operations_engine.list_events_for_item(source["id"])
+    second = await operations_engine.mark_superseded(item_id=source["id"], actor=PM,
+                                                      superseded_by_item_id=target["id"], note="second")
+    events_after_second = await operations_engine.list_events_for_item(source["id"])
+    assert second["status"] == "superseded" and second["superseded_by_item_id"] == target["id"]
+    assert len(events_after_first) == len(events_after_second)  # no duplicate event logged
+
+
+async def test_repeated_supersession_with_different_target_still_rejected():
+    """Idempotency only covers an IDENTICAL repeat - changing the target
+    after the fact is a genuine, ambiguous state change, not a retry."""
+    project, site = await _new_project("hard_idem_diff")
+    source = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="source")
+    target1 = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="target1")
+    target2 = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="target2")
+    await operations_engine.mark_superseded(item_id=source["id"], actor=PM, superseded_by_item_id=target1["id"])
+    with pytest.raises(ValueError, match="not allowed"):
+        await operations_engine.mark_superseded(item_id=source["id"], actor=PM, superseded_by_item_id=target2["id"])
+    unchanged = await operations_engine.get_item(source["id"])
+    assert unchanged["superseded_by_item_id"] == target1["id"]  # still points to the original target
+
+
+async def test_same_project_rejection_still_green():
+    """Existing guard (E.), unchanged - re-confirmed here alongside the
+    new invariants rather than assumed from the earlier test file."""
+    project1, site1 = await _new_project("hard_proj1")
+    project2, site2 = await _new_project("hard_proj2")
+    source = await operations_engine.create_item(
+        actor=PM, site_id=site1["id"], category="material_requirement", title="source")
+    other_project_target = await operations_engine.create_item(
+        actor=PM, site_id=site2["id"], category="material_requirement", title="target")
+    with pytest.raises(ValueError, match="same project"):
+        await operations_engine.mark_superseded(item_id=source["id"], actor=PM,
+                                                 superseded_by_item_id=other_project_target["id"])
+
+
+async def test_history_unmutated_through_a_rejected_cycle_attempt():
+    """F. HISTORY: the original item's own claimed fields are never
+    altered by a rejected operation, and the ledger is never rewritten -
+    only ever appended to."""
+    project, site = await _new_project("hard_history")
+    a = await _capture(project["id"], site["id"], "Supplier confirmed 200 units Thursday.",
+        _blank(materials=[{"name": "units", "quantity": 200, "unit": "units", "required_date": "Thursday",
+                           "attributed_to": "supplier", "confidence": "high"}]))
+    b = await _capture(project["id"], site["id"], "Actually 220 units.",
+        _blank(materials=[{"name": "units", "quantity": 220, "unit": "units", "required_date": None,
+                           "attributed_to": None, "confidence": "high"}]))
+    events_before = len(await operations_engine.list_events_for_item(a[0]["id"]))
+    await operations_engine.mark_superseded(item_id=a[0]["id"], actor=PM, superseded_by_item_id=b[0]["id"])
+    try:
+        await operations_engine.mark_superseded(item_id=b[0]["id"], actor=PM, superseded_by_item_id=a[0]["id"])
+    except ValueError:
+        pass
+    a_after = await operations_engine.get_item(a[0]["id"])
+    events_after = await operations_engine.list_events_for_item(a[0]["id"])
+    assert a_after["quantity"] == 200  # original claim never altered
+    assert a_after["attributed_to"] == "supplier"
+    assert len(events_after) == events_before + 1  # only the successful supersession appended, nothing rewritten
+
+
+async def test_duplicate_mechanism_still_works():
+    """Guard against the regression this hardening pass found and fixed:
+    mark_duplicate() was accidentally deleted when mark_superseded() was
+    inserted above it in the original commit. No existing test called
+    operations_engine.mark_duplicate() directly before this pass."""
+    project, site = await _new_project("hard_dup_regression")
+    item = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="original")
+    other = await operations_engine.create_item(
+        actor=PM, site_id=site["id"], category="material_requirement", title="canonical")
+    result = await operations_engine.mark_duplicate(
+        item_id=item["id"], actor=PM, duplicate_of_item_id=other["id"], note="same report")
+    assert result["status"] == "duplicate"
+    assert result["duplicate_of_item_id"] == other["id"]
