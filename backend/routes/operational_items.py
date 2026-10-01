@@ -532,3 +532,29 @@ async def mark_superseded(item_id: str, req: MarkSupersededReq,
         return operations_engine.enrich(item)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+class LinkAsFulfillmentReq(BaseModel):
+    fulfills_item_id: str
+    relationship_type: str
+    note: Optional[str] = None
+
+
+@router.post("/operational-items/{item_id}/fulfillment")
+async def link_as_fulfillment(item_id: str, req: LinkAsFulfillmentReq,
+                              user: dict = Depends(get_current_user)):
+    """Human-confirmed cross-capture linking investigation.
+    Explicitly, humanly recording that this item is a confirmed actual
+    or related update against an earlier expectation item. Never
+    inferred, never set by an LLM - mirrors mark_duplicate's/mark_
+    superseded's own exact pattern."""
+    _forbid_client(user, "link items as fulfillments")
+    await _get_visible_item_or_404(item_id, user)
+    try:
+        item = await operations_engine.link_as_fulfillment(
+            item_id=item_id, actor=user, fulfills_item_id=req.fulfills_item_id,
+            relationship_type=req.relationship_type, note=req.note,
+        )
+        return operations_engine.enrich(item)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))

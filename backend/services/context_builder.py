@@ -105,6 +105,45 @@ async def build_item_relationships(item: dict) -> dict:
         item.get("inherited_evidence_event_id"), exclude_item_id=item_id)
     siblings = [_claim_summary(s) for s in sibling_docs]
 
+    # Human-confirmed cross-capture linking — forward: if THIS item was
+    # itself confirmed as a fulfillment of an earlier expectation, show
+    # that expectation (only ever set by the explicit, human-triggered
+    # link_as_fulfillment() - never inferred).
+    fulfills: Optional[dict] = None
+    if item.get("fulfills_item_id"):
+        target = await operations_engine.get_item(item["fulfills_item_id"])
+        if target:
+            fulfills = {"item": _claim_summary(target), "relationship_type": item.get("fulfillment_type")}
+
+    # Reverse — every later item confirmed against this one as its
+    # expectation, split by type. "actual" entries feed the arithmetic
+    # below; "update" entries (e.g. a related follow_up) do not.
+    fulfiller_docs = await operations_engine.find_items_fulfilling(item_id)
+    confirmed_actuals = [_claim_summary(f) for f in fulfiller_docs if f.get("fulfillment_type") == "actual"]
+    confirmed_updates = [_claim_summary(f) for f in fulfiller_docs if f.get("fulfillment_type") == "update"]
+
+    # Expected -> Actual -> Remaining across MULTIPLE confirmed actuals
+    # (Section 6: each actual stays its own independent item; nothing is
+    # merged or mutated here, only summed for presentation). Only
+    # computed when the focal item genuinely carries an expected
+    # quantity or amount - never fabricated for an item with neither,
+    # and never computed from "update" relationships, which are not
+    # forced into this arithmetic.
+    fulfillment_summary = None
+    actual_docs = [f for f in fulfiller_docs if f.get("fulfillment_type") == "actual"]
+    if item.get("quantity") is not None and actual_docs:
+        total_actual = sum(f.get("quantity") or 0 for f in actual_docs)
+        fulfillment_summary = {
+            "dimension": "quantity", "expected": item["quantity"], "actual": total_actual,
+            "remaining": item["quantity"] - total_actual,
+        }
+    elif item.get("amount") is not None and actual_docs:
+        total_actual = sum(f.get("amount") or 0 for f in actual_docs)
+        fulfillment_summary = {
+            "dimension": "amount", "expected": item["amount"], "actual": total_actual,
+            "remaining": item["amount"] - total_actual,
+        }
+
     return {
         "focal_item": _claim_summary(enriched, full=True),
         "current_position": current_position,
@@ -112,6 +151,10 @@ async def build_item_relationships(item: dict) -> dict:
         "superseded_by_chain": superseded_by_chain,
         "superseded_predecessors": superseded_predecessors,
         "sibling_items": siblings,
+        "fulfills": fulfills,
+        "confirmed_actuals": confirmed_actuals,
+        "confirmed_updates": confirmed_updates,
+        "fulfillment_summary": fulfillment_summary,
         "verification": {
             "status": item["status"],
             "verified_by_user_name": item.get("verified_by_user_name"),

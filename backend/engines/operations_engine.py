@@ -394,6 +394,14 @@ async def create_item(*, actor: dict, site_id: str,
         # never set here, never by AI inference, only via the new,
         # explicit mark_superseded() below.
         "superseded_by_item_id": None,
+
+        # Human-confirmed cross-capture linking investigation — mirrors
+        # the same precedent again: never set here, never by AI
+        # inference, only via the new, explicit link_as_fulfillment()
+        # below. fulfills_item_id is set on the LATER item and points to
+        # the earlier expectation it was confirmed against.
+        "fulfills_item_id": None,
+        "fulfillment_type": None,
     }
     if inherited_evidence_event_id:
         source_event = await memory_engine.get_event(inherited_evidence_event_id)
@@ -1092,6 +1100,112 @@ async def mark_superseded(*, item_id: str, actor: dict,
     item["health"] = derive_health(item)
     await _save_item(item)
     return item
+
+
+FULFILLMENT_TYPES = ("actual", "update")
+
+
+async def link_as_fulfillment(*, item_id: str, actor: dict,
+                              fulfills_item_id: str,
+                              relationship_type: str,
+                              note: Optional[str] = None) -> dict:
+    """Human-confirmed cross-capture linking investigation.
+
+    Records that THIS item (the later capture, e.g. "180 arrived") is a
+    confirmed actual or related update against an EARLIER expectation
+    item (e.g. "200 expected Thursday") — set on item_id as fulfills_
+    item_id, pointing backward, the same direction as duplicate_of_
+    item_id/superseded_by_item_id already point. Multiple later items
+    can each point to the same earlier expectation (supports multiple
+    partial actuals against one expectation; see find_items_fulfilling
+    below for the reverse lookup Context Builder uses).
+
+    relationship_type is "actual" (feeds expected/actual/remaining
+    arithmetic in Context Builder) or "update" (a related fact that is
+    not itself forced into that arithmetic — e.g. relating a follow_up
+    to the expectation it explains).
+
+    Deliberately NEVER called from the AI structuring pipeline and
+    NEVER inferred from text content, quantity similarity, title
+    similarity, category, actor, or date — identifying which earlier
+    expectation a later capture refers to is not something Atlas can
+    safely guess (the same reasoning mark_superseded's own docstring
+    already gives for corrections). This function exists so a human
+    can record that relationship once it is actually known.
+
+    Deliberately distinct from BOTH existing relationship mechanisms:
+    - mark_duplicate(): "this is the same report", not an outcome.
+    - mark_superseded(): "that earlier claim is no longer current" -
+      an actual does NOT mean the expectation is stale (200 is still
+      what was promised even after 180 of it has arrived), so linking
+      a fulfillment never touches status or duplicate_of_item_id/
+      superseded_by_item_id, and superseding/duplicating an item never
+      touches fulfills_item_id either - entirely separate fields,
+      entirely separate meanings, confirmed by dedicated tests.
+    """
+    if relationship_type not in FULFILLMENT_TYPES:
+        raise ValueError(f"relationship_type must be one of {FULFILLMENT_TYPES}")
+    item = await get_item(item_id)
+    if not item:
+        raise ValueError("item not found")
+    target = await get_item(fulfills_item_id)
+    if not target:
+        raise ValueError("expectation item not found")
+    if item_id == fulfills_item_id:
+        raise ValueError("an item cannot fulfill itself")
+    if item.get("project_id") != target.get("project_id"):
+        raise ValueError("an item can only fulfill an expectation in the same project")
+
+    # Idempotency — an identical repeat (same item, same target, same
+    # type) is a safe no-op, matching mark_superseded's own precedent
+    # exactly. A repeat with a DIFFERENT target or type still proceeds
+    # and overwrites the relationship - unlike mark_superseded, this is
+    # not a status transition with its own guarded TRANSITIONS table, so
+    # there is no separate mechanism to reject a changed target; the
+    # caller re-confirming a different relationship is itself the
+    # correction (append-only history: the previous relationship's own
+    # event remains in the ledger either way, never erased).
+    if (item.get("fulfills_item_id") == fulfills_item_id
+            and item.get("fulfillment_type") == relationship_type):
+        return item
+
+    # Target state — the expectation being fulfilled must itself be
+    # live/current, not already superseded or a duplicate. Fulfilling a
+    # stale expectation would be confirming a relationship against
+    # something no longer the current position. Distinct from mark_
+    # superseded's own, separate target-state check (that one guards a
+    # SUPERSEDING target; this guards a FULFILLED target) - the same
+    # principle, independently enforced, since the two relationships are
+    # deliberately never conflated.
+    if target.get("status") in ("superseded", "duplicate"):
+        raise ValueError(
+            f"'{target.get('title')}' is itself {target['status']} and is not a current "
+            "expectation to link a fulfillment against.")
+
+    ev = await append_event(item_id=item_id, kind="fulfillment_linked", actor=actor,
+                            prev_status=None, new_status=None,
+                            payload={"fulfills_item_id": fulfills_item_id,
+                                     "fulfills_title": target.get("title"),
+                                     "relationship_type": relationship_type, "note": note})
+    item["fulfills_item_id"] = fulfills_item_id
+    item["fulfillment_type"] = relationship_type
+    item["last_updated_at"] = _iso(_now())
+    item["last_derived_from_op_event_id"] = ev["id"]
+    await _save_item(item)
+    return item
+
+
+async def find_items_fulfilling(expectation_item_id: str, *, limit: int = 50) -> list[dict]:
+    """Reverse lookup for the new fulfills_item_id field — every later
+    item confirmed as an actual/update against this expectation, in
+    creation order. Symmetric with find_items_superseded_by's own
+    existing pattern. Supports multiple partial actuals against one
+    expectation (Section 6): each is its own, independent item; this
+    just finds all of them."""
+    docs = await db.operational_items.find(
+        {"fulfills_item_id": expectation_item_id}, {"_id": 0},
+    ).sort("created_at", 1).to_list(limit)
+    return docs
 
 
 # ---------------- derived metrics ----------------

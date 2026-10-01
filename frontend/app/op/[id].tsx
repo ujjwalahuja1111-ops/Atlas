@@ -16,7 +16,7 @@ import type { Role } from '@/src/api';
 import {
   apiGetItem, apiTransitionItem, apiCommentItem, apiRequestClarification, apiSetBlocker, apiClearBlocker,
   apiListUsers, apiAssignItem, apiEditItem, apiVoiceUpdate, apiTextUpdate, apiMarkDuplicate, apiListItems,
-  apiLinkAffectedActivities,
+  apiLinkAffectedActivities, apiLinkAsFulfillment,
   type OperationalItem, type OperationalEvent, type AssignableUser,
 } from '@/src/ops_api';
 import { apiGetWorkflow, type WorkflowActivity } from '@/src/workflow_api';
@@ -85,6 +85,13 @@ export default function OpDetail() {
   const [editing, setEditing] = useState<any | null>(null);
   const [showDupPicker, setShowDupPicker] = useState(false);
   const [dupCandidates, setDupCandidates] = useState<OperationalItem[]>([]);
+  // Human-confirmed cross-capture linking — mirrors showDupPicker/
+  // dupCandidates exactly. fulfillPickTarget holds the candidate once
+  // chosen, pending the human's own explicit relationship-type choice
+  // (never inferred from the candidate itself).
+  const [showFulfillPicker, setShowFulfillPicker] = useState(false);
+  const [fulfillCandidates, setFulfillCandidates] = useState<OperationalItem[]>([]);
+  const [fulfillPickTarget, setFulfillPickTarget] = useState<OperationalItem | null>(null);
   // FAC-OPS-06 — shared with app/(tabs)/capture.tsx, instead of a second,
   // separate recording flow.
   const { recording, elapsed, start: startRecordRaw, stop: stopRecordRaw, cancel: cancelRecordRaw } = useVoiceRecorder();
@@ -293,6 +300,30 @@ export default function OpDetail() {
     try { await apiMarkDuplicate(item.id, target.id); await load(); }
     catch (e: any) { Alert.alert('Mark duplicate failed', String(e?.message || e)); }
     finally { setBusy(false); }
+  };
+
+  // Human-confirmed cross-capture linking — candidate discovery is
+  // advisory only (same site, excludes this item and dead-end
+  // statuses the backend would reject anyway); picking a candidate
+  // never creates the relationship by itself - onConfirmFulfillment
+  // below does, only after the human separately picks "actual" or
+  // "update".
+  const openFulfillPicker = async () => {
+    try {
+      const list = await apiListItems({ site_id: item.site_id });
+      setFulfillCandidates(list.filter((x) =>
+        x.id !== item.id && x.status !== 'superseded' && x.status !== 'duplicate'));
+      setFulfillPickTarget(null);
+      setShowFulfillPicker(true);
+    } catch (e: any) { Alert.alert('Load failed', String(e?.message || e)); }
+  };
+  const onConfirmFulfillment = async (relationship_type: 'actual' | 'update') => {
+    if (!fulfillPickTarget) return;
+    setShowFulfillPicker(false);
+    setBusy(true);
+    try { await apiLinkAsFulfillment(item.id, fulfillPickTarget.id, relationship_type); await load(); }
+    catch (e: any) { Alert.alert('Link failed', String(e?.message || e)); }
+    finally { setBusy(false); setFulfillPickTarget(null); }
   };
 
   const onArchive = async () => {
@@ -530,6 +561,13 @@ export default function OpDetail() {
                     style={[styles.actionBtn, { borderColor: theme.color.textMuted }]}>
                     <Ionicons name="copy" size={18} color={theme.color.textMuted} />
                     <Text style={[styles.actionLabel, { color: theme.color.textMuted }]}>DUPLICATE</Text>
+                  </Pressable>
+                )}
+                {item.status !== 'duplicate' && item.status !== 'superseded' && item.status !== 'archived' && (
+                  <Pressable testID="link-fulfillment" onPress={openFulfillPicker} disabled={busy}
+                    style={[styles.actionBtn, { borderColor: theme.color.textMuted }]}>
+                    <Ionicons name="link" size={18} color={theme.color.textMuted} />
+                    <Text style={[styles.actionLabel, { color: theme.color.textMuted }]}>LINK TO…</Text>
                   </Pressable>
                 )}
                 {item.status !== 'archived' && (
@@ -829,6 +867,61 @@ export default function OpDetail() {
                 </Pressable>
               ))}
             </ScrollView>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Fulfillment-link picker modal */}
+      <Modal visible={showFulfillPicker} animationType="slide" transparent>
+        <View style={styles.modalBack}>
+          <View style={styles.modal}>
+            <View style={styles.modalHead}>
+              <Text style={styles.modalTitle}>
+                {fulfillPickTarget ? 'HOW DOES THIS RELATE?' : 'LINK TO…'}
+              </Text>
+              <Pressable testID="fulfill-modal-close"
+                onPress={() => { setShowFulfillPicker(false); setFulfillPickTarget(null); }}>
+                <Ionicons name="close" size={26} color={theme.color.textDim} />
+              </Pressable>
+            </View>
+            {!fulfillPickTarget ? (
+              <ScrollView style={{ maxHeight: 360 }}>
+                {fulfillCandidates.length === 0 ? (
+                  <Text style={{ color: theme.color.textDim, fontSize: 13 }}>No other items in this site.</Text>
+                ) : fulfillCandidates.map((c) => (
+                  <Pressable key={c.id} testID={`fulfill-pick-${c.id}`} onPress={() => setFulfillPickTarget(c)}
+                    style={styles.dupRow}>
+                    <Ionicons name="link-outline" size={18} color={theme.color.brand} />
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.dupTitle} numberOfLines={1}>{c.title}</Text>
+                      <Text style={styles.dupMeta}>{c.category.replace(/_/g, ' ')} · {c.status}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </ScrollView>
+            ) : (
+              <View style={{ gap: 10 }}>
+                <Text style={{ color: theme.color.textDim, fontSize: 13 }} numberOfLines={2}>
+                  Linking to: {fulfillPickTarget.title}
+                </Text>
+                <Pressable testID="fulfill-type-actual" onPress={() => onConfirmFulfillment('actual')}
+                  style={styles.dupRow}>
+                  <Ionicons name="checkmark-circle-outline" size={18} color={theme.color.brand} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.dupTitle}>This is the actual outcome</Text>
+                    <Text style={styles.dupMeta}>Counts toward expected / actual / remaining</Text>
+                  </View>
+                </Pressable>
+                <Pressable testID="fulfill-type-update" onPress={() => onConfirmFulfillment('update')}
+                  style={styles.dupRow}>
+                  <Ionicons name="information-circle-outline" size={18} color={theme.color.brand} />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.dupTitle}>This is a related update</Text>
+                    <Text style={styles.dupMeta}>Shown together, not counted in the totals</Text>
+                  </View>
+                </Pressable>
+              </View>
+            )}
           </View>
         </View>
       </Modal>

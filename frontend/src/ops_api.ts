@@ -11,7 +11,7 @@ export type OperationalCategory =
 export type OperationalStatus =
   | 'open' | 'assigned' | 'acknowledged' | 'in_progress'
   | 'fulfilled' | 'verified' | 'closed' | 'reopened'
-  | 'archived' | 'cancelled' | 'duplicate';
+  | 'archived' | 'cancelled' | 'duplicate' | 'superseded';
 
 export type OperationalHealth =
   | 'on_track' | 'due_soon' | 'overdue' | 'blocked' | 'waiting_external' | 'completed';
@@ -373,6 +373,22 @@ export async function apiMarkDuplicate(id: string, duplicate_of_item_id: string,
   const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/duplicate`, {
     method: 'POST', headers: await jheaders(),
     body: JSON.stringify({ duplicate_of_item_id, note }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+// Human-confirmed cross-capture linking — calls the existing, unmodified
+// POST /operational-items/{id}/fulfillment route exactly, mirroring
+// apiMarkDuplicate's own exact pattern. relationship_type is 'actual'
+// (feeds expected/actual/remaining) or 'update' (a related fact that
+// does not).
+export async function apiLinkAsFulfillment(
+  id: string, fulfills_item_id: string, relationship_type: 'actual' | 'update', note?: string,
+) {
+  const r = await apiFetch(`${BACKEND}/api/operational-items/${id}/fulfillment`, {
+    method: 'POST', headers: await jheaders(),
+    body: JSON.stringify({ fulfills_item_id, relationship_type, note }),
   });
   if (!r.ok) throw new Error(await r.text());
   return r.json();
