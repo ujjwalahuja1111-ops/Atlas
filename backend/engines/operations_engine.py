@@ -447,6 +447,47 @@ async def find_items_for_events(event_ids: list[str], *, category: str) -> dict[
     return {d["inherited_evidence_event_id"]: d for d in docs}
 
 
+async def find_sibling_items(event_id: str, *, exclude_item_id: str, limit: int = 20) -> list[dict]:
+    """Context Builder investigation — other operational_items that came
+    from the SAME originating capture event as a focal item (e.g. "180
+    arrived, the remaining 20 still haven't" producing both a materials
+    item and a follow_up item from one utterance). A safe, explicit
+    link: both items share the one real event_id that produced them,
+    never a name/category similarity guess."""
+    if not event_id:
+        return []
+    docs = await db.operational_items.find(
+        {"inherited_evidence_event_id": event_id, "id": {"$ne": exclude_item_id}},
+        {"_id": 0},
+    ).to_list(limit)
+    return docs
+
+
+async def find_items_superseded_by(item_id: str, *, limit: int = 20) -> list[dict]:
+    """Context Builder investigation — the reverse of the existing,
+    forward superseded_by_item_id field: which items point TO this one
+    (i.e. which earlier claims this item replaced). Symmetric with the
+    existing forward chain (item.superseded_by_item_id already answers
+    "what replaced this"); this answers "what did this replace"."""
+    docs = await db.operational_items.find(
+        {"superseded_by_item_id": item_id}, {"_id": 0},
+    ).to_list(limit)
+    return docs
+
+
+
+    """Batch form of find_open_item_for_event, for the timeline (avoids
+    an N+1 query per event when resolving each event's linked approval
+    status)."""
+    if not event_ids:
+        return {}
+    docs = await db.operational_items.find(
+        {"inherited_evidence_event_id": {"$in": event_ids}, "category": category},
+        {"_id": 0},
+    ).to_list(len(event_ids))
+    return {d["inherited_evidence_event_id"]: d for d in docs}
+
+
 async def create_fallback_note_item(*, actor: dict, site_id: str, text: str, event_id: str) -> Optional[dict]:
     """Sprint 6.2 Founder Verification fix — Manual Text Capture Processing.
 

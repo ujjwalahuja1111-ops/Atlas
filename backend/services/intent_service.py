@@ -530,6 +530,7 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
     entity = resolution["entity"]
     synthetic_entry: Optional[dict] = None
     fulfillment_metrics: Optional[dict] = None
+    item_context: Optional[dict] = None
 
     if entity_type == "activity":
         try:
@@ -556,6 +557,13 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
         raw_events = await operations_engine.list_events_for_item(entity["id"])
         entity_name = entity["title"]
         synthetic_entry = _synthetic_creation_entry(item)
+        # Context Builder — the relationship/verification/expected-
+        # actual packet (current supersession position, what this item
+        # itself superseded, sibling facts from the same capture,
+        # verification state) computed here once and attached to the
+        # response below, additive only.
+        from services.context_builder import build_item_relationships
+        item_context = await build_item_relationships(item)
         # Next Universal Memory Sprint — required_by (the promise) and
         # completed_at (the actual outcome) both already exist on the
         # item; nothing previously compared them. Computed only when
@@ -595,11 +603,13 @@ async def _handle_query_change_history(project: dict, user: dict, structured: di
         return {"ok": True, "data": {
             "entity_type": entity_type, "entity_name": entity_name, "events": [],
             "message": "No recorded changes found for this item.",
+            **({"context": item_context} if item_context else {}),
         }}
 
     return {"ok": True, "data": {
         "entity_type": entity_type, "entity_name": entity_name,
         "events": events,
+        **({"context": item_context} if item_context else {}),
     }}
 
 
