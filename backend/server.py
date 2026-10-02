@@ -16,6 +16,7 @@ from starlette.middleware.cors import CORSMiddleware
 from core.db import ensure_indexes, close_client
 from core.settings import PROJECT_NAME, APP_VERSION
 from engines import intelligence_engine, memory_engine, commercial_engine
+from routes import business_setup as business_setup_routes
 from routes import auth as auth_routes
 from routes import projects as projects_routes
 from routes import events as events_routes
@@ -79,6 +80,7 @@ app.add_middleware(
 )
 
 app.include_router(auth_routes.router)
+app.include_router(business_setup_routes.router)
 app.include_router(projects_routes.router)
 app.include_router(events_routes.router)
 app.include_router(timeline_routes.router)

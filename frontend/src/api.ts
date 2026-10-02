@@ -265,6 +265,75 @@ export async function apiRegister(
   return (await r.json()) as { token: string; user: User };
 }
 
+// AI Business Setup (Step 2 of the locked market-ready sequence).
+// Mirrors every existing api.ts function's own shape: apiFetch + authHeaders,
+// throw on !r.ok, typed return. Management-only on the backend; these
+// functions carry no client-side role gate of their own since the route
+// itself already enforces it.
+export type Capability =
+  | 'capture' | 'memory' | 'intelligence' | 'operational_tracking' | 'timeline'
+  | 'context' | 'notifications' | 'history' | 'commercial' | 'construction_reasoning'
+  | 'workflow' | 'verification' | 'relationship_linking';
+export type CapabilityLevel = 'required' | 'optional' | 'not_required';
+
+export type BusinessRecommendation = {
+  business_profile: {
+    industry: string; business_type: string;
+    org_size: string | null; location_count: number | null; operating_model: string;
+  };
+  recommended_roles: Role[];
+  capability_recommendations: Record<Capability, CapabilityLevel>;
+  client_access_required: boolean;
+  configuration_questions: string[];
+  assumptions: string[];
+  confidence: 'high' | 'medium' | 'low';
+  explanation: string;
+};
+
+export type BusinessConfiguration = {
+  id: string;
+  status: 'draft' | 'approved';
+  raw_description: string;
+  ai_recommendation: BusinessRecommendation;
+  approved_capabilities: Record<Capability, CapabilityLevel> | null;
+  approved_roles: Role[] | null;
+  approved_client_access: boolean | null;
+  approved_by_user_id: string | null;
+  approved_at: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export async function apiAnalyzeBusiness(description: string): Promise<BusinessConfiguration> {
+  const r = await apiFetch(`${BACKEND}/api/business-setup/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ description }),
+  });
+  if (!r.ok) throw new Error(await r.text() || "Atlas couldn't analyze that description.");
+  return r.json();
+}
+
+export async function apiGetBusinessConfiguration(): Promise<BusinessConfiguration | { status: 'none' }> {
+  const r = await apiFetch(`${BACKEND}/api/business-setup`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiApproveBusinessConfiguration(overrides?: {
+  capability_overrides?: Partial<Record<Capability, CapabilityLevel>>;
+  role_overrides?: Role[];
+  client_access_override?: boolean;
+}): Promise<BusinessConfiguration> {
+  const r = await apiFetch(`${BACKEND}/api/business-setup/approve`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify(overrides || {}),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function apiSeedDemo() {
   return apiFetch(`${BACKEND}/api/projects/seed`, { method: 'POST', headers: await authHeaders() });
 }
