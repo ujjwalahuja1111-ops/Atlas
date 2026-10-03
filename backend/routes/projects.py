@@ -269,7 +269,22 @@ async def project_summary(project_id: str, user: dict = Depends(get_current_user
 
 @router.post("/projects/seed")
 async def seed_demo(user: dict = Depends(get_current_user)):
-    """Seed one demo project + 3 sites under it. Idempotent."""
+    """Seed one demo project + 3 sites under it. Idempotent.
+
+    Step 4 seed-isolation hardening: management-only, matching routes/
+    workflow.py's own seed_default_templates() - its docstring already
+    says "mirrors POST /api/projects/seed's idempotent shape" and adds
+    exactly this check, which this route itself had never had. No
+    frontend code calls this route anymore (the two call sites that did,
+    login.tsx and app/(tabs)/index.tsx, were removed in the same change
+    that added this check - see their own comments for why), but the
+    route itself remains for explicit, deliberate use; this closes the
+    gap where any authenticated, non-admin user could otherwise trigger
+    it directly against a business that never approved construction demo
+    data being created in its workspace.
+    """
+    if user["role"] != "management":
+        raise HTTPException(status_code=403, detail="Only management can seed the demo project")
     existing_projects = await memory_engine.list_projects()
     if existing_projects:
         existing_sites = await memory_engine.list_sites()

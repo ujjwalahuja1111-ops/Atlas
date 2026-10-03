@@ -14,7 +14,7 @@ import { MyDaySection } from '@/src/MyDay';
 import { PortfolioSummaryWidget } from '@/src/PortfolioSummaryWidget';
 import { AtlasShell } from '@/src/AtlasShell';
 import {
-  apiListSites, apiListProjects, apiTimeline, apiSeedDemo, apiProjectSummary,
+  apiListSites, apiListProjects, apiTimeline, apiProjectSummary,
   getActiveSite, setActiveSite, apiGetMe,
   type Site, type Project, type TimelineItem, type ProjectSummary,
 } from '@/src/api';
@@ -216,11 +216,18 @@ function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
   const loadAll = useCallback(async () => {
     setLoadError(null);
     try {
-      let s = await apiListSites();
-      if (s.length === 0) {
-        await apiSeedDemo();
-        s = await apiListSites();
-      }
+      // Step 4 seed-isolation fix: this used to call apiSeedDemo() here
+      // whenever sites.length was 0 — which fires every time this screen
+      // gains focus (useFocusEffect below), so ANY business (restaurant,
+      // software, etc.) that approved a configuration but hadn't yet
+      // created its first site would have the hardcoded, construction-
+      // specific "Atlas Pilot Construction" demo project silently
+      // injected into its workspace. Demo data is now explicit developer-
+      // only (scripts.dev's own `seed`/`reset-seed` commands); a blank
+      // or new-business workspace with zero sites now simply shows zero
+      // sites, same as this screen already handles while the (now
+      // removed) seed call was still in flight.
+      const s = await apiListSites();
       setSites(s);
       const projects = await apiListProjects();
       const pmap: Record<string, Project> = {};
