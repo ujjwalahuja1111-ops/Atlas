@@ -25,7 +25,7 @@ Access model (reusing established gates, touching no auth code):
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from core.auth import get_current_user
+from core.auth import get_current_user, require_construction_reasoning_capability
 from engines import reasoning_engine
 from engines.reasoning_engine import (
     ReasoningNotFoundError, InvalidInsightTransitionError,
@@ -75,7 +75,7 @@ class InsightStatusRequest(BaseModel):
     note: str = ""
 
 
-@router.post("/projects/{project_id}/reasoning/run", status_code=201)
+@router.post("/projects/{project_id}/reasoning/run", status_code=201, dependencies=[Depends(require_construction_reasoning_capability)])
 async def run_reasoning(project_id: str, req: RunReasoningRequest,
                         user: dict = Depends(get_current_user)):
     _forbid_client(user)
@@ -95,7 +95,7 @@ async def get_since_last_visit(project_id: str, user: dict = Depends(get_current
         _raise_for(e)
 
 
-@router.get("/projects/{project_id}/insights")
+@router.get("/projects/{project_id}/insights", dependencies=[Depends(require_construction_reasoning_capability)])
 async def list_insights(project_id: str,
                         status: Optional[str] = None,
                         domain: Optional[str] = None,
@@ -108,7 +108,7 @@ async def list_insights(project_id: str,
         _raise_for(e)
 
 
-@router.get("/projects/{project_id}/health")
+@router.get("/projects/{project_id}/health", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_project_health(project_id: str,
                              user: dict = Depends(get_current_user)):
     _forbid_client(user)
@@ -118,7 +118,7 @@ async def get_project_health(project_id: str,
         _raise_for(e)
 
 
-@router.get("/projects/{project_id}/explain-health")
+@router.get("/projects/{project_id}/explain-health", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_explain_health(project_id: str,
                              user: dict = Depends(get_current_user)):
     """Beta-05 — "Explain Health": Score -> Dimensions -> Drivers ->
@@ -149,7 +149,7 @@ async def get_project_commercial_reference(project_id: str,
         _raise_for(e)
 
 
-@router.get("/projects/{project_id}/lookahead")
+@router.get("/projects/{project_id}/lookahead", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_project_lookahead(project_id: str,
                                 user: dict = Depends(get_current_user)):
     """Look-ahead intelligence: next expected activities, why they are
@@ -163,7 +163,7 @@ async def get_project_lookahead(project_id: str,
         _raise_for(e)
 
 
-@router.get("/projects/{project_id}/forecast")
+@router.get("/projects/{project_id}/forecast", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_project_forecast(project_id: str,
                                user: dict = Depends(get_current_user)):
     """Deterministic delay forecast from the project's own measured
@@ -176,7 +176,7 @@ async def get_project_forecast(project_id: str,
         _raise_for(e)
 
 
-@router.get("/projects/{project_id}/briefing")
+@router.get("/projects/{project_id}/briefing", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_project_briefing(project_id: str,
                                user: dict = Depends(get_current_user)):
     """The PM's deterministic morning briefing."""
@@ -303,7 +303,7 @@ async def get_client_recent_activity(project_id: str,
         _raise_for(e)
 
 
-@router.get("/portfolio/compare")
+@router.get("/portfolio/compare", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_portfolio_comparison(project_ids: str,
                                    user: dict = Depends(get_current_user)):
     """Reference Portfolio (RP-01) — cross-project comparison. project_ids
@@ -321,7 +321,7 @@ async def get_portfolio_comparison(project_ids: str,
         _raise_for(e)
 
 
-@router.get("/projects/{project_id}/construction-memory")
+@router.get("/projects/{project_id}/construction-memory", dependencies=[Depends(require_construction_reasoning_capability)])
 async def list_construction_memory(project_id: str,
                                    user: dict = Depends(get_current_user)):
     """Captured construction-memory records (learning substrate; nothing
@@ -334,7 +334,7 @@ async def list_construction_memory(project_id: str,
         _raise_for(e)
 
 
-@router.get("/reasoning/executive")
+@router.get("/reasoning/executive", dependencies=[Depends(require_construction_reasoning_capability)])
 async def executive_answer(question: str,
                            user: dict = Depends(get_current_user)):
     """Reusable deterministic answers to portfolio-level management
@@ -349,7 +349,7 @@ async def executive_answer(question: str,
         _raise_for(e)
 
 
-@router.get("/portfolio/control-center")
+@router.get("/portfolio/control-center", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_portfolio_control_center(user: dict = Depends(get_current_user)):
     """Portfolio Control Center (Phase 1 — schedule-based monitoring
     only; see engines/reasoning_engine.py's portfolio_control_center
@@ -367,7 +367,7 @@ async def get_portfolio_control_center(user: dict = Depends(get_current_user)):
     return await reasoning_engine.portfolio_control_center(user=user)
 
 
-@router.get("/portfolio/priorities")
+@router.get("/portfolio/priorities", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_priority_engine(user: dict = Depends(get_current_user)):
     """Priority Engine (Beta-05 continuation) — "Today's Highest
     Priorities," one ranked, cross-project attention list composed
@@ -381,7 +381,7 @@ async def get_priority_engine(user: dict = Depends(get_current_user)):
     return await reasoning_engine.priority_engine(user=user)
 
 
-@router.get("/portfolio/cross-project-intelligence")
+@router.get("/portfolio/cross-project-intelligence", dependencies=[Depends(require_construction_reasoning_capability)])
 async def get_cross_project_intelligence(user: dict = Depends(get_current_user)):
     """Cross-Project Intelligence (Beta-05 final) — aggregation only,
     reusing evaluate_rules() exactly as every individual project's own
@@ -436,7 +436,7 @@ async def get_portfolio_search(q: str, user: dict = Depends(get_current_user)):
         _raise_for(e)
 
 
-@router.post("/insights/{insight_id}/status")
+@router.post("/insights/{insight_id}/status", dependencies=[Depends(require_construction_reasoning_capability)])
 async def set_insight_status(insight_id: str, req: InsightStatusRequest,
                              user: dict = Depends(get_current_user)):
     _forbid_client(user)

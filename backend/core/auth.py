@@ -97,6 +97,30 @@ async def require_commercial_capability(user: dict = Depends(get_current_user)) 
     return user
 
 
+async def require_construction_reasoning_capability(user: dict = Depends(get_current_user)) -> dict:
+    """Step 3 hardening — the same pattern as require_commercial_
+    capability above, applied PER-ROUTE rather than at the router level:
+    routes/reasoning.py mixes construction-CRE-derived routes with
+    commercial-reference, client-facing, and genuinely universal ones
+    (confirmed by reading each handler's own underlying engine call, not
+    guessed from the router/file name) - a single router-level gate
+    would incorrectly block universal functionality (e.g. portfolio
+    search includes operational_items, which every business needs).
+
+    Same fail-open discipline as the commercial gate: no approved
+    configuration yet -> allow through, preserving existing installations'
+    behaviour exactly.
+    """
+    from engines import business_setup_engine as bse
+    cfg = await bse.get_configuration()
+    if not cfg or cfg.get("status") != "approved":
+        return user
+    if cfg["approved_capabilities"].get("construction_reasoning") == "not_required":
+        raise HTTPException(status_code=403, detail=(
+            "Construction reasoning is not part of this business's approved configuration."))
+    return user
+
+
 async def get_current_user_any_status(authorization: Optional[str] = Header(None)) -> dict:
     """Lenient — used ONLY by GET /api/me. A pending or rejected account
     must still be able to check its OWN current status; that is exactly

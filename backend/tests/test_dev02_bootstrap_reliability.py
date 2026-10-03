@@ -3008,3 +3008,141 @@ async def test_commercial_route_fails_open_with_no_approved_configuration_at_all
         r = await c.get(f"/api/projects/{project['id']}/commercial/contract",
                         headers={"Authorization": f"Bearer {token}"})
         assert r.status_code != 403
+
+
+# =============================================================================
+# Step 3 hardening — require_construction_reasoning_capability, applied
+# PER-ROUTE in routes/reasoning.py (not router-level, since that router
+# mixes construction-CRE-derived routes with commercial-reference,
+# client-facing, and genuinely universal ones - confirmed by reading each
+# handler's own underlying engine call before gating it). Exercised
+# through the real app, matching the commercial-gate tests above.
+# =============================================================================
+
+async def _approve_config(admin, recommendation):
+    from engines import business_setup_engine as bse
+    bse.db = _mock_db
+    await bse.save_draft_recommendation(description="x", recommendation=recommendation, actor=admin)
+    return await bse.approve_configuration(actor=admin)
+
+
+def _cre_rec(business_type: str, construction_level: str) -> dict:
+    from engines import business_setup_engine as bse
+    caps = {k: "not_required" for k in bse.CAPABILITIES}
+    caps.update({k: "required" for k in bse.ALWAYS_REQUIRED})
+    caps["construction_reasoning"] = construction_level
+    return {
+        "business_profile": {"industry": business_type, "business_type": business_type, "org_size": None,
+                             "location_count": None, "operating_model": "x"},
+        "recommended_roles": ["management"],
+        "capability_recommendations": caps,
+        "client_access_required": False, "configuration_questions": [], "assumptions": [],
+        "confidence": "high", "explanation": "x",
+    }
+
+
+async def test_cre_routes_blocked_for_software_business():
+    """CASE A."""
+    import server, httpx
+    from core.auth import create_token
+    from engines import business_setup_engine as bse
+    await _mock_db.business_configuration.delete_many({})
+    admin = await memory_engine.upsert_user(phone="90p3crea0001", name="CRE Gate A", role="management")
+    admin = await memory_engine.get_user_by_phone("90p3crea0001")
+    project = await memory_engine.insert_project(name="CRE Gate A Project", code="CREGATEA")
+    await _approve_config(admin, _cre_rec("software", "not_required"))
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        token = create_token(admin["id"])
+        headers = {"Authorization": f"Bearer {token}"}
+        for method, url in [
+            ("GET", f"/api/projects/{project['id']}/health"),
+            ("GET", f"/api/projects/{project['id']}/insights"),
+            ("GET", f"/api/projects/{project['id']}/explain-health"),
+            ("GET", f"/api/projects/{project['id']}/lookahead"),
+            ("GET", f"/api/projects/{project['id']}/forecast"),
+            ("GET", f"/api/projects/{project['id']}/briefing"),
+            ("GET", f"/api/projects/{project['id']}/construction-memory"),
+            ("GET", "/api/portfolio/control-center"),
+            ("GET", "/api/portfolio/priorities"),
+            ("GET", "/api/portfolio/cross-project-intelligence"),
+            ("GET", f"/api/portfolio/compare?project_ids={project['id']}"),
+        ]:
+            r = await c.get(url, headers=headers)
+            assert r.status_code == 403, f"{url} should be blocked, got {r.status_code}"
+        r = await c.post(f"/api/projects/{project['id']}/reasoning/run", json={"include_ai": False}, headers=headers)
+        assert r.status_code == 403
+        r = await c.get("/api/reasoning/executive?question=attention_today", headers=headers)
+        assert r.status_code == 403
+        r = await c.post("/api/insights/fake-id/status", json={"status": "resolved"}, headers=headers)
+        assert r.status_code == 403
+
+        # universal routes must NOT be blocked by this same gate
+        r = await c.get("/api/portfolio/search?q=test", headers=headers)
+        assert r.status_code != 403
+        r = await c.get("/api/projects", headers=headers)
+        assert r.status_code != 403
+
+
+async def test_cre_routes_blocked_for_restaurant_business():
+    """CASE B."""
+    import server, httpx
+    from core.auth import create_token
+    await _mock_db.business_configuration.delete_many({})
+    admin = await memory_engine.upsert_user(phone="90p3creb0001", name="CRE Gate B", role="management")
+    admin = await memory_engine.get_user_by_phone("90p3creb0001")
+    project = await memory_engine.insert_project(name="CRE Gate B Project", code="CREGATEB")
+    await _approve_config(admin, _cre_rec("restaurant", "not_required"))
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        token = create_token(admin["id"])
+        headers = {"Authorization": f"Bearer {token}"}
+        r = await c.get(f"/api/projects/{project['id']}/health", headers=headers)
+        assert r.status_code == 403
+        r = await c.get(f"/api/projects/{project['id']}/since-last-visit", headers=headers)
+        assert r.status_code != 403  # universal/commercial-adjacent, not construction-reasoning-gated
+
+
+async def test_cre_routes_available_for_construction_business():
+    """CASE C — not 403 is the assertion; 404/200 from the real handler is fine."""
+    import server, httpx
+    from core.auth import create_token
+    await _mock_db.business_configuration.delete_many({})
+    admin = await memory_engine.upsert_user(phone="90p3crec0001", name="CRE Gate C", role="management")
+    admin = await memory_engine.get_user_by_phone("90p3crec0001")
+    project = await memory_engine.insert_project(name="CRE Gate C Project", code="CREGATEC")
+    await _approve_config(admin, _cre_rec("construction", "required"))
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        token = create_token(admin["id"])
+        headers = {"Authorization": f"Bearer {token}"}
+        for url in [
+            f"/api/projects/{project['id']}/health",
+            f"/api/projects/{project['id']}/construction-memory",
+            "/api/portfolio/control-center",
+        ]:
+            r = await c.get(url, headers=headers)
+            assert r.status_code != 403, f"{url} should NOT be blocked by the capability gate"
+
+
+async def test_cre_routes_fail_open_with_no_approved_configuration():
+    """CASE D — Section 20's own migration-safety requirement, mirrored
+    from the identical commercial-gate test above."""
+    import server, httpx
+    from core.auth import create_token
+    await _mock_db.business_configuration.delete_many({})  # no configuration at all
+    admin = await memory_engine.upsert_user(phone="90p3cred0001", name="CRE Gate D", role="management")
+    admin = await memory_engine.get_user_by_phone("90p3cred0001")
+    project = await memory_engine.insert_project(name="CRE Gate D Project", code="CREGATED")
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        token = create_token(admin["id"])
+        headers = {"Authorization": f"Bearer {token}"}
+        r = await c.get(f"/api/projects/{project['id']}/health", headers=headers)
+        assert r.status_code != 403
+        r = await c.get(f"/api/projects/{project['id']}/construction-memory", headers=headers)
+        assert r.status_code != 403
