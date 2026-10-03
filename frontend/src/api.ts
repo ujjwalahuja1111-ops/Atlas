@@ -334,6 +334,39 @@ export async function apiApproveBusinessConfiguration(overrides?: {
   return r.json();
 }
 
+// AI Engine / Role Configuration (Step 3). Mirrors the business-setup
+// API functions' own exact shape immediately above.
+export type RoleSlot = { role: Role; label: string; filled_count: number };
+export type WorkspaceStatus = {
+  configured: boolean;
+  business_profile?: BusinessRecommendation['business_profile'];
+  role_slots?: RoleSlot[];
+  all_roles_filled?: boolean;
+  active_capabilities?: Record<Capability, CapabilityLevel>;
+};
+
+export async function apiGetWorkspaceStatus(): Promise<WorkspaceStatus> {
+  const r = await apiFetch(`${BACKEND}/api/provisioning/status`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiGetRoleSlots(): Promise<RoleSlot[]> {
+  const r = await apiFetch(`${BACKEND}/api/provisioning/role-slots`, { headers: await authHeaders() });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+export async function apiProvisionUser(phone: string, name: string, role: Role): Promise<User> {
+  const r = await apiFetch(`${BACKEND}/api/provisioning/users`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
+    body: JSON.stringify({ phone, name, role }),
+  });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function apiSeedDemo() {
   return apiFetch(`${BACKEND}/api/projects/seed`, { method: 'POST', headers: await authHeaders() });
 }

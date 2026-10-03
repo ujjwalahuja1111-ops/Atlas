@@ -125,7 +125,9 @@ export default function BusinessSetupScreen() {
       await apiApproveBusinessConfiguration({
         capability_overrides: capabilities, role_overrides: roles, client_access_override: clientAccess,
       });
-      router.replace('/(tabs)');
+      // Step 3 — provision the actual required team next, rather than
+      // dropping straight into the app shell with no one else able to log in.
+      router.replace('/provision-team');
     } catch (e: any) {
       setError(e?.message || 'Could not save this configuration.');
     } finally { setApproving(false); }

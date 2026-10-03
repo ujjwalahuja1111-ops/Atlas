@@ -9,14 +9,16 @@ Engines and routes live in their own modules. This file only:
 from contextlib import asynccontextmanager
 import logging
 import os
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from starlette.middleware.cors import CORSMiddleware
 
 from core.db import ensure_indexes, close_client
+from core.auth import require_commercial_capability
 from core.settings import PROJECT_NAME, APP_VERSION
 from engines import intelligence_engine, memory_engine, commercial_engine
 from routes import business_setup as business_setup_routes
+from routes import provisioning as provisioning_routes
 from routes import auth as auth_routes
 from routes import projects as projects_routes
 from routes import events as events_routes
@@ -81,6 +83,7 @@ app.add_middleware(
 
 app.include_router(auth_routes.router)
 app.include_router(business_setup_routes.router)
+app.include_router(provisioning_routes.router)
 app.include_router(projects_routes.router)
 app.include_router(events_routes.router)
 app.include_router(timeline_routes.router)
@@ -93,12 +96,12 @@ app.include_router(admin_users_routes.router)
 app.include_router(admin_system_routes.router)
 app.include_router(workflow_routes.router)
 app.include_router(reasoning_routes.router)
-app.include_router(commercial_routes.router)
+app.include_router(commercial_routes.router, dependencies=[Depends(require_commercial_capability)])
 app.include_router(knowledge_graph_routes.router)
 app.include_router(notifications_routes.router)
 app.include_router(daily_report_routes.router)
 app.include_router(inbox_intelligence_routes.router)
-app.include_router(commercial_workflow_routes.router)
+app.include_router(commercial_workflow_routes.router, dependencies=[Depends(require_commercial_capability)])
 app.include_router(event_intelligence_routes.router)
 app.include_router(intent_routes.router)
 

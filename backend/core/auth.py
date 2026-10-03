@@ -1,7 +1,7 @@
 """JWT auth helpers."""
 from datetime import datetime, timezone, timedelta
 from typing import Optional
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 import jwt
 from .settings import JWT_SECRET
 from .db import db
@@ -64,6 +64,36 @@ async def get_current_user(authorization: Optional[str] = Header(None)) -> dict:
         raise HTTPException(status_code=403, detail="Account pending approval")
     if status == "rejected":
         raise HTTPException(status_code=403, detail="Account access denied")
+    return user
+
+
+async def require_commercial_capability(user: dict = Depends(get_current_user)) -> dict:
+    """AI Engine / Role Configuration (Step 3) — Section 11's own explicit
+    requirement: "the commercial engine should NOT become globally active
+    simply because it exists." Applied at the ROUTER level in server.py
+    (dependencies=[...] on app.include_router for the commercial routers),
+    not per-route - commercial.py/commercial_workflow.py have 32 route
+    handlers combined; a single, additive router-level dependency gates
+    all of them without touching any individual route function, the
+    smallest safe way to add this check.
+
+    Fails OPEN (allows the request through) when no business
+    configuration has been approved yet - an existing installation that
+    predates Step 2/3 entirely (Section 20's own "do not blindly reset
+    existing databases" / "do not destroy... commercial records") must
+    keep working exactly as it always has. Once a configuration IS
+    approved, this becomes the real, enforced gate: a business whose
+    approved_capabilities marks "commercial" as "not_required" gets a
+    403 on every commercial route, not merely a hidden navigation item -
+    Section 19's own "backend authorization must remain authoritative."
+    """
+    from engines import business_setup_engine as bse
+    cfg = await bse.get_configuration()
+    if not cfg or cfg.get("status") != "approved":
+        return user  # no approved configuration yet - fail open, see docstring
+    if cfg["approved_capabilities"].get("commercial") == "not_required":
+        raise HTTPException(status_code=403, detail=(
+            "Commercial functionality is not part of this business's approved configuration."))
     return user
 
 

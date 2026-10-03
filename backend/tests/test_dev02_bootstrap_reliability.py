@@ -2904,3 +2904,107 @@ async def test_understanding_ready_notification_content():
     assert notifs[0]["title"] == "Atlas understood your update"
     assert "2 things to review" in notifs[0]["body"]
     assert notifs[0]["entity_type"] == "event"
+
+
+# =============================================================================
+# AI Engine / Role Configuration (Step 3) — require_commercial_capability
+# route-level gate. Exercised through the real app, matching this same
+# file's own established pattern (test_commercial_events_route_blocked_
+# for_client_and_supervisor, above) - the fix lives at the router-
+# registration level (server.py's own dependencies=[...]), so this test
+# proves the actual route is blocked/allowed, not merely the underlying
+# engine function.
+# =============================================================================
+
+async def test_commercial_route_blocked_when_not_part_of_approved_configuration():
+    import server
+    import httpx
+    from core.auth import create_token
+    from engines import business_setup_engine as bse, provisioning_engine as pe
+    bse.db = _mock_db
+    pe.db = _mock_db
+    await _mock_db.business_configuration.delete_many({})
+
+    admin = await memory_engine.upsert_user(phone="90p3gatesoftware0001", name="Gate Admin", role="management")
+    admin = await memory_engine.get_user_by_phone("90p3gatesoftware0001")
+
+    rec = {
+        "business_profile": {"industry": "software", "business_type": "software company", "org_size": None,
+                             "location_count": None, "operating_model": "team-based"},
+        "recommended_roles": ["management"],
+        "capability_recommendations": {k: "not_required" for k in bse.CAPABILITIES},
+        "client_access_required": False, "configuration_questions": [], "assumptions": [],
+        "confidence": "high", "explanation": "Software company, no commercial need.",
+    }
+    rec["capability_recommendations"].update({k: "required" for k in bse.ALWAYS_REQUIRED})
+    await bse.save_draft_recommendation(description="software co", recommendation=rec, actor=admin)
+    await bse.approve_configuration(actor=admin)
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        token = create_token(admin["id"])
+        r = await c.get("/api/projects/any-id/commercial/contract", headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 403
+        assert "not part of this business's approved configuration" in r.json()["detail"]
+
+
+async def test_commercial_route_allowed_when_approved_configuration_requires_it():
+    import server
+    import httpx
+    from core.auth import create_token
+    from engines import business_setup_engine as bse, provisioning_engine as pe
+    bse.db = _mock_db
+    pe.db = _mock_db
+    await _mock_db.business_configuration.delete_many({})
+
+    admin = await memory_engine.upsert_user(phone="90p3gateconstruction0001", name="Gate Admin 2", role="management")
+    admin = await memory_engine.get_user_by_phone("90p3gateconstruction0001")
+
+    rec = {
+        "business_profile": {"industry": "construction", "business_type": "contractor", "org_size": "small",
+                             "location_count": None, "operating_model": "project-based"},
+        "recommended_roles": ["management"],
+        "capability_recommendations": {k: "not_required" for k in bse.CAPABILITIES},
+        "client_access_required": False, "configuration_questions": [], "assumptions": [],
+        "confidence": "high", "explanation": "Construction contractor, commercial relevant.",
+    }
+    rec["capability_recommendations"].update({k: "required" for k in bse.ALWAYS_REQUIRED}, commercial="required")
+    await bse.save_draft_recommendation(description="construction co", recommendation=rec, actor=admin)
+    await bse.approve_configuration(actor=admin)
+
+    project = await memory_engine.insert_project(name="Gate Test Project", code="GATETEST")
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        token = create_token(admin["id"])
+        r = await c.get(f"/api/projects/{project['id']}/commercial/contract",
+                        headers={"Authorization": f"Bearer {token}"})
+        # 404 (no contract exists yet) is the CORRECT outcome here - it proves
+        # the capability gate let the request through to the real route logic,
+        # which is what matters; a 403 would mean the gate wrongly fired.
+        assert r.status_code != 403
+
+
+async def test_commercial_route_fails_open_with_no_approved_configuration_at_all():
+    """Section 20's own explicit migration-safety requirement: an existing
+    installation that predates Step 2/3 entirely must keep working exactly
+    as it always has - no configuration approved yet must never become a
+    new way to lock an existing deployment out of its own commercial data."""
+    import server
+    import httpx
+    from core.auth import create_token
+    from engines import business_setup_engine as bse, provisioning_engine as pe
+    bse.db = _mock_db
+    pe.db = _mock_db
+    await _mock_db.business_configuration.delete_many({})  # no configuration at all
+
+    admin = await memory_engine.upsert_user(phone="90p3gatenone0001", name="Gate Admin 3", role="management")
+    admin = await memory_engine.get_user_by_phone("90p3gatenone0001")
+    project = await memory_engine.insert_project(name="Gate Fail-Open Project", code="GATEOPEN")
+
+    transport = httpx.ASGITransport(app=server.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as c:
+        token = create_token(admin["id"])
+        r = await c.get(f"/api/projects/{project['id']}/commercial/contract",
+                        headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code != 403
