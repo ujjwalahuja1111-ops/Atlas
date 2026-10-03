@@ -35,7 +35,11 @@ export default function PendingApprovalScreen() {
         setUser(fresh);
         if (isApprovedAndActive(fresh)) {
           await completeLoginRouting(fresh.phone, fresh);
-          router.replace('/(tabs)');
+          // Step 4 entry-point fix: '/' re-runs index.tsx's own
+          // centralized routing decision instead of hardcoding '/(tabs)'
+          // here — an approved management user who hasn't approved a
+          // business configuration yet must land on /business-setup.
+          router.replace('/');
           return;
         }
       }

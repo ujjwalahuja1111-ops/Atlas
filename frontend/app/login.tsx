@@ -48,7 +48,16 @@ export default function LoginScreen() {
         // never auto-applied (see apiRegister's docstring).
         const res = await apiRegister(phone.trim(), name.trim(), userType);
         await saveAuth(res.token, res.user);
-        router.replace('/pending');
+        // Step 4 entry-point fix: do NOT hardcode '/pending' here. The one
+        // deliberate exception to "pending until approved" is the founding
+        // admin (the very first account on a blank database, auto-approved
+        // as management — see memory_engine.register_user()'s own RC-03
+        // docstring) — sending them to '/pending' regardless left a fresh
+        // install with no visible path into business setup. '/' re-runs
+        // index.tsx's own, single centralized routing decision (pending /
+        // business-setup / tabs), which already handles every case
+        // correctly — this screen no longer needs to duplicate that logic.
+        router.replace('/');
         return;
       }
 
@@ -73,7 +82,11 @@ export default function LoginScreen() {
 
       await completeLoginRouting(phone.trim(), res.user);
       apiSeedDemo().catch(() => {});
-      router.replace('/(tabs)');
+      // Step 4 entry-point fix: '/' re-runs index.tsx's own centralized
+      // routing decision instead of hardcoding '/(tabs)' here — a
+      // management user who hasn't approved a business configuration yet
+      // must land on /business-setup, not the app shell.
+      router.replace('/');
     } catch (e: any) {
       setError(e?.message || (mode === 'signup' ? 'Sign up failed' : 'Login failed'));
     } finally { setLoading(false); }
