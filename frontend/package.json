@@ -9,7 +9,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
-    "lint": "expo lint"
+    "lint": "expo lint",
+    "check-entry-routing": "node scripts/check-entry-routing.js"
   },
   "dependencies": {
     "@expo/metro-runtime": "6.1.2",
