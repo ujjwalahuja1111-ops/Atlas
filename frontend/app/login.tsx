@@ -7,7 +7,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { theme } from '@/src/theme';
-import { apiLogin, apiRegister, saveAuth, apiSeedDemo, isApprovedAndActive } from '@/src/api';
+import { apiLogin, apiRegister, saveAuth, isApprovedAndActive } from '@/src/api';
 import { resolveLoginRole, completeLoginRouting, VIEW_ROLE_LABEL, type ViewRole } from '@/src/roles';
 
 type Mode = 'login' | 'signup';
@@ -81,11 +81,16 @@ export default function LoginScreen() {
       }
 
       await completeLoginRouting(phone.trim(), res.user);
-      apiSeedDemo().catch(() => {});
-      // Step 4 entry-point fix: '/' re-runs index.tsx's own centralized
-      // routing decision instead of hardcoding '/(tabs)' here — a
-      // management user who hasn't approved a business configuration yet
-      // must land on /business-setup, not the app shell.
+      // Step 4 seed-isolation fix: this used to also fire apiSeedDemo()
+      // here, unconditionally, on every successful login — on a blank
+      // database this silently created a hardcoded "Atlas Pilot
+      // Construction" demo project before the person ever reached
+      // business setup, regardless of their eventual approved business
+      // type. Demo data is now explicit-only (see scripts.dev's own
+      // `seed`/`reset-seed` commands); a real login must never trigger it.
+      // '/' re-runs index.tsx's own centralized routing decision instead
+      // of hardcoding '/(tabs)' here — a management user who hasn't
+      // approved a business configuration yet must land on /business-setup.
       router.replace('/');
     } catch (e: any) {
       setError(e?.message || (mode === 'signup' ? 'Sign up failed' : 'Login failed'));

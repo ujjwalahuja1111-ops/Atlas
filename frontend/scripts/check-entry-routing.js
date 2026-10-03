@@ -13,9 +13,12 @@
  * unconditionally, and an approved management user straight to
  * '/(tabs)', both bypassing the /business-setup check entirely.
  *
+ * Also guards the related Step 4 seed-isolation fix: neither screen may
+ * call apiSeedDemo() at all anymore (see that section below).
+ *
  * This is a style/pattern check, not a behavioural simulation — it
  * cannot replace a real component test, but it directly guards against
- * literally reintroducing the three line changes this fix made.
+ * literally reintroducing the line changes either fix made.
  *
  * Run: node scripts/check-entry-routing.js
  */
@@ -60,6 +63,32 @@ const approvedBlock = pending.slice(pending.indexOf('if (isApprovedAndActive(fre
 if (!/router\.replace\('\/'\)/.test(approvedBlock)) {
   failures.push("pending.tsx: checkAgain()'s approved branch must call router.replace('/') " +
     "instead of hardcoding '/(tabs)', for the same reason as login.tsx above.");
+}
+
+// --- Step 4 seed-isolation guard ---------------------------------------
+// Neither screen may call apiSeedDemo() at all anymore - it used to fire
+// automatically on every login and on every home-screen focus with zero
+// sites, silently injecting a hardcoded, construction-specific demo
+// project into ANY business's workspace before they ever reached
+// business setup (or regardless of their approved business type
+// afterward). Demo data is explicit-developer-only now (scripts.dev's
+// own `seed`/`reset-seed`); this guards against that call being
+// reintroduced into either screen.
+function stripLineComments(src) {
+  // Strips '//'-to-end-of-line comments so explanatory prose (which
+  // legitimately names apiSeedDemo while describing its removal) is not
+  // itself mistaken for a live reference. Good enough for this file set
+  // (no apiSeedDemo usage would ever legitimately appear inside a string
+  // literal or block comment here either).
+  return src.split('\n').map(line => line.replace(/\/\/.*$/, '')).join('\n');
+}
+
+const tabsIndex = read('app/(tabs)/index.tsx');
+if (/apiSeedDemo/.test(stripLineComments(login))) {
+  failures.push("login.tsx must not reference apiSeedDemo() at all - demo seeding is explicit-developer-only.");
+}
+if (/apiSeedDemo/.test(stripLineComments(tabsIndex))) {
+  failures.push("app/(tabs)/index.tsx must not reference apiSeedDemo() at all - demo seeding is explicit-developer-only.");
 }
 
 if (failures.length) {
