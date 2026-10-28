@@ -10,6 +10,7 @@ import {
 } from '@/src/cre_api';
 import { apiGetManagementDigest, type ManagementDigest } from '@/src/inbox_intelligence_api';
 import { AtlasShell } from '@/src/AtlasShell';
+import { apiListProjects } from '@/src/api';
 
 function formatInrShort(n: number | null | undefined): string {
   if (n === null || n === undefined) return '—';
@@ -30,14 +31,28 @@ export default function ExecutiveHubScreen() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const [projectCount, setProjectCount] = useState<number | null>(null);
+
+  // Launch-readiness fix: these requests used to run under Promise.all, so
+  // ONE rejection blanked the whole hub. The construction-reasoning and
+  // commercial routes are capability-gated on the backend and correctly
+  // return 403 for a business whose approved configuration doesn't include
+  // them (restaurant, software, shop...), which made the management landing
+  // screen permanently "Could not load" for every non-construction business.
+  // Each section now loads independently; a section that is unavailable is
+  // hidden, and the error banner only appears when nothing at all loaded.
   const load = useCallback(async () => {
     setError(null);
-    try {
-      const [p, c, m, digest] = await Promise.all([
-        apiPriorityEngine(), apiCrossProjectIntelligence(), apiCommercialIntelligence(), apiGetManagementDigest(),
-      ]);
-      setPriorities(p); setCrossProject(c); setCommercial(m); setManagementDigest(digest);
-    } catch {
+    const [p, c, m, digest, projects] = await Promise.allSettled([
+      apiPriorityEngine(), apiCrossProjectIntelligence(), apiCommercialIntelligence(),
+      apiGetManagementDigest(), apiListProjects(),
+    ]);
+    setPriorities(p.status === 'fulfilled' ? p.value : null);
+    setCrossProject(c.status === 'fulfilled' ? c.value : null);
+    setCommercial(m.status === 'fulfilled' ? m.value : null);
+    setManagementDigest(digest.status === 'fulfilled' ? digest.value : null);
+    setProjectCount(projects.status === 'fulfilled' ? projects.value.length : null);
+    if ([p, c, m, digest, projects].every((r) => r.status === 'rejected')) {
       setError('Could not load the Executive Hub.');
     }
   }, []);
@@ -75,7 +90,21 @@ export default function ExecutiveHubScreen() {
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} tintColor={theme.color.brand} />}
       >
         <AtlasShell role="admin" activeProjectId={null} />
+        {projectCount === 0 && (
+          <Pressable style={styles.section} onPress={() => router.push('/projects/new')} testID="exec-hub-first-project">
+            <View style={styles.sectionHeader}>
+              <Ionicons name="rocket" size={16} color={theme.color.brand} />
+              <Text style={styles.sectionTitle}>GET STARTED</Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
+            </View>
+            <View style={styles.sectionBody}>
+              <Text style={styles.rowText}>Your business is set up. Create your first project to start capturing updates.</Text>
+              <Text style={styles.mutedText}>Tap to create a project</Text>
+            </View>
+          </Pressable>
+        )}
         {/* Priority Engine summary */}
+        {priorities && (
         <Pressable style={styles.section} onPress={() => router.push('/priorities')} testID="exec-hub-priorities">
           <View style={styles.sectionHeader}>
             <Ionicons name="flag" size={16} color={theme.color.brand} />
@@ -95,6 +124,7 @@ export default function ExecutiveHubScreen() {
             )}
           </View>
         </Pressable>
+        )}
 
         {/* PX-02 Phase 4 Section 8 — Management Attention Digest: a
             portfolio-level synthesis (declining-health project count,
@@ -108,7 +138,7 @@ export default function ExecutiveHubScreen() {
           </View>
           <View style={styles.sectionBody}>
             {!managementDigest ? (
-              <Text style={styles.mutedText}>Loading…</Text>
+              <Text style={styles.mutedText}>Not available right now.</Text>
             ) : (
               managementDigest.needs_attention_projects.length === 0
                 && managementDigest.escalated_blockers_count === 0
@@ -146,6 +176,7 @@ export default function ExecutiveHubScreen() {
         </Pressable>
 
         {/* Cross-Project Intelligence */}
+        {crossProject && (
         <View style={styles.section} testID="exec-hub-cross-project">
           <View style={styles.sectionHeader}>
             <Ionicons name="repeat" size={16} color={theme.color.brand} />
@@ -164,8 +195,10 @@ export default function ExecutiveHubScreen() {
             )}
           </View>
         </View>
+        )}
 
         {/* Commercial Intelligence */}
+        {commercial && (
         <View style={styles.section} testID="exec-hub-commercial">
           <View style={styles.sectionHeader}>
             <Ionicons name="wallet" size={16} color={theme.color.brand} />
@@ -189,6 +222,7 @@ export default function ExecutiveHubScreen() {
             )}
           </View>
         </View>
+        )}
 
         {/* Executive Timeline link */}
         <Pressable style={styles.section} onPress={() => router.push('/executive-timeline')} testID="exec-hub-timeline">
