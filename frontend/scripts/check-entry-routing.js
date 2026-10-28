@@ -91,6 +91,14 @@ if (/apiSeedDemo/.test(stripLineComments(tabsIndex))) {
   failures.push("app/(tabs)/index.tsx must not reference apiSeedDemo() at all - demo seeding is explicit-developer-only.");
 }
 
+const hub = read('app/(tabs)/executive-hub.tsx');
+if (/Promise\.all\(/.test(stripLineComments(hub))) {
+  failures.push("executive-hub.tsx must load its sections with Promise.allSettled, not Promise.all - capability-gated sections return 403 for non-construction businesses and must not blank the whole hub.");
+}
+if (!/exec-hub-first-project/.test(hub)) {
+  failures.push("executive-hub.tsx must show a first-project call to action when the business has no projects yet.");
+}
+
 if (failures.length) {
   console.error('FAILED — entry-routing regression guard:\n');
   for (const f of failures) console.error('  - ' + f);
