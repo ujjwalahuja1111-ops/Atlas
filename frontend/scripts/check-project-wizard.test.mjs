@@ -41,3 +41,14 @@ test('the project and its first site are still created before any team assignmen
   const assign = src.indexOf('apiAssignProjects(userId');
   assert.ok(create > 0 && site > create && assign > site);
 });
+
+test('the wizard assigns additively; User Management still sends the full list (replace) to un-assign', () => {
+  const api = fs.readFileSync(path.join(root, 'src/api.ts'), 'utf8');
+  const fn = api.slice(api.indexOf('export async function apiAssignProjects'));
+  assert.match(fn.slice(0, fn.indexOf('\n}\n')), /mode: 'add'/);
+  const admin = fs.readFileSync(path.join(root, 'src/admin_users_api.ts'), 'utf8');
+  const afn = admin.slice(admin.indexOf('export async function apiAssignUserProjects'));
+  assert.doesNotMatch(afn.slice(0, afn.indexOf('\n}\n')), /mode/);
+  const users = fs.readFileSync(path.join(root, 'app/users/index.tsx'), 'utf8');
+  assert.match(users, /current\.filter\(\(id\) => id !== projectId\)/); // removal path intact
+});

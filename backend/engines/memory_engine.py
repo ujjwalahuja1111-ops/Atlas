@@ -414,6 +414,28 @@ async def set_user_projects(user_id: str, project_ids: list[str]) -> Optional[di
     return await get_user(user_id)
 
 
+async def add_user_projects(user_id: str, project_ids: list[str]) -> Optional[dict]:
+    """Launch-readiness patch 4 - ADDITIVE assignment.
+
+    set_user_projects() above replaces the whole list, which is what the User
+    Management screen needs (it sends the complete desired list, so that is
+    also how it removes a project). Assigning someone to one more project
+    must not drop their existing ones, so this adds. $addToSet is atomic and
+    idempotent: repeating an assignment never duplicates an entry, and
+    concurrent adds cannot overwrite each other the way read-modify-write
+    from a client could. scope_projects is set for the same reason as in
+    set_user_projects (an explicit assignment is the act of scoping a user).
+    Existing documents are compatible: a missing or empty list simply gains
+    entries; nothing else on the user is touched.
+    """
+    await db.users.update_one(
+        {"id": user_id},
+        {"$addToSet": {"assigned_project_ids": {"$each": list(dict.fromkeys(project_ids))}},
+         "$set": {"scope_projects": True, "updated_at": _now()}},
+    )
+    return await get_user(user_id)
+
+
 async def set_user_active(user_id: str, is_active: bool) -> Optional[dict]:
     await db.users.update_one({"id": user_id}, {"$set": {"is_active": is_active, "updated_at": _now()}})
     return await get_user(user_id)

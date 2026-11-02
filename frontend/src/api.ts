@@ -458,11 +458,17 @@ export async function apiDeleteProject(id: string): Promise<{ deleted: boolean; 
   return r.json();
 }
 
+// Launch-readiness patch 4: ADDS these projects to the user's existing
+// assignments (mode: 'add'). Previously this replaced the whole list, so
+// assigning a person to a second project removed the first. Removing a
+// project is a different action (apiAssignUserProjects in
+// admin_users_api.ts sends the full desired list, the backend's default
+// 'replace' mode) and is unchanged.
 export async function apiAssignProjects(userId: string, projectIds: string[]): Promise<void> {
   const r = await apiFetch(`${BACKEND}/api/admin/users/${userId}/projects`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...(await authHeaders()) },
-    body: JSON.stringify({ project_ids: projectIds }),
+    body: JSON.stringify({ project_ids: projectIds, mode: 'add' }),
   });
   if (!r.ok) throw new Error(await r.text());
 }
