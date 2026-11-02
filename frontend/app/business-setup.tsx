@@ -69,10 +69,12 @@ export default function BusinessSetupScreen() {
         if ('status' in existing && existing.status !== 'none') {
           const cfg = existing as BusinessConfiguration;
           setConfig(cfg);
-          if (cfg.status === 'approved') {
-            router.replace('/(tabs)');
-            return;
-          }
+          // Launch-readiness patch 2: an approved configuration used to
+          // bounce straight to the tabs, so management could never look at
+          // it again. It is now shown read-only below. Editing an approved
+          // configuration is deliberately NOT offered (the backend refuses to
+          // overwrite it; there is no reset/re-approval lifecycle yet).
+          if (cfg.status === 'approved') return;
           seedEditableState(cfg);
         }
       } catch {
@@ -81,7 +83,6 @@ export default function BusinessSetupScreen() {
     })();
     // Run once on mount only, matching pending.tsx's own identical pattern
     // for this exact kind of one-shot auth/routing check.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function seedEditableState(cfg: BusinessConfiguration) {
@@ -141,6 +142,59 @@ export default function BusinessSetupScreen() {
     return (
       <SafeAreaView style={styles.center}>
         <ActivityIndicator color={theme.color.brand} />
+      </SafeAreaView>
+    );
+  }
+
+  if (config && config.status === 'approved') {
+    const caps = config.approved_capabilities || config.ai_recommendation.capability_recommendations;
+    const approvedRoles = config.approved_roles || config.ai_recommendation.recommended_roles;
+    const clientOn = config.approved_client_access ?? config.ai_recommendation.client_access_required;
+    return (
+      <SafeAreaView style={styles.container}>
+        <ScrollView contentContainerStyle={styles.scroll} testID="business-config-approved">
+          <Text style={styles.title}>Business configuration</Text>
+          <Text style={styles.subtitle}>
+            Approved{config.approved_at ? ` on ${new Date(config.approved_at).toLocaleDateString()}` : ''}. This is read-only.
+          </Text>
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>What Atlas understood</Text>
+            <Text style={styles.explanation}>{config.ai_recommendation.explanation}</Text>
+            <Text style={styles.meta}>
+              {config.ai_recommendation.business_profile.business_type}
+              {config.ai_recommendation.business_profile.operating_model
+                ? ` · ${config.ai_recommendation.business_profile.operating_model}` : ''}
+            </Text>
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Roles</Text>
+            {approvedRoles.map(role => (
+              <View key={role} style={styles.row}><Text style={styles.rowText}>{ROLE_LABELS[role]}</Text></View>
+            ))}
+            <Text style={styles.hint}>
+              {clientOn ? 'Clients/customers log into Atlas directly.' : 'Clients/customers do not log in.'}
+            </Text>
+          </View>
+          <View style={styles.card}>
+            <Text style={styles.sectionTitle}>Capabilities</Text>
+            {(Object.keys(CAPABILITY_LABELS) as Capability[]).map(key => (
+              <View key={key} style={styles.row}>
+                <Text style={styles.rowText}>{CAPABILITY_LABELS[key]}</Text>
+                <Text style={styles.hint}>{LEVEL_LABEL[caps[key]]}</Text>
+              </View>
+            ))}
+          </View>
+          <Text style={styles.hint}>
+            Changing an approved configuration is not supported yet. Team members can still be added from Team Setup.
+          </Text>
+          <Pressable testID="config-manage-team" style={styles.button} onPress={() => router.push('/provision-team')}>
+            <Text style={styles.buttonText}>Manage team</Text>
+          </Pressable>
+          <Pressable testID="config-back" style={styles.secondaryButton}
+            onPress={() => (router.canGoBack() ? router.back() : router.replace('/'))}>
+            <Text style={styles.secondaryButtonText}>Back</Text>
+          </Pressable>
+        </ScrollView>
       </SafeAreaView>
     );
   }

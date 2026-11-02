@@ -12,6 +12,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { useRouter, useLocalSearchParams } from 'expo-router';
 import { theme } from '@/src/theme';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
+import { NoSiteState } from '@/src/NoSiteState';
 import { useVoiceRecorder } from '@/src/useVoiceRecorder';
 import {
   apiCreateEvent, apiRequestApproval, apiListSites, apiListProjects,
@@ -44,6 +45,7 @@ export default function CaptureScreen() {
   // cancel, never silently discarded on a failure.
   const [pendingCaptureUri, setPendingCaptureUri] = useState<string | null>(null);
   const [sites, setSites] = useState<Site[]>([]);
+  const [sitesLoaded, setSitesLoaded] = useState(false);
   const [projectMap, setProjectMap] = useState<Record<string, Project>>({});
   const [siteId, setSiteId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -68,6 +70,7 @@ export default function CaptureScreen() {
       try {
         const list = await apiListSites();
         setSites(list);
+        setSitesLoaded(true);
         const projects = await apiListProjects();
         const pmap: Record<string, Project> = {};
         for (const p of projects) pmap[p.id] = p;
@@ -236,6 +239,17 @@ export default function CaptureScreen() {
             This workspace doesn't include capturing new site updates.
           </Text>
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  // Launch-readiness patch 2: with zero sites there is nothing to capture
+  // against. Explain why, per role, instead of an unusable capture screen.
+  // Capture is never enabled without a site the user is authorized to see.
+  if (sitesLoaded && sites.length === 0 && viewRole) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <NoSiteState role={viewRole} />
       </SafeAreaView>
     );
   }

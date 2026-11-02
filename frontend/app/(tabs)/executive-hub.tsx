@@ -98,7 +98,7 @@ export default function ExecutiveHubScreen() {
               <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
             </View>
             <View style={styles.sectionBody}>
-              <Text style={styles.rowText}>Your business is set up. Create your first project to start capturing updates.</Text>
+              <Text style={styles.rowText}>Your business is set up. It needs its first project and site before anyone can capture updates.</Text>
               <Text style={styles.mutedText}>Tap to create a project</Text>
             </View>
           </Pressable>
