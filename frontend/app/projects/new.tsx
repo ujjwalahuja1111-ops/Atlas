@@ -12,7 +12,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useRouter } from 'expo-router';
 import { theme } from '@/src/theme';
 import { DatePicker } from '@/src/DatePicker';
-import { apiCreateProject, apiCreateSite, apiDeleteProject, apiAssignProjects } from '@/src/api';
+import { apiCreateProject, apiCreateSite, apiDeleteProject, apiAssignProjects, apiGetMe } from '@/src/api';
 import { apiListUsers, type AssignableUser } from '@/src/ops_api';
 import { apiCreateContract, apiCreateBudget } from '@/src/commercial_api';
 
@@ -96,7 +96,18 @@ export default function ProjectCreationWizard() {
       // becomes a member of the (currently memberless) project before
       // assigning anyone else, matching the backend's own "already a
       // member, or project has no members yet" rule.
-      const memberIds = [selectedPm!.id, selectedSup!.id];
+      // Launch-readiness patch 3: team members are optional. This used to
+      // require BOTH a project manager and a site supervisor
+      // (selectedPm!/selectedSup!), which made it impossible for any business
+      // whose approved roles do not include both (restaurant, warehouse,
+      // software, one-person shop) to create its first project. A creator who
+      // is not management is scoped to assigned projects, so they are added
+      // automatically; otherwise they would not see the project they made.
+      const memberIds: string[] = [];
+      if (selectedPm) memberIds.push(selectedPm.id);
+      if (selectedSup) memberIds.push(selectedSup.id);
+      const me = await apiGetMe().catch(() => null);
+      if (me && me.role !== 'management' && !memberIds.includes(me.id)) memberIds.push(me.id);
       for (const userId of memberIds) {
         await apiAssignProjects(userId, [project.id]);
       }
@@ -162,12 +173,13 @@ export default function ProjectCreationWizard() {
         {step === 2 && (
           <>
             <Text style={styles.sectionLabel}>TEAM ASSIGNMENT</Text>
-            <FieldLabel text="Project Manager *" />
+            <FieldLabel text="Project Manager (optional)" />
             <UserSelector testID="wizard-pm" candidates={pmCandidates} selected={selectedPm} onSelect={setSelectedPm} />
-            <FieldLabel text="Site Supervisor *" />
+            <FieldLabel text="Site Supervisor (optional)" />
             <UserSelector testID="wizard-supervisor" candidates={supCandidates} selected={selectedSup} onSelect={setSelectedSup} />
+            <Text style={styles.helperText}>Optional — you can assign people to this project later. Only roles your business has set up appear here.</Text>
             <Text style={styles.helperText}>Phone numbers are not shown here by design — the assignee picker strips contact details for pilot privacy.</Text>
-            <PrimaryButton testID="wizard-next-2" label="Next: Commercial Setup" onPress={() => setStep(3)} disabled={!selectedPm || !selectedSup} />
+            <PrimaryButton testID="wizard-next-2" label="Next: Commercial Setup" onPress={() => setStep(3)} />
           </>
         )}
 

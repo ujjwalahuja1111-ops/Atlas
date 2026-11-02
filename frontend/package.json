@@ -11,7 +11,8 @@
     "web": "expo start --web",
     "lint": "expo lint",
     "check-entry-routing": "node scripts/check-entry-routing.js",
-    "check-empty-states": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test scripts/check-empty-states.test.mjs"
+    "check-empty-states": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test scripts/check-empty-states.test.mjs",
+    "check-project-wizard": "node --test scripts/check-project-wizard.test.mjs"
   },
   "dependencies": {
     "@expo/metro-runtime": "6.1.2",
