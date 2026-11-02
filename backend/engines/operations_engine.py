@@ -154,6 +154,16 @@ async def insert_ai_proposal(doc: dict) -> dict:
     return await _insert(db.ai_proposals, doc)
 
 
+async def discard_pending_ai_proposals(event_id: str) -> int:
+    """Launch-readiness patch 5 - used only when proposals are regenerated.
+    Removes ONLY undecided (decision == "pending") machine proposals for one
+    event so regeneration replaces them instead of stacking duplicates.
+    Accepted and rejected proposals are human decisions and are never touched.
+    """
+    res = await db.ai_proposals.delete_many({"event_id": event_id, "decision": "pending"})
+    return res.deleted_count
+
+
 async def list_ai_proposals(*, event_id: Optional[str] = None,
                             status: Optional[str] = None,
                             site_id: Optional[str] = None) -> list[dict]:

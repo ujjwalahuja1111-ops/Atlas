@@ -351,6 +351,35 @@ async def start_worker() -> None:
     _worker_task = asyncio.create_task(_worker_loop())
 
 
+async def retry_failed_structuring(event_id: str) -> dict:
+    """Launch-readiness patch 5 - re-run AI structuring for an event whose
+    first attempt FAILED (provider outage, rate limit, expired key...).
+
+    Before this, nothing could: startup recovery only re-queues "pending"
+    events, and regenerate_proposals only replays an existing analysis, so a
+    failed event stayed unstructured forever while the UI promised "AI can be
+    retried later". The event itself is never modified (immutable capture);
+    only its lifecycle marker is. The failed analysis row is kept as an audit
+    record, and the new attempt goes through the unchanged _process() path
+    (analysis row, proposals, notification, and - if it fails again - the same
+    idempotent fallback). Proposals still require human acceptance.
+    """
+    event = await memory_engine.get_event(event_id)
+    if not event:
+        return {"status": "failed", "generated_count": 0, "reason": "event_not_found"}
+    if event.get("ai_status") != "failed":
+        return {"status": "not_failed", "ai_status": event.get("ai_status"), "generated_count": 0}
+    if not is_worker_running():
+        return {"status": "ai_unavailable", "ai_status": "failed", "generated_count": 0,
+                "reason": "AI is not configured or not running"}
+    await memory_engine.set_event_ai_status(event_id, "pending")
+    await _process(event_id)
+    after = await memory_engine.get_event(event_id)
+    from engines import operations_engine
+    pending = await operations_engine.list_ai_proposals(event_id=event_id, status="pending")
+    return {"status": "retried", "ai_status": after.get("ai_status"), "generated_count": len(pending)}
+
+
 async def stop_worker() -> None:
     global _worker_task
     if _worker_task:
@@ -393,16 +422,29 @@ async def generate_proposals_for_event(event_id: str, *, force: bool = False) ->
 
     structured = analysis["structured"]
 
+    from engines import operations_engine
     # Idempotency: if proposals already exist for this event, skip unless forced.
     if not force:
-        from engines import operations_engine
         existing = await operations_engine.list_ai_proposals(event_id=event_id)
         if existing:
             await memory_engine.set_event_proposals_status(event_id, "generated")
             return {"status": "skipped_existing", "generated_count": len(existing)}
 
+    # Forced regeneration (the Regenerate button always forces). Patch 5: it
+    # used to stack a second copy of every pending proposal and re-propose
+    # facts a human had already accepted or rejected, so accepting the copy
+    # created a duplicate operational item. Now: undecided proposals are
+    # replaced, and anything already decided for this event is left alone and
+    # not proposed again. Human decisions are never overwritten.
+    skip_keys: set[tuple[str, str]] = set()
+    if force:
+        decided = [p for p in await operations_engine.list_ai_proposals(event_id=event_id)
+                   if p.get("decision") != "pending"]
+        skip_keys = {(p.get("category"), p.get("title")) for p in decided}
+        await operations_engine.discard_pending_ai_proposals(event_id)
+
     try:
-        count = await _emit_proposals_from_structured(event, structured)
+        count = await _emit_proposals_from_structured(event, structured, skip_keys=skip_keys)
     except Exception as e:
         reason = f"{type(e).__name__}: {e}"
         logger.exception(f"proposal generation failed for {event_id}: {reason}")
@@ -419,7 +461,8 @@ async def generate_proposals_for_event(event_id: str, *, force: bool = False) ->
     return {"status": "generated", "generated_count": count}
 
 
-async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
+async def _emit_proposals_from_structured(event: dict, structured: dict, *,
+                                          skip_keys: Optional[set] = None) -> int:
     """Translate structured construction record into ai_proposals rows.
 
     Pure function over the canonical record. Input-method-agnostic.
@@ -457,6 +500,8 @@ async def _emit_proposals_from_structured(event: dict, structured: dict) -> int:
         nonlocal count
         if not title:
             return
+        if skip_keys and (category, title[:120]) in skip_keys:
+            return  # already decided by a human for this event
         prio = priority or global_urgency or "normal"
         if prio not in ("low", "normal", "high", "critical"):
             prio = "normal"

@@ -258,4 +258,7 @@ async def regenerate_proposals(event_id: str, force: bool = False,
     except ValueError:
         raise HTTPException(status_code=404, detail="Event not found")
     from engines import intelligence_engine
+    if event.get("ai_status") == "failed":
+        # Patch 5: a failed structuring attempt is re-run, not replayed.
+        return await intelligence_engine.retry_failed_structuring(event_id)
     return await intelligence_engine.generate_proposals_for_event(event_id, force=force)
