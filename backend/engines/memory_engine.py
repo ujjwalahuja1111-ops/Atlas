@@ -900,12 +900,15 @@ async def put_ai_analysis(doc: dict) -> dict:
 
 
 async def get_ai_analysis(event_id: str) -> Optional[dict]:
-    return await db.ai_analyses.find_one({"event_id": event_id}, {"_id": 0})
+    # Newest analysis wins. An event normally has exactly one, so this is
+    # unchanged for it; after a retried structuring (patch 5) the earlier
+    # failed row is kept as an audit record but no longer shadows the result.
+    return await db.ai_analyses.find_one({"event_id": event_id}, {"_id": 0}, sort=[("started_at", -1)])
 
 
 async def get_ai_analyses(event_ids: list[str]) -> dict[str, dict]:
-    docs = await db.ai_analyses.find({"event_id": {"$in": event_ids}}, {"_id": 0}).to_list(500)
-    return {d["event_id"]: d for d in docs}
+    docs = await db.ai_analyses.find({"event_id": {"$in": event_ids}}, {"_id": 0}).sort("started_at", 1).to_list(500)
+    return {d["event_id"]: d for d in docs}  # oldest first, so the newest overwrites
 
 
 # ---------------- corrections ----------------

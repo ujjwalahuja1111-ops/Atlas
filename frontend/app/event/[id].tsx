@@ -233,6 +233,13 @@ export default function EventDetail() {
     setRegenerating(true);
     try {
       await apiRegenerateProposals(id, true);
+      // Patch 5: a retried structuring changes the event's AI status, so
+      // refresh it (the badge and AI ERROR section read from it).
+      try {
+        const fresh = await apiGetEvent(id);
+        setItem(fresh);
+        aiStatusRef.current = fresh.event.ai_status;
+      } catch { /* the proposal list below still refreshes */ }
       const props = await apiListProposals({ event_id: id, status: 'pending' });
       setProposals(props);
       const edits: typeof proposalEdits = {};
