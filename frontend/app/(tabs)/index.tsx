@@ -8,6 +8,7 @@ import { Image as ExpoImage } from 'expo-image';
 import { Ionicons } from '@expo/vector-icons';
 import { useRouter, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { theme } from '@/src/theme';
+import { NoSiteState } from '@/src/NoSiteState';
 import { getViewRole, VIEW_PERMS, type ViewRole } from '@/src/roles';
 import { ManagementCreCards, PmCreCards } from '@/src/CreDashboard';
 import { MyDaySection } from '@/src/MyDay';
@@ -328,6 +329,8 @@ function TimelineScreen({ stayHere }: { stayHere?: boolean }) {
         <View style={styles.loader} testID="timeline-loader">
           <ActivityIndicator size="large" color={theme.color.brand} />
         </View>
+      ) : sites.length === 0 && !loadError && viewRole ? (
+        <NoSiteState role={viewRole} />
       ) : items.length === 0 ? (
         <View style={styles.empty} testID="timeline-empty">
           <Ionicons name="mic-circle-outline" size={80} color={theme.color.brand} />
@@ -519,6 +522,14 @@ function ClientDashboardScreen() {
         <View style={styles.loader} testID="client-dashboard-loader">
           <ActivityIndicator size="large" color={theme.color.brand} />
         </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (sites.length === 0 && !loadError) {
+    return (
+      <SafeAreaView style={styles.safe} edges={['top']}>
+        <NoSiteState role="client" />
       </SafeAreaView>
     );
   }

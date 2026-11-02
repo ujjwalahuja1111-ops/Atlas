@@ -137,6 +137,16 @@ export default function ProfileScreen() {
               <Text style={styles.secondaryDestText}>User Management</Text>
               <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
             </Pressable>
+            <Pressable testID="open-business-config" onPress={() => router.push('/business-setup')} style={styles.secondaryDestBtn}>
+              <Ionicons name="options-outline" size={18} color={theme.color.brand} />
+              <Text style={styles.secondaryDestText}>Business Configuration</Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
+            </Pressable>
+            <Pressable testID="open-team-setup" onPress={() => router.push('/provision-team')} style={styles.secondaryDestBtn}>
+              <Ionicons name="person-add-outline" size={18} color={theme.color.brand} />
+              <Text style={styles.secondaryDestText}>Team Setup</Text>
+              <Ionicons name="chevron-forward" size={16} color={theme.color.textDim} />
+            </Pressable>
             <Pressable testID="open-system-info" onPress={() => router.push('/system')} style={styles.secondaryDestBtn}>
               <Ionicons name="hardware-chip-outline" size={18} color={theme.color.brand} />
               <Text style={styles.secondaryDestText}>System Information</Text>
