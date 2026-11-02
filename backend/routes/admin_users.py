@@ -41,6 +41,10 @@ class AssignRoleRequest(BaseModel):
 
 class AssignProjectsRequest(BaseModel):
     project_ids: list[str] = []
+    # "replace" (default) = the user's list becomes exactly project_ids - the
+    # original behaviour, which User Management relies on to un-assign a
+    # project. "add" = project_ids are added to the user's existing list.
+    mode: Literal["replace", "add"] = "replace"
 
 
 class SetActiveRequest(BaseModel):
@@ -114,6 +118,12 @@ async def assign_projects(user_id: str, req: AssignProjectsRequest, user: dict =
                 raise HTTPException(status_code=403,
                                     detail=f"Not permitted to assign membership for project '{pid}' — "
                                            "you are not yourself a member of it.")
+    if req.mode == "add":
+        # Only real projects can be granted; an unknown id grants nothing.
+        for pid in set(req.project_ids):
+            if not await db.projects.find_one({"id": pid}, {"_id": 0, "id": 1}):
+                raise HTTPException(status_code=404, detail=f"Project '{pid}' not found")
+        return await memory_engine.add_user_projects(user_id, req.project_ids)
     return await memory_engine.set_user_projects(user_id, req.project_ids)
 
 
